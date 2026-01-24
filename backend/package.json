@@ -27,6 +27,7 @@
     "@nestjs/platform-express": "^11.0.1",
     "@prisma/client": "^7.2.0",
     "axios": "^1.13.2",
+    "googleapis": "^170.1.0",
     "ioredis": "^5.8.2",
     "nestjs-pino": "^4.5.0",
     "pg": "^8.16.3",

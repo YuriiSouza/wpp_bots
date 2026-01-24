@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: telegram_postgres
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: bot
+      POSTGRES_DB: botdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: telegram_redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: telegram_backend
+    command: npm run start:dev
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./backend/credentials/credenciais.json:/app/credentials/credenciais.json:ro
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  pgdata:
+  redisdata:

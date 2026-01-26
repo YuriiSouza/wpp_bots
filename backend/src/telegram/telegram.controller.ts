@@ -13,15 +13,16 @@ import {
 @Controller('telegram/webhook')
 export class TelegramController implements OnModuleInit, OnModuleDestroy {
   // Sessão do motorista
-  private readonly STATE_TTL = 1800; // 30 min
+  private readonly STATE_TTL = 10800; // 30 min
 
   // Controle de fila
   private readonly QUEUE_TTL = 30; // 30s
-  private readonly QUEUE_LIST_PREFIX = 'telegram:queue:list';
-  private readonly QUEUE_ACTIVE_PREFIX = 'telegram:queue:active';
-  private readonly QUEUE_ACTIVE_META_PREFIX = 'telegram:queue:active:meta';
+  private readonly QUEUE_LIST_KEY = 'telegram:queue:list';
+  private readonly QUEUE_ACTIVE_KEY = 'telegram:queue:active';
+  private readonly QUEUE_ACTIVE_META_KEY = 'telegram:queue:active:meta';
   private readonly ROUTE_TIMEOUT_PREFIX = 'telegram:route:timeout';
-  private readonly ROUTE_TIMEOUT_LOCK_PREFIX = 'telegram:route:timeout:lock';
+  private readonly ROUTE_TIMEOUT_LOCK_KEY = 'telegram:route:timeout:lock';
+  private readonly LOG_PREFIX = 'telegram:log';
 
   private timeoutWatcher?: NodeJS.Timeout;
 
@@ -55,39 +56,37 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return `telegram:queue:member:${chatId}`;
   }
 
-  private vehicleQueueKey(vehicleType?: string) {
+  private isFiorino(vehicleType?: string) {
     const type = (vehicleType || '').toLowerCase();
-    if (type.includes('fiorino')) return 'fiorino';
-    if (type.includes('passeio')) return 'passeio';
-    if (type.includes('moto')) return 'moto';
-    return 'outros';
+    return type.includes('fiorino');
   }
 
-  private queueListKey(vehicleType?: string) {
-    return `${this.QUEUE_LIST_PREFIX}:${this.vehicleQueueKey(vehicleType)}`;
+  private queueListKey() {
+    return this.QUEUE_LIST_KEY;
   }
 
-  private queueActiveKey(vehicleType?: string) {
-    return `${this.QUEUE_ACTIVE_PREFIX}:${this.vehicleQueueKey(vehicleType)}`;
+  private queueActiveKey() {
+    return this.QUEUE_ACTIVE_KEY;
   }
 
-  private queueActiveMetaKey(vehicleType?: string) {
-    return `${this.QUEUE_ACTIVE_META_PREFIX}:${this.vehicleQueueKey(vehicleType)}`;
-  }
-
-  private routeTimeoutLockKey(vehicleType?: string) {
-    return `${this.ROUTE_TIMEOUT_LOCK_PREFIX}:${this.vehicleQueueKey(vehicleType)}`;
+  private queueActiveMetaKey() {
+    return this.QUEUE_ACTIVE_META_KEY;
   }
 
   private routeTimeoutKey(chatId: string) {
     return `${this.ROUTE_TIMEOUT_PREFIX}:${chatId}`;
   }
 
+  private logKey(date = new Date()) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${this.LOG_PREFIX}:${y}-${m}-${d}`;
+  }
+
   onModuleInit() {
     this.timeoutWatcher = setInterval(() => {
-      void this.requeueExpiredActive('fiorino');
-      void this.requeueExpiredActive('passeio');
-      void this.requeueExpiredActive('moto');
+      void this.requeueExpiredActive();
     }, 5000);
   }
 
@@ -99,35 +98,60 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       FILA
   ======================== */
 
-  private async pickNextFromQueue(vehicleType?: string): Promise<string | null> {
+  private async logEvent(
+    action: string,
+    state?: DriverSession | null,
+    details?: Record<string, string | number | undefined>,
+  ) {
+    const now = new Date();
+    const time = now.toTimeString().slice(0, 8);
+    const parts = [`[${time}]`, `acao=${action}`];
+
+    if (state?.driverId) parts.push(`driverId=${state.driverId}`);
+    if (state?.driverName) parts.push(`nome=${state.driverName}`);
+    if (state?.vehicleType) parts.push(`veiculo=${state.vehicleType}`);
+
+    if (details) {
+      Object.entries(details).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          parts.push(`${key}=${value}`);
+        }
+      });
+    }
+
+    const line = parts.join(' ');
+    const key = this.logKey(now);
     const client = this.redis.client();
-    const queue = await client.lrange(this.queueListKey(vehicleType), 0, -1);
+    await client.rpush(key, line);
+    await client.ltrim(key, -500, -1);
+  }
+
+  private async pickNextFromQueue(): Promise<string | null> {
+    const client = this.redis.client();
+    const queue = await client.lrange(this.queueListKey(), 0, -1);
     if (!queue.length) return null;
 
     const next = queue[0];
-    await client.lrem(this.queueListKey(vehicleType), 1, next);
+    await client.lrem(this.queueListKey(), 1, next);
     await client.del(this.queueMarker(next));
     return next;
   }
 
-  private async activateNextInQueue(
-    vehicleType?: string,
-  ): Promise<string | null> {
+  private async activateNextInQueue(): Promise<string | null> {
     const client = this.redis.client();
-    const next = await this.pickNextFromQueue(vehicleType);
+    const next = await this.pickNextFromQueue();
     if (!next) return null;
 
     await client.set(
-      this.queueActiveKey(vehicleType),
+      this.queueActiveKey(),
       next,
       'EX',
       this.QUEUE_TTL,
     );
     await client.set(
-      this.queueActiveMetaKey(vehicleType),
+      this.queueActiveMetaKey(),
       JSON.stringify({
         chatId: next,
-        vehicleType: vehicleType || null,
         startedAt: Date.now(),
       }),
       'EX',
@@ -140,19 +164,18 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     await this.redis.client().del(this.routeTimeoutKey(chatId));
   }
 
-  private async refreshActiveMeta(chatId: string, vehicleType?: string) {
+  private async refreshActiveMeta(chatId: string) {
     const client = this.redis.client();
     await client.set(
-      this.queueActiveMetaKey(vehicleType),
+      this.queueActiveMetaKey(),
       JSON.stringify({
         chatId,
-        vehicleType: vehicleType || null,
         startedAt: Date.now(),
       }),
       'EX',
       this.QUEUE_TTL * 2,
     );
-    await client.expire(this.queueActiveKey(vehicleType), this.QUEUE_TTL);
+    await client.expire(this.queueActiveKey(), this.QUEUE_TTL);
   }
 
   private async setRouteTimeout(chatId: string, vehicleType?: string) {
@@ -166,7 +189,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
         const current = await client.get(this.routeTimeoutKey(chatId));
         if (current !== token) return;
 
-        const active = await client.get(this.queueActiveKey(vehicleType));
+        const active = await client.get(this.queueActiveKey());
         if (active !== chatId) {
           await client.del(this.routeTimeoutKey(chatId));
           return;
@@ -185,9 +208,10 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleTimeout(chatId: string, vehicleType?: string) {
-    await this.releaseAndNotifyNext(vehicleType);
-    const pos = await this.enqueue(chatId, vehicleType);
+    await this.releaseAndNotifyNext();
     const state = await this.getState(chatId);
+    const queueVehicle = state?.vehicleType || vehicleType;
+    const pos = await this.enqueue(chatId, queueVehicle);
     if (state) {
       await this.setState(chatId, {
         ...state,
@@ -200,16 +224,17 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       Number(chatId),
       `Atendimento encerrado por falta de resposta. Você voltou para o final da fila. Posição: ${pos}`,
     );
+    await this.logEvent('timeout', state, { position: pos });
   }
 
-  private async requeueExpiredActive(vehicleType?: string): Promise<boolean> {
+  private async requeueExpiredActive(): Promise<boolean> {
     const client = this.redis.client();
-    const lockKey = this.routeTimeoutLockKey(vehicleType);
+    const lockKey = this.ROUTE_TIMEOUT_LOCK_KEY;
     const locked = await client.setnx(lockKey, '1');
     if (locked !== 1) return false;
     await client.expire(lockKey, 5);
 
-    const metaRaw = await client.get(this.queueActiveMetaKey(vehicleType));
+    const metaRaw = await client.get(this.queueActiveMetaKey());
     if (!metaRaw) {
       await client.del(lockKey);
       return false;
@@ -217,7 +242,6 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
 
     const meta = JSON.parse(metaRaw) as {
       chatId: string;
-      vehicleType?: string | null;
       startedAt: number;
     };
 
@@ -226,12 +250,12 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    await client.del(this.queueActiveMetaKey(vehicleType));
-    await client.del(this.queueActiveKey(vehicleType));
+    await client.del(this.queueActiveMetaKey());
+    await client.del(this.queueActiveKey());
     await this.clearRouteTimeout(meta.chatId);
     await client.del(lockKey);
 
-    await this.handleTimeout(meta.chatId, meta.vehicleType || vehicleType);
+    await this.handleTimeout(meta.chatId);
     return true;
   }
 
@@ -239,7 +263,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     const state = await this.getState(next);
     if (!state?.vehicleType) {
       await this.clearState(next);
-      await this.releaseAndNotifyNext(state?.vehicleType);
+      await this.releaseAndNotifyNext();
       return;
     }
 
@@ -252,16 +276,15 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
 
   private async tryAcquireQueue(
     chatId: string,
-    vehicleType?: string,
   ): Promise<boolean> {
     const client = this.redis.client();
-    const active = await client.get(this.queueActiveKey(vehicleType));
+    const active = await client.get(this.queueActiveKey());
     if (active) {
-      const expired = await this.requeueExpiredActive(vehicleType);
+      const expired = await this.requeueExpiredActive();
       if (!expired) return active === chatId;
     }
 
-    const next = await this.activateNextInQueue(vehicleType);
+    const next = await this.activateNextInQueue();
     if (!next) return false;
     if (next !== chatId) {
       await this.notifyQueueNext(next);
@@ -277,37 +300,56 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     const client = this.redis.client();
     const marker = this.queueMarker(chatId);
 
-    const added = await client.setnx(marker, '1');
-    if (added === 1) {
-      await client.expire(marker, this.QUEUE_TTL);
-      await client.rpush(this.queueListKey(vehicleType), chatId);
+    await client.expire(marker, this.QUEUE_TTL);
+
+    const queue = await client.lrange(this.queueListKey(), 0, -1);
+    const alreadyIndex = queue.indexOf(chatId);
+    const isFiorino = this.isFiorino(vehicleType);
+    if (alreadyIndex >= 0 && !isFiorino) {
+      await client.set(marker, '1', 'EX', this.QUEUE_TTL);
+      return alreadyIndex + 1;
     }
 
-    const queue = await client.lrange(this.queueListKey(vehicleType), 0, -1);
-    return queue.indexOf(chatId) + 1;
+    const filtered = queue.filter((id) => id !== chatId);
+
+    const fiorinoQueue: string[] = [];
+    const otherQueue: string[] = [];
+
+    for (const id of filtered) {
+      const state = await this.getState(id);
+      if (this.isFiorino(state?.vehicleType)) fiorinoQueue.push(id);
+      else otherQueue.push(id);
+    }
+
+    const nextQueue = isFiorino
+      ? [...fiorinoQueue, chatId, ...otherQueue]
+      : [...fiorinoQueue, ...otherQueue, chatId];
+
+    await client.del(this.queueListKey());
+    if (nextQueue.length) await client.rpush(this.queueListKey(), ...nextQueue);
+    await client.set(marker, '1', 'EX', this.QUEUE_TTL);
+
+    return nextQueue.indexOf(chatId) + 1;
   }
 
-  private async getQueuePosition(
-    chatId: string,
-    vehicleType?: string,
-  ): Promise<number> {
+  private async getQueuePosition(chatId: string): Promise<number> {
     const client = this.redis.client();
-    const queue = await client.lrange(this.queueListKey(vehicleType), 0, -1);
+    const queue = await client.lrange(this.queueListKey(), 0, -1);
     const index = queue.indexOf(chatId);
     return index >= 0 ? index + 1 : -1;
   }
 
-  private async releaseAndNotifyNext(vehicleType?: string) {
+  private async releaseAndNotifyNext() {
     const client = this.redis.client();
 
-    await client.del(this.queueActiveKey(vehicleType));
-    await client.del(this.queueActiveMetaKey(vehicleType));
+    await client.del(this.queueActiveKey());
+    await client.del(this.queueActiveMetaKey());
 
-    const next = await this.pickNextFromQueue(vehicleType);
+    const next = await this.pickNextFromQueue();
     if (!next) return;
 
     await client.set(
-      this.queueActiveKey(vehicleType),
+      this.queueActiveKey(),
       next,
       'EX',
       this.QUEUE_TTL,
@@ -345,20 +387,44 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const routes = await this.sheets.getAvailableRoutes(state.vehicleType);
+    const routes = await this.sheets.getAllAvailableRoutes();
     const sorted = sortRoutes(routes);
 
     if (!sorted.length) {
       await this.telegram.sendMessage(Number(chatId), NO_ROUTES_AVAILABLE);
       await this.sendMainMenu(Number(chatId));
-      await this.releaseAndNotifyNext(state.vehicleType);
+      await this.releaseAndNotifyNext();
       return;
     }
+
+    const fiorino = sortRoutes(
+      sorted.filter((r) =>
+        (r.vehicleType || '').toLowerCase().includes('fiorino'),
+      ),
+    );
+    const passeio = sortRoutes(
+      sorted.filter((r) =>
+        (r.vehicleType || '').toLowerCase().includes('passeio'),
+      ),
+    );
+    const moto = sortRoutes(
+      sorted.filter((r) =>
+        (r.vehicleType || '').toLowerCase().includes('moto'),
+      ),
+    );
+    const others = sorted.filter(
+      (r) =>
+        !fiorino.includes(r) &&
+        !passeio.includes(r) &&
+        !moto.includes(r),
+    );
+
+    const ordered = [...fiorino, ...passeio, ...moto, ...others];
 
     await this.setState(chatId, {
       ...state,
       state: DriverState.CHOOSING_ROUTE,
-      availableRoutes: sorted,
+      availableRoutes: ordered,
       inQueue: false,
     });
 
@@ -371,12 +437,23 @@ Veículo: ${state.vehicleType}
 
 `;
 
-    sorted.forEach((r, i) => {
-      msg += `${i + 1} - ${r.bairro} | ${r.cidade}\n`;
-    });
+    const pushGroup = (title: string, list: typeof ordered) => {
+      if (!list.length) return;
+      msg += `${title}\n`;
+      list.forEach((r) => {
+        const index = ordered.indexOf(r);
+        msg += `${index + 1} - ${r.bairro} | ${r.cidade}\n`;
+      });
+      msg += '\n';
+    };
+
+    pushGroup('Fiorino', fiorino);
+    pushGroup('Passeio', passeio);
+    pushGroup('Moto', moto);
+    if (others.length) pushGroup('Outros', others);
 
     await this.telegram.sendMessage(Number(chatId), msg);
-    await this.refreshActiveMeta(chatId, state.vehicleType);
+    await this.refreshActiveMeta(chatId);
     await this.setRouteTimeout(chatId, state.vehicleType);
   }
 
@@ -391,16 +468,39 @@ Veículo: ${state.vehicleType}
 
     const chatId = String(message.chat.id);
     const text = message.text.trim();
+
+    if (text.startsWith('/logdiario')) {
+      const key = this.logKey();
+      const logs = await this.redis.client().lrange(key, 0, -1);
+      if (!logs.length) {
+        await this.telegram.sendMessage(Number(chatId), 'Sem logs para hoje.');
+        return { ok: true };
+      }
+
+      let chunk = '';
+      for (const line of logs) {
+        if (chunk.length + line.length + 1 > 3500) {
+          await this.telegram.sendMessage(Number(chatId), chunk);
+          chunk = '';
+        }
+        chunk += `${line}\n`;
+      }
+      if (chunk.trim().length) {
+        await this.telegram.sendMessage(Number(chatId), chunk.trim());
+      }
+      return { ok: true };
+    }
+
     let state = await this.getState(chatId);
     if (state?.inQueue) {
       await this.enqueue(chatId, state.vehicleType);
-      const canStart = await this.tryAcquireQueue(chatId, state.vehicleType);
+      const canStart = await this.tryAcquireQueue(chatId);
       if (canStart) {
         await this.sendRoutes(chatId, state);
         return { ok: true };
       }
 
-      const pos = await this.getQueuePosition(chatId, state.vehicleType);
+      const pos = await this.getQueuePosition(chatId);
       await this.telegram.sendMessage(
         Number(chatId),
         `Você entrou na fila. Posição: ${pos}`,
@@ -470,6 +570,8 @@ Veículo: ${state.vehicleType}
         return { ok: true };
       }
 
+      await this.logEvent('solicitou_rotas', state, { chatId });
+
       const hasRoute = await this.sheets.driverAlreadyHasRoute(state.driverId!);
       if (hasRoute) {
         await this.telegram.sendMessage(
@@ -479,14 +581,13 @@ Veículo: ${state.vehicleType}
           `,
         );
         await this.clearState(chatId);
-        await this.releaseAndNotifyNext(state.vehicleType);
         return { ok: true };
       }
 
       await this.enqueue(chatId, state.vehicleType);
-      const canStart = await this.tryAcquireQueue(chatId, state.vehicleType);
+      const canStart = await this.tryAcquireQueue(chatId);
       if (!canStart) {
-        const pos = await this.getQueuePosition(chatId, state.vehicleType);
+        const pos = await this.getQueuePosition(chatId);
         await this.setState(chatId, { ...state, inQueue: true });
         await this.telegram.sendMessage(
           Number(chatId),
@@ -508,7 +609,7 @@ Veículo: ${state.vehicleType}
           'Atendimento encerrado.',
         );
         await this.clearState(chatId);
-        await this.releaseAndNotifyNext(state.vehicleType);
+        await this.releaseAndNotifyNext();
         return { ok: true };
       }
 
@@ -532,11 +633,12 @@ Veículo: ${state.vehicleType}
 
       await this.telegram.sendMessage(
         Number(chatId),
-        `Rota ${route.atId} atribuída com sucesso.`,
+        `Rota ${route.gaiola} atribuída com sucesso.`,
       );
+      await this.logEvent('rota_atribuida', state, { rota: route.atId });
 
       await this.setState(chatId, { ...state, state: DriverState.MENU });
-      await this.releaseAndNotifyNext(state.vehicleType);
+      await this.releaseAndNotifyNext();
       await this.sendMainMenu(Number(chatId));
       return { ok: true };
     }

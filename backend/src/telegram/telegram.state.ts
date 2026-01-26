@@ -17,6 +17,7 @@ export interface DriverSession {
 
 export interface AvailableRoute {
   atId: string;
+  gaiola?: string;
   bairro?: string;
   cidade?: string;
   vehicleType?: string;

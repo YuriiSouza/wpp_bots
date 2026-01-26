@@ -10,16 +10,74 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Driver {
-  id             String   @id
-  name           String?
-  phone          String?
-  agency         String?
-  vehicleType    String?
-  updatedAt      DateTime @updatedAt
-  createdAt      DateTime @default(now())
+  id                           String   @id
+  name                         String?
+  phone                        String?
+  contractType                 String?
+  function                     String?
+  express                      String?
+  fulfillmentPickup            String?
+  eContractTemplateId          String?
+  gender                       String?
+  email                        String?
+  cpf                          String?
+  cnpj                         String?
+  rntrcNumber                  String?
+  nationality                  String?
+  rg                           String?
+  ufIssueRg                    String?
+  rgIssueDate                  String?
+  countryOfOrigin              String?
+  rne                          String?
+  rneExpirationDate            String?
+  registeredUfRne              String?
+  birthDate                    String?
+  motherName                   String?
+  fatherName                   String?
+  city                         String?
+  neighbourhood                String?
+  streetName                   String?
+  addressNumber                String?
+  zipcode                      String?
+  cardNumber                   String?
+  riskAssessmentDocument       String?
+  cnhType                      String?
+  cnhNumber                    String?
+  cnhSecurityCode              String?
+  cnhObservations              String?
+  ufIssueCnh                   String?
+  firstLicenceDate             String?
+  cnhIssueDate                 String?
+  driverLicenseExpireDate      String?
+  pickupStationId              String?
+  pickupStationShiftId         String?
+  deliveryStationId            String?
+  deliveryStationShiftId       String?
+  lineHaulStationId            String?
+  renavam                      String?
+  licensePlate                 String?
+  ufEmittingCrlv               String?
+  vehicleManufacturingYear     String?
+  cpfCnpjOwnerVehicle          String?
+  vehicleOwnerName             String?
+  vehicleType                  String?
+  spxStatus                    String?
+  radExpireTime                String?
+  digitalCertificateExpiryDate String?
+  driverType                   String?
+  suspensionReason             String?
+  ds                           String?
+  normalizedVehicleType        String?
+  isActive                     Boolean  @default(true)
+  updatedAt                    DateTime @updatedAt
+  createdAt                    DateTime @default(now())
+
+  routes                        Route[] @relation("RouteDriver")
 }
 
 model ConversationState {
@@ -28,4 +86,47 @@ model ConversationState {
   lastDriverId   String?
   updatedAt      DateTime @updatedAt
   createdAt      DateTime @default(now())
+}
+
+model Route {
+  id                        String      @id
+  gaiola                    String?
+  bairro                    String?
+  cidade                    String?
+  requiredVehicleType       String?
+  requiredVehicleTypeNorm   String?
+  suggestionDriverDs        String?
+  km                        String?
+  spr                       String?
+  volume                    String?
+  gg                        String?
+  veiculoRoterizado         String?
+  driverId                  String?
+  driverName                String?
+  driverVehicleType         String?
+  driverAccuracy            String?
+  driverPlate               String?
+  status                    RouteStatus @default(DISPONIVEL)
+  assignedAt                DateTime?
+  updatedAt                 DateTime    @updatedAt
+  createdAt                 DateTime    @default(now())
+
+  driver                    Driver?     @relation("RouteDriver", fields: [driverId], references: [id])
+}
+
+model SyncLog {
+  id               String   @id @default(uuid())
+  status           String
+  startedAt        DateTime @default(now())
+  finishedAt       DateTime?
+  driversCount     Int      @default(0)
+  routesAvailable  Int      @default(0)
+  routesAssigned   Int      @default(0)
+  message          String?
+}
+
+enum RouteStatus {
+  DISPONIVEL
+  ATRIBUIDA
+  BLOQUEADA
 }

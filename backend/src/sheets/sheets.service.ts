@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { google } from 'googleapis';
-import * as fs from 'fs';
 import { RedisService } from '../redis/redis.service';
 
 export interface RotaDisponivel {
@@ -32,18 +31,7 @@ export class SheetsService {
 
 
   private getServiceAccountCredentials() {
-    const envJson = process.env.GOOGLE_CREDENTIALS_JSON;
     const envB64 = process.env.GOOGLE_CREDENTIALS_B64;
-    const envPath = process.env.GOOGLE_CREDENTIALS_PATH;
-    const defaultPath = './credentials/credenciais.json';
-
-    if (envJson) {
-      try {
-        return JSON.parse(envJson);
-      } catch (error) {
-        throw new Error('Erro ao parsear GOOGLE_CREDENTIALS_JSON');
-      }
-    }
 
     if (envB64) {
       try {
@@ -53,20 +41,7 @@ export class SheetsService {
         throw new Error('Erro ao parsear GOOGLE_CREDENTIALS_B64');
       }
     }
-
-    const credentialsPath = envPath || defaultPath;
-    if (!fs.existsSync(credentialsPath)) {
-      throw new Error(
-        `Arquivo de credenciais não encontrado em ${credentialsPath}`,
-      );
-    }
-
-    try {
-      const raw = fs.readFileSync(credentialsPath, 'utf8');
-      return JSON.parse(raw);
-    } catch (error) {
-      throw new Error('Erro ao ler ou parsear o arquivo de credenciais');
-    }
+    throw new Error('GOOGLE_CREDENTIALS_B64 não informado');
   }
 
   async getRows(range: string): Promise<string[][]> {
@@ -76,6 +51,61 @@ export class SheetsService {
     });
 
     return res.data.values || [];
+  }
+
+  async batchUpdateValues(
+    updates: { range: string; values: string[][] }[],
+  ) {
+    if (!updates.length) return;
+
+    await this.sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: {
+        valueInputOption: 'RAW',
+        data: updates,
+      },
+    });
+  }
+
+  private columnIndexToLetter(index: number) {
+    let result = '';
+    let n = index + 1;
+    while (n > 0) {
+      const rem = (n - 1) % 26;
+      result = String.fromCharCode(65 + rem) + result;
+      n = Math.floor((n - 1) / 26);
+    }
+    return result;
+  }
+
+  async updateRouteDriverId(atId: string, driverId: string) {
+    const rows = await this.getRows(`'Rotas recusadas'!A:Z`);
+    if (!rows.length) return false;
+
+    const headers = rows[0];
+    const idIndex = headers.findIndex((h) => h.trim() === 'ID');
+    const atIndex = headers.findIndex((h) => h.trim() === 'ATs');
+    if (idIndex < 0 || atIndex < 0) return false;
+
+    const rowIndex = rows
+      .slice(1)
+      .findIndex((row) => String(row[atIndex] || '').trim() === atId);
+    if (rowIndex < 0) return false;
+
+    const sheetRow = rowIndex + 2;
+    const column = this.columnIndexToLetter(idIndex);
+    const range = `'Rotas recusadas'!${column}${sheetRow}`;
+
+    await this.sheets.spreadsheets.values.update({
+      spreadsheetId: this.spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[driverId]],
+      },
+    });
+
+    return true;
   }
 
   async driverAlreadyHasRoute(driverId: number): Promise<boolean> {

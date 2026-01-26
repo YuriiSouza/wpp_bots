@@ -8,11 +8,12 @@ export enum DriverState {
 
 export interface DriverSession {
   state: DriverState;
-  driverId?: number;
+  driverId?: string;
   driverName?: string;
   vehicleType?: string;
   availableRoutes?: AvailableRoute[];
   inQueue?: boolean;
+  queueGroup?: 'moto' | 'general';
 }
 
 export interface AvailableRoute {

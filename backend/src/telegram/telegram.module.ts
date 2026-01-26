@@ -1,13 +1,15 @@
 import { Module } from '@nestjs/common';
 import { TelegramService } from './telegram.service';
 import { TelegramController } from './telegram.controller';
-import { SheetsModule } from '../sheets/sheets.module';
 import { RedisModule } from '../redis/redis.module';
+import { DataModule } from '../data/data.module';
+import { SyncModule } from '../sync/sync.module';
+import { SheetsModule } from '../sheets/sheets.module';
 
 
 @Module({
   controllers: [TelegramController],
   providers: [TelegramService],
-  imports: [SheetsModule, RedisModule],
+  imports: [RedisModule, DataModule, SyncModule, SheetsModule],
 })
 export class TelegramModule {}

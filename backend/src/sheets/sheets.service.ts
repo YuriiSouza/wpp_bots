@@ -6,6 +6,7 @@ import { RedisService } from '../redis/redis.service';
 export interface RotaDisponivel {
   rowIndex: number;
   atId: string;
+  gaiola?: string;
   bairro?: string;
   cidade?: string;
   vehicleType?: string;
@@ -135,6 +136,7 @@ export class SheetsService {
       .map((row, index) => ({
         rowIndex: index + 2,
         atId: String(row[0] || ''),
+        gaiola: row[1],
         bairro: row[2],
         cidade: row[3],
         vehicleType: row[4],
@@ -163,6 +165,7 @@ export class SheetsService {
       .slice(1)
       .map((row, index) => ({
         rowIndex: index + 2,
+        gaiola: row[1],
         atId: String(row[0] || ''),
         bairro: row[2],
         cidade: row[3],

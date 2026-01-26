@@ -12,7 +12,17 @@ import { RedisService } from './redis.service';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
       const url = config.getOrThrow<string>('REDIS_URL');
-      return new Redis(url);
+      return new Redis(url, {
+          maxRetriesPerRequest: 3,
+          connectTimeout: 10_000,
+          enableReadyCheck: true,
+          retryStrategy(times) {
+            if (times > 3) {
+              return null; // PARA de tentar
+            }
+            return Math.min(times * 500, 2000);
+          },
+      });
       },
     },
   ],

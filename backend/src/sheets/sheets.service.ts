@@ -32,11 +32,32 @@ export class SheetsService {
 
 
   private getServiceAccountCredentials() {
-    const credentialsPath = './credentials/credenciais.json';
+    const envJson = process.env.GOOGLE_CREDENTIALS_JSON;
+    const envB64 = process.env.GOOGLE_CREDENTIALS_B64;
+    const envPath = process.env.GOOGLE_CREDENTIALS_PATH;
+    const defaultPath = './credentials/credenciais.json';
 
+    if (envJson) {
+      try {
+        return JSON.parse(envJson);
+      } catch (error) {
+        throw new Error('Erro ao parsear GOOGLE_CREDENTIALS_JSON');
+      }
+    }
+
+    if (envB64) {
+      try {
+        const decoded = Buffer.from(envB64, 'base64').toString('utf8');
+        return JSON.parse(decoded);
+      } catch (error) {
+        throw new Error('Erro ao parsear GOOGLE_CREDENTIALS_B64');
+      }
+    }
+
+    const credentialsPath = envPath || defaultPath;
     if (!fs.existsSync(credentialsPath)) {
       throw new Error(
-        'Arquivo de credenciais não encontrado em ./credenciais/credenciais.json',
+        `Arquivo de credenciais não encontrado em ${credentialsPath}`,
       );
     }
 
@@ -44,9 +65,7 @@ export class SheetsService {
       const raw = fs.readFileSync(credentialsPath, 'utf8');
       return JSON.parse(raw);
     } catch (error) {
-      throw new Error(
-        'Erro ao ler ou parsear o arquivo credenciais.json',
-      );
+      throw new Error('Erro ao ler ou parsear o arquivo de credenciais');
     }
   }
 

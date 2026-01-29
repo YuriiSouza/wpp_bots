@@ -44,19 +44,31 @@ export class RouteService {
   }
 
   async assignRoute(routeId: string, driverId: string): Promise<boolean> {
-    const updated = await this.prisma.route.updateMany({
-      where: {
-        id: routeId,
-        status: 'DISPONIVEL',
-        driverId: null,
-      },
-      data: {
-        driverId,
-        status: 'ATRIBUIDA',
-        assignedAt: new Date(),
-      },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.route.findFirst({
+        where: {
+          driverId,
+          status: 'ATRIBUIDA',
+        },
+        select: { id: true },
+      });
 
-    return updated.count > 0;
+      if (existing) return false;
+
+      const updated = await tx.route.updateMany({
+        where: {
+          id: routeId,
+          status: 'DISPONIVEL',
+          driverId: null,
+        },
+        data: {
+          driverId,
+          status: 'ATRIBUIDA',
+          assignedAt: new Date(),
+        },
+      });
+
+      return updated.count > 0;
+    });
   }
 }

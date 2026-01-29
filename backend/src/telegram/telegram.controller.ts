@@ -160,29 +160,60 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return next;
   }
 
+  private queueLockKey(group: 'moto' | 'general') {
+    return `telegram:queue:lock:${group}`;
+  }
+
+  private async withQueueLock<T>(
+    group: 'moto' | 'general',
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const client = this.redis.client();
+    const lockKey = this.queueLockKey(group);
+    const maxAttempts = 8;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const locked = await client.setnx(lockKey, '1');
+      if (locked === 1) {
+        await client.expire(lockKey, 5);
+        try {
+          return await fn();
+        } finally {
+          await client.del(lockKey);
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+
+    return fn();
+  }
+
   private async activateNextInQueue(
     group: 'moto' | 'general',
   ): Promise<string | null> {
-    const client = this.redis.client();
-    const next = await this.pickNextFromQueue(group);
-    if (!next) return null;
+    return this.withQueueLock(group, async () => {
+      const client = this.redis.client();
+      const next = await this.pickNextFromQueue(group);
+      if (!next) return null;
 
-    await client.set(
-      this.queueActiveKey(group),
-      next,
-      'EX',
-      this.QUEUE_TTL,
-    );
-    await client.set(
-      this.queueActiveMetaKey(group),
-      JSON.stringify({
-        chatId: next,
-        startedAt: Date.now(),
-      }),
-      'EX',
-      this.QUEUE_TTL * 2,
-    );
-    return next;
+      await client.set(
+        this.queueActiveKey(group),
+        next,
+        'EX',
+        this.QUEUE_TTL,
+      );
+      await client.set(
+        this.queueActiveMetaKey(group),
+        JSON.stringify({
+          chatId: next,
+          startedAt: Date.now(),
+        }),
+        'EX',
+        this.QUEUE_TTL * 2,
+      );
+      return next;
+    });
   }
 
   private async clearRouteTimeout(chatId: string) {
@@ -339,40 +370,42 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     vehicleType?: string,
     group: 'moto' | 'general' = 'general',
   ): Promise<number> {
-    const client = this.redis.client();
-    const marker = this.queueMarker(chatId);
+    return this.withQueueLock(group, async () => {
+      const client = this.redis.client();
+      const marker = this.queueMarker(chatId);
 
-    await client.expire(marker, this.QUEUE_TTL);
+      await client.expire(marker, this.QUEUE_TTL);
 
-    const queue = await client.lrange(this.queueListKey(group), 0, -1);
-    const alreadyIndex = queue.indexOf(chatId);
-    const isFiorino = this.isFiorino(vehicleType);
-    if (alreadyIndex >= 0 && !isFiorino) {
+      const queue = await client.lrange(this.queueListKey(group), 0, -1);
+      const alreadyIndex = queue.indexOf(chatId);
+      const isFiorino = this.isFiorino(vehicleType);
+      if (alreadyIndex >= 0 && !isFiorino) {
+        await client.set(marker, '1', 'EX', this.QUEUE_TTL);
+        return alreadyIndex + 1;
+      }
+
+      const filtered = queue.filter((id) => id !== chatId);
+
+      const fiorinoQueue: string[] = [];
+      const otherQueue: string[] = [];
+
+      for (const id of filtered) {
+        const state = await this.getState(id);
+        if (this.isFiorino(state?.vehicleType)) fiorinoQueue.push(id);
+        else otherQueue.push(id);
+      }
+
+      const nextQueue = isFiorino
+        ? [...fiorinoQueue, chatId, ...otherQueue]
+        : [...fiorinoQueue, ...otherQueue, chatId];
+
+      await client.del(this.queueListKey(group));
+      if (nextQueue.length)
+        await client.rpush(this.queueListKey(group), ...nextQueue);
       await client.set(marker, '1', 'EX', this.QUEUE_TTL);
-      return alreadyIndex + 1;
-    }
 
-    const filtered = queue.filter((id) => id !== chatId);
-
-    const fiorinoQueue: string[] = [];
-    const otherQueue: string[] = [];
-
-    for (const id of filtered) {
-      const state = await this.getState(id);
-      if (this.isFiorino(state?.vehicleType)) fiorinoQueue.push(id);
-      else otherQueue.push(id);
-    }
-
-    const nextQueue = isFiorino
-      ? [...fiorinoQueue, chatId, ...otherQueue]
-      : [...fiorinoQueue, ...otherQueue, chatId];
-
-    await client.del(this.queueListKey(group));
-    if (nextQueue.length)
-      await client.rpush(this.queueListKey(group), ...nextQueue);
-    await client.set(marker, '1', 'EX', this.QUEUE_TTL);
-
-    return nextQueue.indexOf(chatId) + 1;
+      return nextQueue.indexOf(chatId) + 1;
+    });
   }
 
   private async removeFromQueue(chatId: string, group: 'moto' | 'general') {
@@ -381,33 +414,25 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     await client.del(this.queueMarker(chatId));
   }
 
-  private async getQueuePosition(
-    chatId: string,
-    group: 'moto' | 'general',
-  ): Promise<number> {
-    const client = this.redis.client();
-    const queue = await client.lrange(this.queueListKey(group), 0, -1);
-    const index = queue.indexOf(chatId);
-    return index >= 0 ? index + 1 : -1;
-  }
-
   private async releaseAndNotifyNext(group: 'moto' | 'general') {
-    const client = this.redis.client();
+    await this.withQueueLock(group, async () => {
+      const client = this.redis.client();
 
-    await client.del(this.queueActiveKey(group));
-    await client.del(this.queueActiveMetaKey(group));
+      await client.del(this.queueActiveKey(group));
+      await client.del(this.queueActiveMetaKey(group));
 
-    const next = await this.pickNextFromQueue(group);
-    if (!next) return;
+      const next = await this.pickNextFromQueue(group);
+      if (!next) return;
 
-    await client.set(
-      this.queueActiveKey(group),
-      next,
-      'EX',
-      this.QUEUE_TTL,
-    );
+      await client.set(
+        this.queueActiveKey(group),
+        next,
+        'EX',
+        this.QUEUE_TTL,
+      );
 
-    await this.notifyQueueNext(next, group);
+      await this.notifyQueueNext(next, group);
+    });
   }
 
   /* =======================
@@ -611,14 +636,13 @@ Veículo: ${state.vehicleType}
     }
     if (state?.inQueue) {
       const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
-      await this.enqueue(chatId, state.vehicleType, group);
+      const pos = await this.enqueue(chatId, state.vehicleType, group);
       const canStart = await this.tryAcquireQueue(chatId, group);
       if (canStart) {
         await this.sendRoutes(chatId, state);
         return { ok: true };
       }
 
-      const pos = await this.getQueuePosition(chatId, group);
       await this.telegram.sendMessage(
         Number(chatId),
         `Você entrou na fila. Posição: ${pos}`,
@@ -704,10 +728,9 @@ Veículo: ${state.vehicleType}
       }
 
       const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
-      await this.enqueue(chatId, state.vehicleType, group);
+      const pos = await this.enqueue(chatId, state.vehicleType, group);
       const canStart = await this.tryAcquireQueue(chatId, group);
       if (!canStart) {
-        const pos = await this.getQueuePosition(chatId, group);
         await this.setState(chatId, {
           ...state,
           inQueue: true,
@@ -748,6 +771,19 @@ Veículo: ${state.vehicleType}
       }
 
       const route = routes[choice];
+      const alreadyAssigned = await this.routes.driverHasRoute(state.driverId!);
+      if (alreadyAssigned) {
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Você já possui rota atribuída. O bot não realiza trocas.',
+        );
+        await this.setState(chatId, { ...state, state: DriverState.MENU });
+        const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
+        await this.releaseAndNotifyNext(group);
+        await this.sendMainMenu(Number(chatId));
+        return { ok: true };
+      }
+
       const ok = await this.routes.assignRoute(route.atId, state.driverId!);
 
       if (!ok) {

@@ -120,5 +120,23 @@ CREATE TABLE "SyncLog" (
     CONSTRAINT "SyncLog_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "AssignmentOverview" (
+    "id" TEXT NOT NULL,
+    "rowNumber" INTEGER NOT NULL,
+    "driverId" TEXT,
+    "payload" JSONB NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "AssignmentOverview_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AssignmentOverview_rowNumber_key" ON "AssignmentOverview"("rowNumber");
+
+-- CreateIndex
+CREATE INDEX "AssignmentOverview_driverId_idx" ON "AssignmentOverview"("driverId");
+
 -- AddForeignKey
 ALTER TABLE "Route" ADD CONSTRAINT "Route_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "Driver"("id") ON DELETE SET NULL ON UPDATE CASCADE;

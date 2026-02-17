@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:20
 
 WORKDIR /app
 
@@ -15,4 +15,5 @@ EXPOSE 3000
 # Prisma precisa gerar client
 RUN npx prisma generate
 
-CMD ["npm", "run", "start:dev"]
+RUN npm run build
+CMD ["node", "dist/main.js"]

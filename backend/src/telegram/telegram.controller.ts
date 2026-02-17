@@ -550,10 +550,19 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     await this.telegram.sendMessage(
       chatId,
       `Menu principal:
-0 - Encerrar atendimento
+encerrar - Encerrar atendimento
 1 - Ver rotas disponíveis
 2 - Dúvidas frequentes`,
     );
+  }
+
+  private normalizeCommand(text: string) {
+    return text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim()
+      .split(/\s+/)[0];
   }
 
   private nextFaqOption(current: number) {
@@ -570,8 +579,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
 
     if (!items.length) {
       const menu = `Dúvidas frequentes:
-0 - Encerrar atendimento
-9 - Voltar
+encerrar - Encerrar atendimento
+voltar - Voltar
 
 No momento, não há dúvidas cadastradas.
 Peça ao analista para cadastrar em /acess/duvidas.
@@ -581,7 +590,7 @@ Peça ao analista para cadastrar em /acess/duvidas.
 
     let option = 0;
     const answers: Record<string, string> = {};
-    const lines = ['Dúvidas frequentes:', '0 - Encerrar atendimento'];
+    const lines = ['Dúvidas frequentes:', 'encerrar - Encerrar atendimento'];
 
     for (const item of items) {
       option = this.nextFaqOption(option);
@@ -590,7 +599,7 @@ Peça ao analista para cadastrar em /acess/duvidas.
       answers[key] = item.answer;
     }
 
-    lines.push('9 - Voltar');
+    lines.push('voltar - Voltar');
     return { menu: `${lines.join('\n')}\n`, answers };
   }
 
@@ -655,7 +664,7 @@ Peça ao analista para cadastrar em /acess/duvidas.
 Escolha a rota desejada digitando o número:
 Veículo: ${state.vehicleType}
 DS: ${state.ds || '-'} (DS = taxa de pacotes entregues)
-0 - Encerrar atendimento
+Para encerrar, digite: encerrar
 `;
     if (routesNote.trim()) {
       msg += `\n📢 Informações do dia:\n${routesNote.trim()}\n`;
@@ -708,6 +717,7 @@ DS: ${state.ds || '-'} (DS = taxa de pacotes entregues)
 
     const chatId = String(message.chat.id);
     const text = message.text.trim();
+    const command = this.normalizeCommand(text);
 
     if (text === '/sync' || text === '/atualizar_dados') {
       if (await this.sync.isLocked()) {
@@ -809,7 +819,7 @@ DS: ${state.ds || '-'} (DS = taxa de pacotes entregues)
     }
 
     let state = await this.getState(chatId);
-    if (text === '0' && state?.inQueue) {
+    if (command === 'encerrar' && state?.inQueue) {
       const group = state.queueGroup || 'general';
       await this.removeFromQueue(chatId, group);
       await this.clearState(chatId);
@@ -879,7 +889,7 @@ DS: ${state.ds || '-'} (DS = taxa de pacotes entregues)
 
     /* ===== MENU ===== */
     if (state.state === DriverState.MENU) {
-      if (text === '0') {
+      if (command === 'encerrar') {
         await this.telegram.sendMessage(
           Number(chatId),
           'Atendimento encerrado.',
@@ -938,7 +948,7 @@ DS: ${state.ds || '-'} (DS = taxa de pacotes entregues)
     /* ===== ESCOLHA DE ROTA ===== */
     if (state.state === DriverState.CHOOSING_ROUTE) {
       await this.clearRouteTimeout(chatId);
-      if (text === '0') {
+      if (command === 'encerrar') {
         await this.telegram.sendMessage(
           Number(chatId),
           'Atendimento encerrado.',
@@ -1013,7 +1023,7 @@ Como pegar a rota:
 
     /* ===== AJUDA ===== */
     if (state.state === DriverState.HELP_MENU) {
-      if (text === '0') {
+      if (command === 'encerrar') {
         await this.telegram.sendMessage(
           Number(chatId),
           'Atendimento encerrado.',
@@ -1022,7 +1032,7 @@ Como pegar a rota:
         return { ok: true };
       }
 
-      if (text === '9') {
+      if (command === 'voltar') {
         await this.setState(chatId, {
           ...state,
           state: DriverState.MENU,

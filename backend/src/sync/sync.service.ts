@@ -168,8 +168,18 @@ export class SyncService implements OnModuleInit {
   private extractDriverIdFromBrackets(value?: string | null): string | null {
     const raw = String(value || '');
     const match = raw.match(/\[([^\]]+)\]/);
-    if (!match) return null;
-    return match[1].trim() || null;
+    if (match) {
+      const inBrackets = match[1].trim();
+      if (inBrackets) return inBrackets;
+    }
+
+    const normalized = raw.trim();
+    if (!normalized) return null;
+    if (/^\d+$/.test(normalized)) return normalized;
+
+    const numberMatch = normalized.match(/\b\d{3,}\b/);
+    if (numberMatch) return numberMatch[0];
+    return null;
   }
 
   private calculatePriorityScore(
@@ -229,18 +239,17 @@ export class SyncService implements OnModuleInit {
       convocationByDriver.set(driverId, previous);
     });
 
-    const driverIds = Array.from(
+    const sheetDriverIds = Array.from(
       new Set([
         ...noShowByDriver.keys(),
         ...convocationByDriver.keys(),
       ]),
     );
-    if (!driverIds.length) return;
-
-    await this.ensureDriversExist(driverIds);
+    if (sheetDriverIds.length) {
+      await this.ensureDriversExist(sheetDriverIds);
+    }
 
     const drivers = await this.prisma.driver.findMany({
-      where: { id: { in: driverIds } },
       select: { id: true, ds: true },
     });
 

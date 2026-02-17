@@ -13,9 +13,14 @@ const SYNC_PASSWORD = process.env.SYNC_PASSWORD || 'senhadoYuri';
 type DriverRow = Record<string, string>;
 type RouteRow = Record<string, string>;
 type OverviewRow = Record<string, string>;
+type ConvocationStats = { total: number; declined: number };
 export type SyncPendingType = 'all' | 'drivers';
 export type SyncSummary = {
   drivers: number;
+  routesAvailable: number;
+  routesAssigned: number;
+};
+export type SyncRoutesSummary = {
   routesAvailable: number;
   routesAssigned: number;
 };
@@ -140,18 +145,125 @@ export class SyncService implements OnModuleInit {
     });
   }
 
-  private async clearRedisState() {
-    const client = this.redis.client();
-    const patterns = [
-      'telegram:queue:*',
-      'telegram:state:*',
-      'telegram:route:timeout*',
-      'telegram:queue:member:*',
-      'telegram:queue:moto:*',
-      'telegram:queue:general:*',
-      'driver:hasRoute:*',
-    ];
+  private parsePercent(value?: string | null): number {
+    const raw = String(value || '').trim().replace(',', '.');
+    if (!raw) return 0;
+    const cleaned = raw.replace('%', '');
+    const n = Number(cleaned);
+    if (!Number.isFinite(n)) return 0;
+    if (n < 0) return 0;
+    if (n > 100) return 100;
+    return n;
+  }
 
+  private parseInteger(value?: string | null): number {
+    const raw = String(value || '').trim();
+    if (!raw) return 0;
+    const match = raw.match(/-?\d+/);
+    if (!match) return 0;
+    const n = Number(match[0]);
+    return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  }
+
+  private extractDriverIdFromBrackets(value?: string | null): string | null {
+    const raw = String(value || '');
+    const match = raw.match(/\[([^\]]+)\]/);
+    if (!match) return null;
+    return match[1].trim() || null;
+  }
+
+  private calculatePriorityScore(
+    dsPercent: number,
+    declineRate: number,
+    noShowCount: number,
+  ): number {
+    const noShowComponent = Math.max(0, 100 - noShowCount * 10);
+    const score = dsPercent * 0.6 + (100 - declineRate) * 0.3 + noShowComponent * 0.1;
+    const bounded = Math.max(0, Math.min(100, score));
+    return Number(bounded.toFixed(2));
+  }
+
+  private async getRowsFromAnyRange(ranges: string[]): Promise<string[][]> {
+    let lastError: Error | null = null;
+    for (const range of ranges) {
+      try {
+        const rows = await this.sheets.getRows(range);
+        if (rows.length) return rows;
+      } catch (error) {
+        lastError = error as Error;
+      }
+    }
+
+    if (lastError) throw lastError;
+    return [];
+  }
+
+  private async syncDriverPriorityMetrics(): Promise<void> {
+    const disponibilidadeRows = await this.getRowsFromAnyRange([
+      `'Disponibilidade'!A:E`,
+      `'disponibilidade'!A:E`,
+    ]);
+    const convocacaoRows = await this.getRowsFromAnyRange([
+      `'Convocação'!A:J`,
+      `'Convocacao'!A:J`,
+      `'convocacao'!A:J`,
+    ]);
+
+    const noShowByDriver = new Map<string, number>();
+    disponibilidadeRows.slice(1).forEach((row) => {
+      const driverId = String(row[0] || '').trim();
+      if (!driverId) return;
+      const noShowCount = this.parseInteger(row[4]);
+      noShowByDriver.set(driverId, noShowCount);
+    });
+
+    const convocationByDriver = new Map<string, ConvocationStats>();
+    convocacaoRows.slice(1).forEach((row) => {
+      const driverId = this.extractDriverIdFromBrackets(row[3]);
+      if (!driverId) return;
+
+      const status = String(row[9] || '').trim().toLowerCase();
+      const previous = convocationByDriver.get(driverId) || { total: 0, declined: 0 };
+      previous.total += 1;
+      if (status.includes('declin')) previous.declined += 1;
+      convocationByDriver.set(driverId, previous);
+    });
+
+    const driverIds = Array.from(
+      new Set([
+        ...noShowByDriver.keys(),
+        ...convocationByDriver.keys(),
+      ]),
+    );
+    if (!driverIds.length) return;
+
+    await this.ensureDriversExist(driverIds);
+
+    const drivers = await this.prisma.driver.findMany({
+      where: { id: { in: driverIds } },
+      select: { id: true, ds: true },
+    });
+
+    for (const driver of drivers) {
+      const conv = convocationByDriver.get(driver.id) || { total: 0, declined: 0 };
+      const noShowCount = noShowByDriver.get(driver.id) || 0;
+      const declineRate = conv.total > 0 ? (conv.declined / conv.total) * 100 : 0;
+      const dsPercent = this.parsePercent(driver.ds);
+      const priorityScore = this.calculatePriorityScore(dsPercent, declineRate, noShowCount);
+
+      await this.prisma.driver.update({
+        where: { id: driver.id },
+        data: {
+          noShowCount,
+          declineRate: Number(declineRate.toFixed(2)),
+          priorityScore,
+        },
+      });
+    }
+  }
+
+  private async clearRedisPatterns(patterns: string[]) {
+    const client = this.redis.client();
     for (const pattern of patterns) {
       let cursor = '0';
       do {
@@ -160,6 +272,21 @@ export class SyncService implements OnModuleInit {
         if (keys.length) await client.del(...keys);
       } while (cursor !== '0');
     }
+  }
+
+  async resetRedisStateManual(): Promise<void> {
+    await this.clearRedisPatterns([
+      'telegram:queue:*',
+      'telegram:state:*',
+      'telegram:route:timeout*',
+      'telegram:queue:member:*',
+      'telegram:queue:moto:*',
+      'telegram:queue:general:*',
+      'driver:hasRoute:*',
+      'routes:available:*',
+      `${SYNC_PENDING_PREFIX}:*`,
+      'telegram:blacklist:cache:driver:*',
+    ]);
   }
 
   private columnIndexToLetter(index: number) {
@@ -288,136 +415,20 @@ export class SyncService implements OnModuleInit {
       driverCount += 1;
 
       const vehicleType = row['Vehicle Type']?.trim() || null;
-      const normalizedVehicleType = normalizeVehicleType(vehicleType ?? undefined);
-      const spxStatus = row['SPX Status']?.trim() || null;
-      const statusLower = spxStatus?.toLowerCase() || '';
-      const isActive =
-        statusLower === ''
-          ? true
-          : !(statusLower.includes('inativo') || statusLower.includes('inactive') || statusLower.includes('bloque'));
+      const ds = row['DS'] || null;
 
       await this.prisma.driver.upsert({
         where: { id: driverId },
         update: {
           name: row['Driver Name'] || null,
-          phone: row['Phone Number'] || null,
-          contractType: row['Contract Type'] || null,
-          function: row['Function'] || null,
-          express: row['Express'] || null,
-          fulfillmentPickup: row['Fulfillment Pickup'] || null,
-          eContractTemplateId: row['E-Contract Template ID'] || null,
-          gender: row['Gender'] || null,
-          email: row['E-mail'] || null,
-          cpf: row['CPF'] || null,
-          cnpj: row['CNPJ'] || null,
-          rntrcNumber: row['RNTRC Number'] || null,
-          nationality: row['Nationality'] || null,
-          rg: row['RG'] || null,
-          ufIssueRg: row['UF Issue RG'] || null,
-          rgIssueDate: row['Date of issuance of the ID card (RG)'] || null,
-          countryOfOrigin: row['Country of origin'] || null,
-          rne: row['RNE'] || null,
-          rneExpirationDate: row['RNE Expiration date'] || null,
-          registeredUfRne: row['Registered UF RNE'] || null,
-          birthDate: row['Birth Date'] || null,
-          motherName: row["Driver's Mother name"] || null,
-          fatherName: row["Driver's Father name"] || null,
-          city: row['City'] || null,
-          neighbourhood: row['Neighbourhood'] || null,
-          streetName: row['Street Name'] || null,
-          addressNumber: row['Address Number'] || null,
-          zipcode: row['Zipcode'] || null,
-          cardNumber: row['Card Number'] || null,
-          riskAssessmentDocument: row['Risk Assessment Document (PDF only)'] || null,
-          cnhType: row['CNH Type'] || null,
-          cnhNumber: row['CNH Number'] || null,
-          cnhSecurityCode: row['CNH Security Code'] || null,
-          cnhObservations: row['CNH Observations'] || null,
-          ufIssueCnh: row['UF Issue CNH'] || null,
-          firstLicenceDate: row['1st Licence Date'] || null,
-          cnhIssueDate: row['CNH Issue Date'] || null,
-          driverLicenseExpireDate: row['Driver License Expire Date'] || null,
-          pickupStationId: row['Pickup Station ID'] || null,
-          pickupStationShiftId: row['Pickup Station Shift ID'] || null,
-          deliveryStationId: row['Delivery Station ID'] || null,
-          deliveryStationShiftId: row['Delivery Station Shift ID'] || null,
-          lineHaulStationId: row['Line Haul Station ID'] || null,
-          renavam: row['RENAVAM'] || null,
-          licensePlate: row['License Plate'] || null,
-          ufEmittingCrlv: row['UF Emitting CRLV'] || null,
-          vehicleManufacturingYear: row["Vehicle's Manufacturing Year"] || null,
-          cpfCnpjOwnerVehicle: row['CPF/CNPJ Owner Vehicle'] || null,
-          vehicleOwnerName: row['Vehicle Owner Name'] || null,
           vehicleType,
-          spxStatus,
-          radExpireTime: row['RAD Expire Time'] || null,
-          digitalCertificateExpiryDate: row['Digital Certificate Expiry Date'] || null,
-          driverType: row['Driver Type'] || null,
-          suspensionReason: row['Suspension Reason'] || null,
-          ds: row['DS'] || null,
-          normalizedVehicleType,
-          isActive,
+          ds,
         },
         create: {
           id: driverId,
           name: row['Driver Name'] || null,
-          phone: row['Phone Number'] || null,
-          contractType: row['Contract Type'] || null,
-          function: row['Function'] || null,
-          express: row['Express'] || null,
-          fulfillmentPickup: row['Fulfillment Pickup'] || null,
-          eContractTemplateId: row['E-Contract Template ID'] || null,
-          gender: row['Gender'] || null,
-          email: row['E-mail'] || null,
-          cpf: row['CPF'] || null,
-          cnpj: row['CNPJ'] || null,
-          rntrcNumber: row['RNTRC Number'] || null,
-          nationality: row['Nationality'] || null,
-          rg: row['RG'] || null,
-          ufIssueRg: row['UF Issue RG'] || null,
-          rgIssueDate: row['Date of issuance of the ID card (RG)'] || null,
-          countryOfOrigin: row['Country of origin'] || null,
-          rne: row['RNE'] || null,
-          rneExpirationDate: row['RNE Expiration date'] || null,
-          registeredUfRne: row['Registered UF RNE'] || null,
-          birthDate: row['Birth Date'] || null,
-          motherName: row["Driver's Mother name"] || null,
-          fatherName: row["Driver's Father name"] || null,
-          city: row['City'] || null,
-          neighbourhood: row['Neighbourhood'] || null,
-          streetName: row['Street Name'] || null,
-          addressNumber: row['Address Number'] || null,
-          zipcode: row['Zipcode'] || null,
-          cardNumber: row['Card Number'] || null,
-          riskAssessmentDocument: row['Risk Assessment Document (PDF only)'] || null,
-          cnhType: row['CNH Type'] || null,
-          cnhNumber: row['CNH Number'] || null,
-          cnhSecurityCode: row['CNH Security Code'] || null,
-          cnhObservations: row['CNH Observations'] || null,
-          ufIssueCnh: row['UF Issue CNH'] || null,
-          firstLicenceDate: row['1st Licence Date'] || null,
-          cnhIssueDate: row['CNH Issue Date'] || null,
-          driverLicenseExpireDate: row['Driver License Expire Date'] || null,
-          pickupStationId: row['Pickup Station ID'] || null,
-          pickupStationShiftId: row['Pickup Station Shift ID'] || null,
-          deliveryStationId: row['Delivery Station ID'] || null,
-          deliveryStationShiftId: row['Delivery Station Shift ID'] || null,
-          lineHaulStationId: row['Line Haul Station ID'] || null,
-          renavam: row['RENAVAM'] || null,
-          licensePlate: row['License Plate'] || null,
-          ufEmittingCrlv: row['UF Emitting CRLV'] || null,
-          vehicleManufacturingYear: row["Vehicle's Manufacturing Year"] || null,
-          cpfCnpjOwnerVehicle: row['CPF/CNPJ Owner Vehicle'] || null,
-          vehicleOwnerName: row['Vehicle Owner Name'] || null,
           vehicleType,
-          spxStatus,
-          radExpireTime: row['RAD Expire Time'] || null,
-          digitalCertificateExpiryDate: row['Digital Certificate Expiry Date'] || null,
-          driverType: row['Driver Type'] || null,
-          suspensionReason: row['Suspension Reason'] || null,
-          ds: row['DS'] || null,
-          normalizedVehicleType,
-          isActive,
+          ds,
         },
       });
     }
@@ -533,6 +544,7 @@ export class SyncService implements OnModuleInit {
 
     try {
       const driverCount = await this.syncDriversFromSheets();
+      await this.syncDriverPriorityMetrics();
       await this.prisma.syncLog.update({
         where: { id: log.id },
         data: {
@@ -565,10 +577,10 @@ export class SyncService implements OnModuleInit {
     });
 
     try {
-      const driverCount = await this.prisma.driver.count();
+      const driverCount = await this.syncDriversFromSheets();
+      await this.syncDriverPriorityMetrics();
       const { availableCount, assignedCount } = await this.syncRoutesFromSheets();
 
-      await this.clearRedisState();
       await this.syncAssignmentOverviewFromSheets();
 
       await this.prisma.syncLog.update({
@@ -585,6 +597,46 @@ export class SyncService implements OnModuleInit {
 
       return {
         drivers: driverCount,
+        routesAvailable: availableCount,
+        routesAssigned: assignedCount,
+      };
+    } catch (error) {
+      await this.prisma.syncLog.update({
+        where: { id: log.id },
+        data: {
+          status: 'failed',
+          finishedAt: new Date(),
+          message: (error as Error).message,
+        },
+      });
+      throw error;
+    } finally {
+      await this.unlock();
+    }
+  }
+
+  async syncRoutesOnly(): Promise<SyncRoutesSummary> {
+    await this.lock();
+    const log = await this.prisma.syncLog.create({
+      data: { status: 'running', message: 'Sincronizacao de rotas iniciada' },
+    });
+
+    try {
+      const { availableCount, assignedCount } = await this.syncRoutesFromSheets();
+      await this.syncAssignmentOverviewFromSheets();
+
+      await this.prisma.syncLog.update({
+        where: { id: log.id },
+        data: {
+          status: 'success',
+          finishedAt: new Date(),
+          routesAvailable: availableCount,
+          routesAssigned: assignedCount,
+          message: 'Sincronizacao de rotas concluida',
+        },
+      });
+
+      return {
         routesAvailable: availableCount,
         routesAssigned: assignedCount,
       };
@@ -642,7 +694,7 @@ export class SyncService implements OnModuleInit {
       const driverVehicleType = driver?.vehicleType || route.driverVehicleType || '';
       const driverName = driver?.name || route.driverName || '';
       const driverId = driver?.id || route.driverId || '';
-      const driverPlate = driver?.licensePlate || route.driverPlate || '';
+      const driverPlate = route.driverPlate || '';
       const requiredNorm = normalizeVehicleType(route.requiredVehicleType ?? undefined);
       const driverNorm = normalizeVehicleType(driverVehicleType);
       const accuracy = driverId

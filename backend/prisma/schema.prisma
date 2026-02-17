@@ -17,63 +17,11 @@ datasource db {
 model Driver {
   id                           String   @id
   name                         String?
-  phone                        String?
-  contractType                 String?
-  function                     String?
-  express                      String?
-  fulfillmentPickup            String?
-  eContractTemplateId          String?
-  gender                       String?
-  email                        String?
-  cpf                          String?
-  cnpj                         String?
-  rntrcNumber                  String?
-  nationality                  String?
-  rg                           String?
-  ufIssueRg                    String?
-  rgIssueDate                  String?
-  countryOfOrigin              String?
-  rne                          String?
-  rneExpirationDate            String?
-  registeredUfRne              String?
-  birthDate                    String?
-  motherName                   String?
-  fatherName                   String?
-  city                         String?
-  neighbourhood                String?
-  streetName                   String?
-  addressNumber                String?
-  zipcode                      String?
-  cardNumber                   String?
-  riskAssessmentDocument       String?
-  cnhType                      String?
-  cnhNumber                    String?
-  cnhSecurityCode              String?
-  cnhObservations              String?
-  ufIssueCnh                   String?
-  firstLicenceDate             String?
-  cnhIssueDate                 String?
-  driverLicenseExpireDate      String?
-  pickupStationId              String?
-  pickupStationShiftId         String?
-  deliveryStationId            String?
-  deliveryStationShiftId       String?
-  lineHaulStationId            String?
-  renavam                      String?
-  licensePlate                 String?
-  ufEmittingCrlv               String?
-  vehicleManufacturingYear     String?
-  cpfCnpjOwnerVehicle          String?
-  vehicleOwnerName             String?
   vehicleType                  String?
-  spxStatus                    String?
-  radExpireTime                String?
-  digitalCertificateExpiryDate String?
-  driverType                   String?
-  suspensionReason             String?
   ds                           String?
-  normalizedVehicleType        String?
-  isActive                     Boolean  @default(true)
+  noShowCount                  Int      @default(0)
+  declineRate                  Float    @default(0)
+  priorityScore                Float    @default(0)
   updatedAt                    DateTime @updatedAt
   createdAt                    DateTime @default(now())
 
@@ -136,8 +84,38 @@ model AssignmentOverview {
   @@index([driverId])
 }
 
+model DriverBlacklist {
+  driverId           String          @id
+  status             BlacklistStatus @default(ACTIVE)
+  timesListed        Int             @default(1)
+  lastActivatedAt    DateTime?
+  lastInactivatedAt  DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@index([status])
+  @@index([updatedAt])
+}
+
+model FaqItem {
+  id        String   @id @default(uuid())
+  title     String
+  answer    String
+  position  Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active, position])
+}
+
 enum RouteStatus {
   DISPONIVEL
   ATRIBUIDA
   BLOQUEADA
+}
+
+enum BlacklistStatus {
+  ACTIVE
+  INACTIVE
 }

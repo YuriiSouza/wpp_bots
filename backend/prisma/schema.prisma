@@ -11,7 +11,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  shadowDatabaseUrl = env("DIRECT_URL")
 }
 
 model Driver {
@@ -123,6 +123,17 @@ model SyncLog {
   routesAvailable  Int      @default(0)
   routesAssigned   Int      @default(0)
   message          String?
+}
+
+model AssignmentOverview {
+  id         String   @id @default(uuid())
+  rowNumber  Int      @unique
+  driverId   String?
+  payload    Json
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  @@index([driverId])
 }
 
 enum RouteStatus {

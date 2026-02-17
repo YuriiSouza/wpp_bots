@@ -149,6 +149,12 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     await client.ltrim(key, -500, -1);
   }
 
+  private async driverAlreadyAssigned(driverId: string): Promise<boolean> {
+    const hasSheet = await this.sheets.driverAlreadyHasRoute(driverId);
+    if (hasSheet) return true;
+    return this.routes.driverHasRoute(driverId);
+  }
+
   private async pickNextFromQueue(group: 'moto' | 'general'): Promise<string | null> {
     const client = this.redis.client();
     const queue = await client.lrange(this.queueListKey(group), 0, -1);
@@ -557,7 +563,7 @@ Veículo: ${state.vehicleType}
         );
         return { ok: true };
       }
-      await this.sync.setPending(chatId);
+      await this.sync.setPending(chatId, 'all');
       await this.telegram.sendMessage(
         Number(chatId),
         'Informe a senha para sincronizar.',
@@ -565,7 +571,24 @@ Veículo: ${state.vehicleType}
       return { ok: true };
     }
 
-    if (await this.sync.isPending(chatId)) {
+    if (text === '/syncDriver' || text === '/syncdriver') {
+      if (await this.sync.isLocked()) {
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Atualização em andamento. Aguarde alguns minutos.',
+        );
+        return { ok: true };
+      }
+      await this.sync.setPending(chatId, 'drivers');
+      await this.telegram.sendMessage(
+        Number(chatId),
+        'Informe a senha para sincronizar.',
+      );
+      return { ok: true };
+    }
+
+    const pendingType = await this.sync.getPendingType(chatId);
+    if (pendingType) {
       if (!this.sync.isPasswordValid(text)) {
         await this.sync.clearPending(chatId);
         await this.telegram.sendMessage(Number(chatId), 'Senha inválida.');
@@ -573,17 +596,25 @@ Veículo: ${state.vehicleType}
       }
 
       await this.sync.clearPending(chatId);
-      await this.telegram.sendMessage(
-        Number(chatId),
-        'Atualização em andamento. Aguarde alguns minutos.',
-      );
+      // await this.telegram.sendMessage(
+      //   Number(chatId),
+      //   'Atualização em andamento. Aguarde alguns minutos.',
+      // );
 
       try {
-        const summary = await this.sync.syncAll();
-        await this.telegram.sendMessage(
-          Number(chatId),
-          `✅ Dados atualizados com sucesso.\nMotoristas: ${summary.drivers}\nRotas disponíveis: ${summary.routesAvailable}\nRotas atribuídas: ${summary.routesAssigned}`,
-        );
+        if (pendingType === 'drivers') {
+          const drivers = await this.sync.syncDriversScheduled();
+          await this.telegram.sendMessage(
+            Number(chatId),
+            `✅ Motoristas atualizados com sucesso.\nMotoristas: ${drivers}`,
+          );
+        } else {
+          const summary = await this.sync.syncAll();
+          await this.telegram.sendMessage(
+            Number(chatId),
+            `✅ Dados atualizados com sucesso.\nMotoristas: ${summary.drivers}\nRotas disponíveis: ${summary.routesAvailable}\nRotas atribuídas: ${summary.routesAssigned}`,
+          );
+        }
       } catch (error) {
         await this.telegram.sendMessage(
           Number(chatId),
@@ -715,7 +746,7 @@ Veículo: ${state.vehicleType}
 
       await this.logEvent('solicitou_rotas', state, { chatId });
 
-      const hasRoute = await this.routes.driverHasRoute(state.driverId!);
+      const hasRoute = await this.driverAlreadyAssigned(state.driverId!);
       if (hasRoute) {
         await this.telegram.sendMessage(
           Number(chatId),
@@ -771,7 +802,7 @@ Veículo: ${state.vehicleType}
       }
 
       const route = routes[choice];
-      const alreadyAssigned = await this.routes.driverHasRoute(state.driverId!);
+      const alreadyAssigned = await this.driverAlreadyAssigned(state.driverId!);
       if (alreadyAssigned) {
         await this.telegram.sendMessage(
           Number(chatId),

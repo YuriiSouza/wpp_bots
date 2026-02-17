@@ -12,6 +12,8 @@ const SYNC_PASSWORD = process.env.SYNC_PASSWORD || 'senhadoYuri';
 
 type DriverRow = Record<string, string>;
 type RouteRow = Record<string, string>;
+type OverviewRow = Record<string, string>;
+export type SyncPendingType = 'all' | 'drivers';
 export type SyncSummary = {
   drivers: number;
   routesAvailable: number;
@@ -43,17 +45,18 @@ export class SyncService implements OnModuleInit {
     return `${SYNC_PENDING_PREFIX}:${chatId}`;
   }
 
-  async setPending(chatId: string) {
-    await this.redis.client().set(this.pendingKey(chatId), '1', 'EX', 300);
+  async setPending(chatId: string, type: SyncPendingType = 'all') {
+    await this.redis.client().set(this.pendingKey(chatId), type, 'EX', 300);
   }
 
   async clearPending(chatId: string) {
     await this.redis.client().del(this.pendingKey(chatId));
   }
 
-  async isPending(chatId: string): Promise<boolean> {
-    const exists = await this.redis.client().get(this.pendingKey(chatId));
-    return exists === '1';
+  async getPendingType(chatId: string): Promise<SyncPendingType | null> {
+    const pending = await this.redis.client().get(this.pendingKey(chatId));
+    if (pending === 'all' || pending === 'drivers') return pending;
+    return null;
   }
 
   async isLocked(): Promise<boolean> {
@@ -146,6 +149,7 @@ export class SyncService implements OnModuleInit {
       'telegram:queue:member:*',
       'telegram:queue:moto:*',
       'telegram:queue:general:*',
+      'driver:hasRoute:*',
     ];
 
     for (const pattern of patterns) {
@@ -192,6 +196,82 @@ export class SyncService implements OnModuleInit {
       data: missing.map((id) => ({ id })),
       skipDuplicates: true,
     });
+  }
+
+  private getHeaderIndex(headers: string[], candidates: string[]) {
+    const normalizedHeaders = headers.map((h) => h.trim().toLowerCase());
+    for (const candidate of candidates) {
+      const idx = normalizedHeaders.indexOf(candidate.toLowerCase());
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  }
+
+  private extractOverviewDriverId(
+    headers: string[],
+    row: string[],
+  ): string | null {
+    const candidates = [
+      'ID',
+      'Driver ID',
+      'ID Driver',
+      'ID Motorista',
+      'Id Motorista',
+    ];
+    const byHeader = this.getHeaderIndex(headers, candidates);
+    const fallbackJ = 9;
+    const index = byHeader >= 0 ? byHeader : fallbackJ;
+    const value = String(row[index] ?? '').trim();
+    return value || null;
+  }
+
+  private async syncAssignmentOverviewFromSheets(): Promise<number> {
+    const overviewRows = await this.sheets.getRows(`'Visão Geral Atribuições'!A:Q`);
+    if (!overviewRows.length) throw new Error('Planilha Visão Geral Atribuições vazia');
+
+    const [headers, ...dataRows] = overviewRows;
+    const mappedRows: OverviewRow[] = this.mapRows(headers, dataRows);
+    const rowNumbers: number[] = [];
+    const driverIds = new Set<string>();
+
+    for (let i = 0; i < mappedRows.length; i += 1) {
+      const row = mappedRows[i];
+      const rowNumber = i + 2;
+      rowNumbers.push(rowNumber);
+
+      const rawRow = dataRows[i] ?? [];
+      const driverId = this.extractOverviewDriverId(headers, rawRow);
+      if (driverId) driverIds.add(driverId);
+
+      await this.prisma.assignmentOverview.upsert({
+        where: { rowNumber },
+        update: {
+          driverId,
+          payload: row,
+        },
+        create: {
+          rowNumber,
+          driverId,
+          payload: row,
+        },
+      });
+    }
+
+    if (rowNumbers.length) {
+      await this.prisma.assignmentOverview.deleteMany({
+        where: { rowNumber: { notIn: rowNumbers } },
+      });
+    } else {
+      await this.prisma.assignmentOverview.deleteMany({});
+    }
+
+    await Promise.all(
+      Array.from(driverIds).map((driverId) =>
+        this.redis.set(`driver:hasRoute:${driverId}`, true, 300),
+      ),
+    );
+
+    return mappedRows.length;
   }
 
   private async syncDriversFromSheets() {
@@ -485,10 +565,11 @@ export class SyncService implements OnModuleInit {
     });
 
     try {
-      const driverCount = await this.syncDriversFromSheets();
+      const driverCount = await this.prisma.driver.count();
       const { availableCount, assignedCount } = await this.syncRoutesFromSheets();
 
       await this.clearRedisState();
+      await this.syncAssignmentOverviewFromSheets();
 
       await this.prisma.syncLog.update({
         where: { id: log.id },

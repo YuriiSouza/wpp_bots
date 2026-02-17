@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { google } from 'googleapis';
 import { RedisService } from '../redis/redis.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 export interface RotaDisponivel {
   rowIndex: number;
@@ -19,7 +20,10 @@ export class SheetsService {
   private spreadsheetId = process.env.SHEET_ID;
   private readonly cacheTtlSeconds = 300;
 
-  constructor(private readonly redisService: RedisService) {
+  constructor(
+    private readonly redisService: RedisService,
+    private readonly prisma: PrismaService,
+  ) {
     const credentials = this.getServiceAccountCredentials();
     const auth = new google.auth.GoogleAuth({
       credentials,
@@ -108,26 +112,19 @@ export class SheetsService {
     return true;
   }
 
-  async driverAlreadyHasRoute(driverId: number): Promise<boolean> {
+  async driverAlreadyHasRoute(driverId: string): Promise<boolean> {
     const cacheKey = `driver:hasRoute:${driverId}`;
     const cached = await this.redisService.get<boolean>(cacheKey);
-    if (cached === false) return false;
+    if (cached !== null) return cached;
 
-    const rotasRows = await this.getRows(`'Rotas recusadas'!A:L`);
-    const visaoRows = await this.getRows(`'Visão Geral Atribuições'!J:J`);
+    const hasRoute = await this.prisma.assignmentOverview.findFirst({
+      where: { driverId: String(driverId) },
+      select: { id: true },
+    });
 
-    const hasRouteInRotas = rotasRows
-      .slice(1)
-      .some((row) => String(row[11] || '') === String(driverId));
-
-    const hasRouteInVisao = visaoRows
-      .slice(1)
-      .some((row) => String(row[0] || '') === String(driverId));
-
-    const hasRoute = hasRouteInRotas || hasRouteInVisao;
-
-    await this.redisService.set(cacheKey, hasRoute, this.cacheTtlSeconds);
-    return hasRoute;
+    const result = !!hasRoute;
+    await this.redisService.set(cacheKey, result, this.cacheTtlSeconds);
+    return result;
   }
 
   async getDriverVehicle(driverId: number): Promise<{

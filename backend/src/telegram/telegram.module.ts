@@ -5,11 +5,12 @@ import { RedisModule } from '../redis/redis.module';
 import { DataModule } from '../data/data.module';
 import { SyncModule } from '../sync/sync.module';
 import { SheetsModule } from '../sheets/sheets.module';
+import { PrismaModule } from '../prisma/prisma.module';
 
 
 @Module({
   controllers: [TelegramController],
   providers: [TelegramService],
-  imports: [RedisModule, DataModule, SyncModule, SheetsModule],
+  imports: [RedisModule, DataModule, SyncModule, SheetsModule, PrismaModule],
 })
 export class TelegramModule {}

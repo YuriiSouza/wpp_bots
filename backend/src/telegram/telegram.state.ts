@@ -11,6 +11,8 @@ export interface DriverSession {
   driverId?: string;
   driverName?: string;
   vehicleType?: string;
+  ds?: string;
+  priorityScore?: number;
   availableRoutes?: AvailableRoute[];
   inQueue?: boolean;
   queueGroup?: 'moto' | 'general';

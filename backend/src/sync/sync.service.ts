@@ -295,6 +295,7 @@ export class SyncService implements OnModuleInit {
       'routes:available:*',
       `${SYNC_PENDING_PREFIX}:*`,
       'telegram:blacklist:cache:driver:*',
+      'telegram:blocklist:cache:driver:*',
     ]);
   }
 

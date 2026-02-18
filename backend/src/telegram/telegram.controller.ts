@@ -32,8 +32,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   private readonly ROUTE_TIMEOUT_LOCK_KEY = 'telegram:route:timeout:lock';
   private readonly LOG_PREFIX = 'telegram:log';
   private readonly ROUTES_NOTE_KEY = 'telegram:routes:note';
-  private readonly BLACKLIST_CACHE_PREFIX = 'telegram:blacklist:cache:driver';
-  private readonly BLACKLIST_WAIT_SECONDS = 120;
+  private readonly BLOCKLIST_CACHE_PREFIX = 'telegram:blocklist:cache:driver';
+  private readonly BLOCKLIST_WAIT_SECONDS = 120;
 
   private timeoutWatcher?: NodeJS.Timeout;
 
@@ -130,15 +130,15 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return `telegram:queue:empty_since:${group}`;
   }
 
-  private async isChatBlacklisted(chatId: string): Promise<boolean> {
+  private async isChatBlocklisted(chatId: string): Promise<boolean> {
     const state = await this.getState(chatId);
     const driverId = state?.driverId;
     if (!driverId) return false;
-    const cacheKey = `${this.BLACKLIST_CACHE_PREFIX}:${driverId}`;
+    const cacheKey = `${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`;
     const cached = await this.redis.get<boolean>(cacheKey);
     if (cached !== null) return cached;
 
-    const row = await this.prisma.driverBlacklist.findUnique({
+    const row = await this.prisma.driverBlocklist.findUnique({
       where: { driverId },
       select: { status: true },
     });
@@ -213,13 +213,26 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     }
 
     const queueMeta = await Promise.all(
-      queue.map(async (chatId) => ({
-        chatId,
-        blacklisted: await this.isChatBlacklisted(chatId),
-      })),
+      queue.map(async (chatId, index) => {
+        const state = await this.getState(chatId);
+        return {
+          chatId,
+          index,
+          score: await this.resolveChatPriorityScore(chatId, state),
+          isFiorino: this.isFiorino(state?.vehicleType),
+          blocklisted: await this.isChatBlocklisted(chatId),
+        };
+      }),
     );
 
-    const regularNext = queueMeta.find((item) => !item.blacklisted);
+    const regularMeta = queueMeta
+      .filter((item) => !item.blocklisted)
+      .sort((a, b) => {
+        if (a.isFiorino !== b.isFiorino) return a.isFiorino ? -1 : 1;
+        if (a.score !== b.score) return b.score - a.score;
+        return a.index - b.index;
+      });
+    const regularNext = regularMeta[0];
     if (regularNext) {
       await client.del(emptySinceKey);
       await client.lrem(this.queueListKey(group), 1, regularNext.chatId);
@@ -227,21 +240,28 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       return regularNext.chatId;
     }
 
-    const firstBlacklisted = queueMeta[0];
+    const blocklistedMeta = queueMeta
+      .filter((item) => item.blocklisted)
+      .sort((a, b) => {
+        if (a.isFiorino !== b.isFiorino) return a.isFiorino ? -1 : 1;
+        if (a.score !== b.score) return b.score - a.score;
+        return a.index - b.index;
+      });
+    const firstBlocklisted = blocklistedMeta[0];
     const emptySinceRaw = await client.get(emptySinceKey);
     const now = Date.now();
     if (!emptySinceRaw) {
-      await client.set(emptySinceKey, String(now), 'EX', this.BLACKLIST_WAIT_SECONDS * 6);
+      await client.set(emptySinceKey, String(now), 'EX', this.BLOCKLIST_WAIT_SECONDS * 6);
       return null;
     }
 
     const elapsed = now - Number(emptySinceRaw);
-    if (Number.isNaN(elapsed) || elapsed < this.BLACKLIST_WAIT_SECONDS * 1000) {
+    if (Number.isNaN(elapsed) || elapsed < this.BLOCKLIST_WAIT_SECONDS * 1000) {
       return null;
     }
 
     await client.del(emptySinceKey);
-    const next = firstBlacklisted.chatId;
+    const next = firstBlocklisted.chatId;
     await client.lrem(this.queueListKey(group), 1, next);
     await client.del(this.queueMarker(next));
     return next;
@@ -465,13 +485,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       await client.expire(marker, this.QUEUE_TTL);
 
       const queue = await client.lrange(this.queueListKey(group), 0, -1);
-      const alreadyIndex = queue.indexOf(chatId);
       const isFiorino = this.isFiorino(vehicleType);
-      if (alreadyIndex >= 0 && !isFiorino) {
-        await client.set(marker, '1', 'EX', this.QUEUE_TTL);
-        return alreadyIndex + 1;
-      }
-
       const filtered = queue.filter((id) => id !== chatId);
       const rankedQueue = await Promise.all(
         filtered.map(async (id, index) => {
@@ -506,8 +520,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
         await client.rpush(this.queueListKey(group), ...nextQueue);
       await client.set(marker, '1', 'EX', this.QUEUE_TTL);
 
-      const isBlacklisted = await this.isChatBlacklisted(chatId);
-      if (!isBlacklisted) {
+      const isBlocklisted = await this.isChatBlocklisted(chatId);
+      if (!isBlocklisted) {
         await client.del(this.queueEmptySinceKey(group));
       }
 

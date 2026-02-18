@@ -36,18 +36,20 @@ export class AppController {
     return this.appService.updateRoutesNote(text);
   }
 
+  @Post('acess/analist/blocklist/add')
   @Post('acess/analist/blacklist/add')
-  async addBlacklistDriver(
+  async addBlocklistDriver(
     @Body('driverId') driverId: string,
   ): Promise<{ ok: boolean; message: string }> {
-    return this.appService.addBlacklistDriver(driverId);
+    return this.appService.addBlocklistDriver(driverId);
   }
 
+  @Post('acess/analist/blocklist/remove')
   @Post('acess/analist/blacklist/remove')
-  async removeBlacklistDriver(
+  async removeBlocklistDriver(
     @Body('driverId') driverId: string,
   ): Promise<{ ok: boolean; message: string }> {
-    return this.appService.removeBlacklistDriver(driverId);
+    return this.appService.removeBlocklistDriver(driverId);
   }
 
   @Post('acess/duvidas/create')

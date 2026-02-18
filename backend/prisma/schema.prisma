@@ -11,7 +11,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  shadowDatabaseUrl = env("DIRECT_URL")
+  shadowDatabaseUrl = env("SHADOW_DB")
   directUrl = env("DIRECT_URL")
 }
 
@@ -85,9 +85,9 @@ model AssignmentOverview {
   @@index([driverId])
 }
 
-model DriverBlacklist {
+model DriverBlocklist {
   driverId           String          @id
-  status             BlacklistStatus @default(ACTIVE)
+  status             BlocklistStatus @default(ACTIVE)
   timesListed        Int             @default(1)
   lastActivatedAt    DateTime?
   lastInactivatedAt  DateTime?
@@ -116,7 +116,7 @@ enum RouteStatus {
   BLOQUEADA
 }
 
-enum BlacklistStatus {
+enum BlocklistStatus {
   ACTIVE
   INACTIVE
 }

@@ -4,7 +4,7 @@ import { PrismaService } from './prisma/prisma.service';
 import { normalizeVehicleType } from './utils/normalize-vehicle';
 import { createConnection } from 'net';
 import { SyncService } from './sync/sync.service';
-import { BlacklistStatus } from '@prisma/client';
+import { BlocklistStatus } from '@prisma/client';
 
 @Injectable()
 export class AppService {
@@ -14,7 +14,7 @@ export class AppService {
   private readonly QUEUE_ACTIVE_KEY_MOTO = 'telegram:queue:active:moto';
   private readonly LOG_PREFIX = 'telegram:log';
   private readonly ROUTES_NOTE_KEY = 'telegram:routes:note';
-  private readonly BLACKLIST_CACHE_PREFIX = 'telegram:blacklist:cache:driver';
+  private readonly BLOCKLIST_CACHE_PREFIX = 'telegram:blocklist:cache:driver';
 
   constructor(
     private readonly redisService: RedisService,
@@ -110,72 +110,72 @@ export class AppService {
       .replace(/\D/g, '');
   }
 
-  async addBlacklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
+  async addBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
     const driverId = this.normalizeDriverId(driverIdRaw);
     if (!driverId) return { ok: false, message: 'Informe um Driver ID valido.' };
 
-    const existing = await this.prisma.driverBlacklist.findUnique({
+    const existing = await this.prisma.driverBlocklist.findUnique({
       where: { driverId },
       select: { status: true },
     });
 
     if (!existing) {
-      await this.prisma.driverBlacklist.create({
+      await this.prisma.driverBlocklist.create({
         data: {
           driverId,
-          status: BlacklistStatus.ACTIVE,
+          status: BlocklistStatus.ACTIVE,
           timesListed: 1,
           lastActivatedAt: new Date(),
         },
       });
-      await this.redisService.set(`${this.BLACKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
-      return { ok: true, message: `Motorista ${driverId} adicionado na lista negra (ativo).` };
+      await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
+      return { ok: true, message: `Motorista ${driverId} adicionado na lista de bloqueio (ativo).` };
     }
 
-    if (existing.status === BlacklistStatus.ACTIVE) {
-      await this.redisService.set(`${this.BLACKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
-      return { ok: true, message: `Motorista ${driverId} ja esta ativo na lista negra.` };
+    if (existing.status === BlocklistStatus.ACTIVE) {
+      await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
+      return { ok: true, message: `Motorista ${driverId} ja esta ativo na lista de bloqueio.` };
     }
 
-    await this.prisma.driverBlacklist.update({
+    await this.prisma.driverBlocklist.update({
       where: { driverId },
       data: {
-        status: BlacklistStatus.ACTIVE,
+        status: BlocklistStatus.ACTIVE,
         timesListed: { increment: 1 },
         lastActivatedAt: new Date(),
       },
     });
-    await this.redisService.set(`${this.BLACKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
-    return { ok: true, message: `Motorista ${driverId} reativado na lista negra.` };
+    await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
+    return { ok: true, message: `Motorista ${driverId} reativado na lista de bloqueio.` };
   }
 
-  async removeBlacklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
+  async removeBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
     const driverId = this.normalizeDriverId(driverIdRaw);
     if (!driverId) return { ok: false, message: 'Informe um Driver ID valido.' };
 
-    const existing = await this.prisma.driverBlacklist.findUnique({
+    const existing = await this.prisma.driverBlocklist.findUnique({
       where: { driverId },
       select: { status: true },
     });
     if (!existing) {
-      await this.redisService.set(`${this.BLACKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
-      return { ok: false, message: `Motorista ${driverId} nao esta cadastrado na lista negra.` };
+      await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
+      return { ok: false, message: `Motorista ${driverId} nao esta cadastrado na lista de bloqueio.` };
     }
 
-    if (existing.status === BlacklistStatus.INACTIVE) {
-      await this.redisService.set(`${this.BLACKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
-      return { ok: true, message: `Motorista ${driverId} ja esta inativo na lista negra.` };
+    if (existing.status === BlocklistStatus.INACTIVE) {
+      await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
+      return { ok: true, message: `Motorista ${driverId} ja esta inativo na lista de bloqueio.` };
     }
 
-    await this.prisma.driverBlacklist.update({
+    await this.prisma.driverBlocklist.update({
       where: { driverId },
       data: {
-        status: BlacklistStatus.INACTIVE,
+        status: BlocklistStatus.INACTIVE,
         lastInactivatedAt: new Date(),
       },
     });
-    await this.redisService.set(`${this.BLACKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
-    return { ok: true, message: `Motorista ${driverId} marcado como inativo na lista negra.` };
+    await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
+    return { ok: true, message: `Motorista ${driverId} marcado como inativo na lista de bloqueio.` };
   }
 
   async createFaqItem(
@@ -546,13 +546,13 @@ export class AppService {
     ).length;
     const routesNote = (await this.redisService.get<string>(this.ROUTES_NOTE_KEY)) || '';
     const routesNoteEscaped = this.escapeHtml(routesNote);
-    const blacklistEntries = await this.prisma.driverBlacklist.findMany({
+    const blocklistEntries = await this.prisma.driverBlocklist.findMany({
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
     });
-    const blacklistIds = blacklistEntries.map((row) => row.driverId);
-    const blacklistDrivers = blacklistIds.length
+    const blocklistIds = blocklistEntries.map((row) => row.driverId);
+    const blocklistDrivers = blocklistIds.length
       ? await this.prisma.driver.findMany({
-          where: { id: { in: blacklistIds } },
+          where: { id: { in: blocklistIds } },
           select: {
             id: true,
             name: true,
@@ -564,7 +564,7 @@ export class AppService {
           },
         })
       : [];
-    const blacklistMap = new Map(blacklistDrivers.map((d) => [d.id, d]));
+    const blocklistMap = new Map(blocklistDrivers.map((d) => [d.id, d]));
 
     const recentLogs = logs.slice(-20).join('\n');
 
@@ -678,23 +678,23 @@ export class AppService {
     </div>
 
     <div class="card">
-      <div class="label">Lista negra (permanente, prioridade zero)</div>
+      <div class="label">Lista de bloqueio (permanente, prioridade zero)</div>
       <div class="actions" style="margin-top:8px;">
-        <input id="blacklist-driver-id" placeholder="Driver ID" style="padding:8px; border:1px solid #d2cec8; border-radius:8px; font-family:inherit;" />
-        <button onclick="addBlacklistDriver()">Adicionar</button>
+        <input id="blocklist-driver-id" placeholder="Driver ID" style="padding:8px; border:1px solid #d2cec8; border-radius:8px; font-family:inherit;" />
+        <button onclick="addBlocklistDriver()">Adicionar</button>
       </div>
-      <div id="blacklist-status" style="margin-top:8px; color:#666; font-size:14px;">Pronto.</div>
+      <div id="blocklist-status" style="margin-top:8px; color:#666; font-size:14px;">Pronto.</div>
       <table style="margin-top:10px;">
         <thead>
           <tr><th>Driver ID</th><th>Nome</th><th>Veiculo</th><th>DS</th><th>No-show</th><th>Recusa %</th><th>Score</th><th>Status</th><th>Vezes</th><th>Ação</th></tr>
         </thead>
         <tbody>
           ${
-            blacklistEntries.length
-              ? blacklistEntries
+            blocklistEntries.length
+              ? blocklistEntries
                   .map((entry) => {
                     const id = entry.driverId;
-                    const info = blacklistMap.get(id);
+                    const info = blocklistMap.get(id);
                     const name = this.escapeHtml(info?.name || '-');
                     const vehicle = this.escapeHtml(info?.vehicleType || '-');
                     const ds = this.escapeHtml(info?.ds || '-');
@@ -710,12 +710,12 @@ export class AppService {
                     const status = entry.status === 'ACTIVE' ? 'Ativo' : 'Inativo';
                     const actionButton =
                       entry.status === 'ACTIVE'
-                        ? `<button onclick="removeBlacklistDriver('${id}')">Inativar</button>`
-                        : `<button onclick="addBlacklistDriverById('${id}')">Ativar</button>`;
+                        ? `<button onclick="removeBlocklistDriver('${id}')">Inativar</button>`
+                        : `<button onclick="addBlocklistDriverById('${id}')">Ativar</button>`;
                     return `<tr><td>${id}</td><td>${name}</td><td>${vehicle}</td><td>${ds}</td><td>${noShow}</td><td>${declineRate}</td><td>${score}</td><td>${status}</td><td>${entry.timesListed}</td><td>${actionButton}</td></tr>`;
                   })
                   .join('')
-              : '<tr><td colspan="10">Sem motoristas na lista negra</td></tr>'
+              : '<tr><td colspan="10">Sem motoristas na lista de bloqueio</td></tr>'
           }
         </tbody>
       </table>
@@ -900,13 +900,13 @@ export class AppService {
       }
     }
 
-    async function addBlacklistDriver() {
-      const status = document.getElementById('blacklist-status');
-      const input = document.getElementById('blacklist-driver-id');
+    async function addBlocklistDriver() {
+      const status = document.getElementById('blocklist-status');
+      const input = document.getElementById('blocklist-driver-id');
       const driverId = input.value;
       status.textContent = 'Salvando...';
       try {
-        const res = await fetch('/acess/analist/blacklist/add', {
+        const res = await fetch('/acess/analist/blocklist/add', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ driverId }),
@@ -915,15 +915,15 @@ export class AppService {
         status.textContent = data.message || 'Atualizado.';
         if (data.ok) window.location.reload();
       } catch (error) {
-        status.textContent = 'Falha ao salvar lista negra.';
+        status.textContent = 'Falha ao salvar lista de bloqueio.';
       }
     }
 
-    async function addBlacklistDriverById(driverId) {
-      const status = document.getElementById('blacklist-status');
+    async function addBlocklistDriverById(driverId) {
+      const status = document.getElementById('blocklist-status');
       status.textContent = 'Atualizando...';
       try {
-        const res = await fetch('/acess/analist/blacklist/add', {
+        const res = await fetch('/acess/analist/blocklist/add', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ driverId }),
@@ -932,15 +932,15 @@ export class AppService {
         status.textContent = data.message || 'Atualizado.';
         if (data.ok) window.location.reload();
       } catch (error) {
-        status.textContent = 'Falha ao atualizar lista negra.';
+        status.textContent = 'Falha ao atualizar lista de bloqueio.';
       }
     }
 
-    async function removeBlacklistDriver(driverId) {
-      const status = document.getElementById('blacklist-status');
+    async function removeBlocklistDriver(driverId) {
+      const status = document.getElementById('blocklist-status');
       status.textContent = 'Removendo...';
       try {
-        const res = await fetch('/acess/analist/blacklist/remove', {
+        const res = await fetch('/acess/analist/blocklist/remove', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ driverId }),
@@ -949,7 +949,7 @@ export class AppService {
         status.textContent = data.message || 'Atualizado.';
         if (data.ok) window.location.reload();
       } catch (error) {
-        status.textContent = 'Falha ao remover da lista negra.';
+        status.textContent = 'Falha ao remover de lista de bloqueio.';
       }
     }
 

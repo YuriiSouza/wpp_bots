@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Header, Post } from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { AppService } from './app.service';
 
 @Controller()
@@ -8,6 +9,192 @@ export class AppController {
   @Get()
   getHello(): string {
     return this.appService.getHello();
+  }
+
+  @Get('api/dashboard')
+  async getDashboardData() {
+    return this.appService.getDashboardData();
+  }
+
+  @Get('api/drivers')
+  async getDrivers(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('vehicleType') vehicleType?: string,
+    @Query('ds') ds?: string,
+    @Query('sortBy') sortBy?: 'name' | 'priorityScore' | 'noShowCount' | 'declineRate',
+    @Query('sortDir') sortDir?: 'asc' | 'desc',
+  ) {
+    return this.appService.getDrivers({
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 20,
+      search,
+      vehicleType: vehicleType && vehicleType !== 'all' ? vehicleType : undefined,
+      ds: ds && ds !== 'all' ? ds : undefined,
+      sortBy,
+      sortDir,
+    });
+  }
+
+  @Patch('api/drivers/:driverId/priority-score')
+  async updateDriverPriorityScore(
+    @Param('driverId') driverId: string,
+    @Body('priorityScore') priorityScore: number,
+  ) {
+    return this.appService.updateDriverPriorityScore(driverId, priorityScore);
+  }
+
+  @Post('api/drivers/:driverId/reset-no-show')
+  async resetDriverNoShow(@Param('driverId') driverId: string) {
+    return this.appService.resetDriverNoShow(driverId);
+  }
+
+  @Get('api/routes')
+  async getRoutes() {
+    return this.appService.getRoutes();
+  }
+
+  @Get('api/route-planning')
+  async getRoutePlanning(
+    @Query('date') date?: string,
+    @Query('shift') shift?: 'AM' | 'PM' | 'PM2',
+    @Query('atId') atId?: string,
+    @Query('focus') focus?: 'DS' | 'VOLUME',
+  ) {
+    return this.appService.getRoutePlanning(date, shift, atId, focus);
+  }
+
+  @Post('api/route-planning/run')
+  async runRoutePlanning(
+    @Body('date') date?: string,
+    @Body('shift') shift?: 'AM' | 'PM' | 'PM2',
+    @Body('focus') focus?: 'DS' | 'VOLUME',
+  ) {
+    return this.appService.runRoutePlanning(date, shift, focus);
+  }
+
+  @Get('api/route-planning/map')
+  async getRoutePlanningMap(
+    @Query('atId') atId?: string,
+    @Query('cluster') cluster?: string,
+    @Query('br') br?: string,
+  ) {
+    return this.appService.getRoutePlanningMap(atId, cluster, br);
+  }
+
+  @Get('api/routes/export/bot-csv')
+  async exportRoutesAssignedByBotCsv(
+    @Query('date') date: string | undefined,
+    @Res() response: Response,
+  ) {
+    const csv = await this.appService.getAssignedRoutesCsv(date);
+    const suffix = date ? `-${date}` : '';
+
+    response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="rotas-atribuidas${suffix}.csv"`,
+    );
+
+    response.send(csv);
+  }
+
+  @Post('api/routes/:routeId/assign')
+  async assignRoute(
+    @Param('routeId') routeId: string,
+    @Body('driverId') driverId: string,
+  ) {
+    return this.appService.assignRoute(routeId, driverId);
+  }
+
+  @Post('api/routes/:routeId/unassign')
+  async unassignRoute(
+    @Param('routeId') routeId: string,
+    @Body('markNoShow') markNoShow?: boolean,
+  ) {
+    return this.appService.unassignRoute(routeId, markNoShow);
+  }
+
+  @Post('api/routes/:routeId/block')
+  async blockRoute(@Param('routeId') routeId: string) {
+    return this.appService.blockRoute(routeId);
+  }
+
+  @Post('api/routes/:routeId/no-show')
+  async markRouteNoShow(
+    @Param('routeId') routeId: string,
+    @Body('makeAvailable') makeAvailable?: boolean,
+  ) {
+    return this.appService.markRouteNoShow(routeId, makeAvailable);
+  }
+
+  @Get('api/blocklist')
+  async getBlocklist() {
+    return this.appService.getBlocklist();
+  }
+
+  @Get('api/faq')
+  async getFaqItems() {
+    return this.appService.getFaqItems();
+  }
+
+  @Post('auth/login')
+  async login(@Body('email') email: string, @Body('password') password: string) {
+    return this.appService.login(email, password);
+  }
+
+  @Post('auth/register')
+  async register(
+    @Body('name') name: string,
+    @Body('email') email: string,
+    @Body('password') password: string,
+  ) {
+    return this.appService.register(name, email, password);
+  }
+
+  @Get('api/overview')
+  async getOverviewData() {
+    return this.appService.getOverviewData();
+  }
+
+  @Get('api/sync/logs')
+  async getSyncLogs() {
+    return this.appService.getSyncLogs();
+  }
+
+  @Post('api/sync/run')
+  async triggerSync(
+    @Body('action') action: 'drivers' | 'routes' | 'all',
+    @Body('date') date?: string,
+    @Body('shift') shift?: 'AM' | 'PM' | 'PM2',
+  ) {
+    return this.appService.triggerSync(action || 'all', date, shift);
+  }
+
+  @Post('api/sync/reset-queue')
+  async resetQueue() {
+    return this.appService.resetQueue();
+  }
+
+  @Get('api/audit-logs')
+  async getAuditLogs() {
+    return this.appService.getAuditLogs();
+  }
+
+  @Get('api/bot-health')
+  async getBotHealth() {
+    return this.appService.getBotHealthData();
+  }
+
+  @Get('api/settings')
+  async getSettings() {
+    return this.appService.getSystemSettings();
+  }
+
+  @Put('api/settings')
+  async updateSettings(@Body() payload: Record<string, unknown>) {
+    return this.appService.updateSystemSettings(payload);
   }
 
   @Get('acess/analist')

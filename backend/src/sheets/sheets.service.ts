@@ -19,6 +19,7 @@ export class SheetsService {
   private sheets;
   private spreadsheetId = process.env.SHEET_ID;
   private readonly cacheTtlSeconds = 300;
+  private readonly assignmentSheetName = 'Visão Geral Atribuições';
 
   constructor(
     private readonly redisService: RedisService,
@@ -71,6 +72,41 @@ export class SheetsService {
     });
   }
 
+  async clearValues(range: string) {
+    await this.sheets.spreadsheets.values.clear({
+      spreadsheetId: this.spreadsheetId,
+      range,
+    });
+  }
+
+  async ensureSheetExists(sheetName: string) {
+    const spreadsheet = await this.sheets.spreadsheets.get({
+      spreadsheetId: this.spreadsheetId,
+      fields: 'sheets.properties.title',
+    });
+
+    const exists = (spreadsheet.data.sheets || []).some(
+      (sheet: any) => String(sheet?.properties?.title || '') === sheetName,
+    );
+
+    if (exists) return;
+
+    await this.sheets.spreadsheets.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: sheetName,
+              },
+            },
+          },
+        ],
+      },
+    });
+  }
+
   private columnIndexToLetter(index: number) {
     let result = '';
     let n = index + 1;
@@ -80,6 +116,51 @@ export class SheetsService {
       n = Math.floor((n - 1) / 26);
     }
     return result;
+  }
+
+  private sanitizeSheetName(name: string) {
+    return `'${name.replace(/'/g, "''")}'`;
+  }
+
+  private assignmentRange(range: string) {
+    return `${this.sanitizeSheetName(this.assignmentSheetName)}!${range}`;
+  }
+
+  async getAssignmentOverviewRows(): Promise<string[][]> {
+    return this.getRows(this.assignmentRange('A:R'));
+  }
+
+  async updateAssignmentRequestByRow(rowNumber: number, driverId: string) {
+    const range = this.assignmentRange(`R${rowNumber}`);
+    await this.sheets.spreadsheets.values.update({
+      spreadsheetId: this.spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[driverId]],
+      },
+    });
+    return true;
+  }
+
+  async updateAssignmentRequest(routeId: string, driverId: string) {
+    const route = await (this.prisma as any).route.findUnique({
+      where: { id: routeId },
+      select: { sheetRowNumber: true },
+    });
+    if (!route?.sheetRowNumber) return false;
+    await this.updateAssignmentRequestByRow(route.sheetRowNumber, driverId);
+    return true;
+  }
+
+  async clearAssignmentRequest(routeId: string) {
+    const route = await (this.prisma as any).route.findUnique({
+      where: { id: routeId },
+      select: { sheetRowNumber: true },
+    });
+    if (!route?.sheetRowNumber) return false;
+    await this.updateAssignmentRequestByRow(route.sheetRowNumber, '0');
+    return true;
   }
 
   async updateRouteDriverId(atId: string, driverId: string) {

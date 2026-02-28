@@ -2,10 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeVehicleType } from '../utils/normalize-vehicle';
 import { RouteStatus } from '@prisma/client';
+import { SheetsService } from '../sheets/sheets.service';
+
+const ROUTE_ASSIGNMENT_SOURCE = {
+  TELEGRAM_BOT: 'TELEGRAM_BOT' as const,
+};
 
 @Injectable()
 export class RouteService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sheets: SheetsService,
+  ) {}
 
   async driverHasRoute(driverId: string): Promise<boolean> {
     const existing = await this.prisma.route.findFirst({
@@ -29,13 +37,14 @@ export class RouteService {
           }
         : { status: RouteStatus.DISPONIVEL };
 
-    const routes = await this.prisma.route.findMany({
+    const routes = await (this.prisma as any).route.findMany({
       where,
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ noShow: 'desc' }, { createdAt: 'asc' }],
     });
 
     return routes.map((route) => ({
-      atId: route.id,
+      routeId: route.id,
+      atId: route.atId || route.id,
       gaiola: route.gaiola ?? undefined,
       bairro: route.bairro ?? undefined,
       cidade: route.cidade ?? undefined,
@@ -44,8 +53,9 @@ export class RouteService {
   }
 
   async assignRoute(routeId: string, driverId: string): Promise<boolean> {
-    return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.route.findFirst({
+    const assigned = await this.prisma.$transaction(async (tx) => {
+      const prismaTx = tx as any;
+      const existing = await prismaTx.route.findFirst({
         where: {
           driverId,
           status: 'ATRIBUIDA',
@@ -55,13 +65,15 @@ export class RouteService {
 
       if (existing) return false;
 
-      const updated = await tx.route.updateMany({
+      const updated = await prismaTx.route.updateMany({
         where: {
           id: routeId,
           status: 'DISPONIVEL',
           driverId: null,
         },
         data: {
+          requestedDriverId: driverId,
+          assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
           driverId,
           status: 'ATRIBUIDA',
           assignedAt: new Date(),
@@ -70,5 +82,9 @@ export class RouteService {
 
       return updated.count > 0;
     });
+
+    if (!assigned) return false;
+    await this.sheets.updateAssignmentRequest(routeId, driverId);
+    return true;
   }
 }

@@ -9,6 +9,7 @@ import { SheetsModule } from './sheets/sheets.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { SyncModule } from './sync/sync.module';
 import { DataModule } from './data/data.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -22,7 +23,8 @@ import { DataModule } from './data/data.module';
     TelegramModule,
     QueueModule,
     RedisModule,
-    SheetsModule
+    SheetsModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [AppService],

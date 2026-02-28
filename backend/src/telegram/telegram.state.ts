@@ -4,6 +4,7 @@ export enum DriverState {
   MENU = 'MENU',
   HELP_MENU = 'HELP_MENU',
   CHOOSING_ROUTE = 'CHOOSING_ROUTE',
+  SUPPORT_CHAT = 'SUPPORT_CHAT',
 }
 
 export interface DriverSession {
@@ -16,9 +17,11 @@ export interface DriverSession {
   availableRoutes?: AvailableRoute[];
   inQueue?: boolean;
   queueGroup?: 'moto' | 'general';
+  supportTicketId?: string;
 }
 
 export interface AvailableRoute {
+  routeId: string;
   atId: string;
   gaiola?: string;
   bairro?: string;

@@ -566,7 +566,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       `Menu principal:
 encerrar - Encerrar atendimento
 1 - Ver rotas disponíveis
-2 - Dúvidas frequentes`,
+2 - Dúvidas frequentes
+3 - Falar com analista`,
     );
   }
 
@@ -615,6 +616,150 @@ Peça ao analista para cadastrar em /acess/duvidas.
 
     lines.push('voltar - Voltar');
     return { menu: `${lines.join('\n')}\n`, answers };
+  }
+
+  private buildSupportProtocol(chatId: string) {
+    const suffix = String(Date.now()).slice(-8);
+    const chatSuffix = String(chatId).slice(-4);
+    return `ATD-${suffix}-${chatSuffix}`;
+  }
+
+  private async ensureSupportHub(driverId: string) {
+    const prisma = this.prisma as any;
+    await prisma.hub.upsert({
+      where: { id: 'hub-sp' },
+      create: {
+        id: 'hub-sp',
+        name: 'Hub Sao Paulo',
+        timezone: 'America/Sao_Paulo',
+      },
+      update: {},
+    });
+
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId },
+      select: { id: true, name: true, hubId: true },
+    });
+    if (!driver) return null;
+
+    if (!driver.hubId) {
+      await prisma.driver.update({
+        where: { id: driver.id },
+        data: { hubId: 'hub-sp' },
+      });
+    }
+
+    return {
+      id: driver.id,
+      name: driver.name || driver.id,
+      hubId: driver.hubId || 'hub-sp',
+    };
+  }
+
+  private async createOrResumeSupportTicket(chatId: string, state: DriverSession) {
+    if (!state.driverId) return null;
+
+    const prisma = this.prisma as any;
+    const driver = await this.ensureSupportHub(state.driverId);
+    if (!driver) return null;
+
+    const existing = await prisma.supportTicket.findFirst({
+      where: {
+        driverId: driver.id,
+        status: { in: ['WAITING_ANALYST', 'IN_PROGRESS', 'WAITING_DRIVER'] },
+      },
+      orderBy: { waitingSince: 'desc' },
+    });
+
+    if (existing) {
+      return { ticket: existing, created: false };
+    }
+
+    const queuePosition =
+      (await prisma.supportTicket.count({
+        where: {
+          hubId: driver.hubId,
+          status: 'WAITING_ANALYST',
+        },
+      })) + 1;
+
+    const ticket = await prisma.supportTicket.create({
+      data: {
+        protocol: this.buildSupportProtocol(chatId),
+        driverId: driver.id,
+        hubId: driver.hubId,
+        status: 'WAITING_ANALYST',
+        queuePosition,
+        waitingSince: new Date(),
+      },
+    });
+
+    await prisma.supportMessage.create({
+      data: {
+        ticketId: ticket.id,
+        authorType: 'DRIVER',
+        authorId: null,
+        authorName: state.driverName || driver.name,
+        body: 'Motorista solicitou falar com analista pelo bot do Telegram.',
+        telegramText: 'Motorista solicitou falar com analista pelo bot do Telegram.',
+      },
+    });
+
+    return { ticket, created: true };
+  }
+
+  private async appendDriverSupportMessage(
+    ticketId: string,
+    text: string,
+    state: DriverSession,
+  ) {
+    const prisma = this.prisma as any;
+    const ticket = await prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, status: true },
+    });
+
+    if (!ticket || ticket.status === 'CLOSED') {
+      return null;
+    }
+
+    const created = await prisma.supportMessage.create({
+      data: {
+        ticketId: ticket.id,
+        authorType: 'DRIVER',
+        authorId: null,
+        authorName: state.driverName || state.driverId || 'Motorista',
+        body: text,
+        telegramText: text,
+      },
+    });
+
+    if (ticket.status === 'WAITING_DRIVER') {
+      await prisma.supportTicket.update({
+        where: { id: ticket.id },
+        data: {
+          status: 'IN_PROGRESS',
+        },
+      });
+    }
+
+    return created;
+  }
+
+  private async closeSupportTicket(ticketId?: string) {
+    if (!ticketId) return;
+
+    const prisma = this.prisma as any;
+    await prisma.supportTicket.updateMany({
+      where: {
+        id: ticketId,
+        status: { in: ['WAITING_ANALYST', 'IN_PROGRESS', 'WAITING_DRIVER'] },
+      },
+      data: {
+        status: 'CLOSED',
+        closedAt: new Date(),
+      },
+    });
   }
 
   /* =======================
@@ -919,6 +1064,34 @@ Para encerrar, digite: encerrar
         return { ok: true };
       }
 
+      if (text === '3' || command === 'falar' || command === 'analista') {
+        const support = await this.createOrResumeSupportTicket(chatId, state);
+        if (!support) {
+          await this.telegram.sendMessage(
+            Number(chatId),
+            'Nao foi possivel abrir atendimento com analista agora.',
+          );
+          await this.sendMainMenu(Number(chatId));
+          return { ok: true };
+        }
+
+        await this.setState(chatId, {
+          ...state,
+          state: DriverState.SUPPORT_CHAT,
+          supportTicketId: support.ticket.id,
+        });
+        await this.logEvent('solicitou_analista', state, {
+          protocolo: support.ticket.protocol,
+        });
+        await this.telegram.sendMessage(
+          Number(chatId),
+          support.created
+            ? `Seu atendimento foi aberto com sucesso.\nProtocolo: ${support.ticket.protocol}\n\nEscreva sua mensagem para o analista.\nPara encerrar, digite: encerrar`
+            : `Voce ja possui um atendimento em aberto.\nProtocolo: ${support.ticket.protocol}\n\nEscreva sua mensagem para continuar a conversa.\nPara encerrar, digite: encerrar`,
+        );
+        return { ok: true };
+      }
+
       if (text !== '1') {
         await this.telegram.sendMessage(Number(chatId), 'Opção inválida.');
         await this.sendMainMenu(Number(chatId));
@@ -996,7 +1169,7 @@ Para encerrar, digite: encerrar
         return { ok: true };
       }
 
-      const ok = await this.routes.assignRoute(route.atId, state.driverId!);
+      const ok = await this.routes.assignRoute(route.routeId, state.driverId!);
 
       if (!ok) {
         await this.telegram.sendMessage(Number(chatId), 'Rota indisponível.');
@@ -1018,7 +1191,7 @@ Como pegar a rota:
       await this.logEvent('rota_solicitada', state, { rota: route.atId });
 
       try {
-        await this.sheets.updateRouteDriverId(route.atId, state.driverId!);
+        await this.sheets.updateAssignmentRequest(route.routeId, state.driverId!);
       } catch (error) {
         await this.logEvent('sheet_update_failed', state, {
           rota: route.atId,
@@ -1031,6 +1204,62 @@ Como pegar a rota:
       await this.telegram.sendMessage(
         Number(chatId),
         'Atendimento encerrado automaticamente após a solicitação da rota.',
+      );
+      return { ok: true };
+    }
+
+    /* ===== ATENDIMENTO HUMANO ===== */
+    if (state.state === DriverState.SUPPORT_CHAT) {
+      if (command === 'encerrar') {
+        await this.closeSupportTicket(state.supportTicketId);
+        await this.setState(chatId, {
+          ...state,
+          state: DriverState.MENU,
+          supportTicketId: undefined,
+        });
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Atendimento com analista encerrado.',
+        );
+        await this.sendMainMenu(Number(chatId));
+        return { ok: true };
+      }
+
+      let ticketId = state.supportTicketId;
+      if (!ticketId) {
+        const support = await this.createOrResumeSupportTicket(chatId, state);
+        ticketId = support?.ticket.id;
+      }
+
+      if (!ticketId) {
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Nao foi possivel registrar sua mensagem no atendimento.',
+        );
+        return { ok: true };
+      }
+
+      const created = await this.appendDriverSupportMessage(ticketId, text, state);
+      if (!created) {
+        const support = await this.createOrResumeSupportTicket(chatId, state);
+        if (!support) {
+          await this.telegram.sendMessage(
+            Number(chatId),
+            'Nao foi possivel registrar sua mensagem no atendimento.',
+          );
+          return { ok: true };
+        }
+
+        await this.setState(chatId, {
+          ...state,
+          supportTicketId: support.ticket.id,
+        });
+        await this.appendDriverSupportMessage(support.ticket.id, text, state);
+      }
+
+      await this.telegram.sendMessage(
+        Number(chatId),
+        'Mensagem enviada para o analista. Aguarde o retorno por aqui.',
       );
       return { ok: true };
     }

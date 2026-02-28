@@ -12,5 +12,6 @@ import { PrismaModule } from '../prisma/prisma.module';
   controllers: [TelegramController],
   providers: [TelegramService],
   imports: [RedisModule, DataModule, SyncModule, SheetsModule, PrismaModule],
+  exports: [TelegramService],
 })
 export class TelegramModule {}

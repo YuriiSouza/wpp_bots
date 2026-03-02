@@ -196,17 +196,14 @@ export class SyncService implements OnModuleInit {
   }
 
   private async getRowsFromAnyRange(ranges: string[]): Promise<string[][]> {
-    let lastError: Error | null = null;
     for (const range of ranges) {
       try {
         const rows = await this.sheets.getRows(range);
         if (rows.length) return rows;
       } catch (error) {
-        lastError = error as Error;
+        // Ignore missing/invalid sheet names and try the next candidate.
       }
     }
-
-    if (lastError) throw lastError;
     return [];
   }
 

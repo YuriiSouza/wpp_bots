@@ -39,6 +39,7 @@ const mainNav = [
   { title: "Motoristas", href: "/dashboard/drivers", icon: Users },
   { title: "Rotas", href: "/dashboard/routes", icon: MapPin },
   { title: "Planejamento", href: "/dashboard/route-planning", icon: Map },
+  { title: "Realocacao de volumoso", href: "/dashboard/route-consult", icon: MapPin },
   { title: "Overview", href: "/dashboard/overview", icon: Table2 },
 ]
 

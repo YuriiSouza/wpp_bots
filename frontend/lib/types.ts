@@ -69,6 +69,7 @@ export interface AssignmentOverview {
 
 export interface DriverBlocklist {
   driverId: string
+  driverName?: string | null
   status: BlocklistStatus
   timesListed: number
   lastActivatedAt: string | null
@@ -117,6 +118,17 @@ export interface User {
   hubName?: string | null
 }
 
+export interface ManagedUser extends User {
+  isActive: boolean
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface HubOption {
+  id: string
+  name: string
+}
+
 export interface AuthState {
   user: User | null
   token: string | null
@@ -145,6 +157,7 @@ export interface PaginatedResponse<T> {
 
 export interface PlanningDriverOption {
   id: string
+  name: string
   vehicleType: string
   available: boolean
   ds: number
@@ -156,12 +169,22 @@ export interface RoutePlanningItem extends Route {
   hasTelegramRequest: boolean
   hasManualRequest: boolean
   suggestedDriverId: string | null
+  suggestedDriverName: string | null
   suggestedPhase: "FASE A" | "FASE B" | null
   suggestedObservation: string | null
   suggestedDriverVehicle: string | null
   suggestedDriverDs: number | null
   clusterRoute: string | null
   clusterDriver: string | null
+}
+
+export interface RoutePlanningPreference {
+  cluster: string
+  clusterName: string | null
+  driverId: string
+  driverName: string | null
+  vehicleType: string | null
+  available: boolean
 }
 
 export interface RoutePlanningPayload {
@@ -177,6 +200,7 @@ export interface RoutePlanningPayload {
     suggestions: number
   }
   drivers: PlanningDriverOption[]
+  preferredAssignments: RoutePlanningPreference[]
   data: RoutePlanningItem[]
 }
 

@@ -4,15 +4,10 @@ import { useEffect, useMemo, useState } from "react"
 import {
   Search,
   Download,
-  MoreHorizontal,
   UserPlus,
-  UserMinus,
-  Lock,
   RefreshCw,
-  Sparkles,
 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
-import { StatusBadge } from "@/components/status-badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -25,13 +20,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import {
   Select,
   SelectContent,
@@ -49,12 +37,12 @@ import {
 } from "@/components/ui/dialog"
 import {
   assignRoute as assignRouteRequest,
-  blockRoute,
   exportBotAssignedRoutesCsv,
   fetchDrivers,
   fetchRoutes,
   getApiErrorMessage,
   markRouteNoShow,
+  runSync,
   unassignRoute,
 } from "@/lib/admin-api"
 import type { Driver, Route } from "@/lib/types"
@@ -69,10 +57,10 @@ export default function RoutesPage() {
   const [vehicleFilter, setVehicleFilter] = useState("all")
   const [routes, setRoutes] = useState<Route[]>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
+  const [selectedRoute, setSelectedRoute] = useState<Route | null>(null)
   const [assignRoute, setAssignRoute] = useState<Route | null>(null)
   const [selectedDriver, setSelectedDriver] = useState("")
   const [assignDriverSearch, setAssignDriverSearch] = useState("")
-  const [simulateRoute, setSimulateRoute] = useState<Route | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
 
@@ -85,6 +73,9 @@ export default function RoutesPage() {
       const [routeData, driverData] = await Promise.all([fetchRoutes(), fetchDrivers()])
       setRoutes(routeData)
       setDrivers(driverData)
+      setSelectedRoute((current) =>
+        current ? routeData.find((route) => route.id === current.id) || null : null
+      )
     } catch (error) {
       if (!silent) {
         toast.error(getApiErrorMessage(error, "Nao foi possivel carregar as rotas"))
@@ -108,13 +99,50 @@ export default function RoutesPage() {
   }, [])
 
   const handleRefresh = async () => {
+    const promptedDate = window.prompt(
+      "Informe a data para sincronizar as rotas (AAAA-MM-DD).",
+      dayFilter || today
+    )
+
+    if (!promptedDate) {
+      return
+    }
+
+    const normalizedDate = promptedDate.trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
+      toast.error("Data invalida. Use o formato AAAA-MM-DD.")
+      return
+    }
+
+    const promptValue = window.prompt(
+      "Informe o turno para sincronizar as rotas (AM, PM ou PM2).",
+      "AM"
+    )
+    if (!promptValue) {
+      return
+    }
+
+    const normalizedShift = promptValue.trim().toUpperCase()
+    if (!["AM", "PM", "PM2"].includes(normalizedShift)) {
+      toast.error("Turno invalido. Use AM, PM ou PM2.")
+      return
+    }
+
+    const selectedShift = normalizedShift as "AM" | "PM" | "PM2"
+
     setIsRefreshing(true)
     try {
+      const syncResponse = await runSync("routes", normalizedDate, selectedShift)
+      if (!syncResponse.ok) {
+        toast.error(syncResponse.message)
+        return
+      }
+
+      setDayFilter(normalizedDate)
       await loadData(true)
-      toast.success("Rotas atualizadas com sucesso.")
+      toast.success("Rotas sincronizadas com a planilha e atualizadas no banco.")
     } catch {
-      // loadData already handles non-silent errors; silent refresh keeps this fallback toast.
-      toast.error("Nao foi possivel atualizar as rotas")
+      toast.error("Nao foi possivel sincronizar as rotas")
     } finally {
       setIsRefreshing(false)
     }
@@ -179,40 +207,23 @@ export default function RoutesPage() {
             : r
         )
       )
+      setSelectedRoute((prev) =>
+        prev?.id === assignRoute.id
+          ? {
+              ...prev,
+              status: "ATRIBUIDA",
+              driverId: driver.id,
+              driverName: driver.name,
+              driverVehicleType: driver.vehicleType,
+              assignedAt: new Date().toISOString(),
+            }
+          : prev
+      )
       toast.success(`Rota ${assignRoute.atId || assignRoute.id} atribuida a ${driver.name}`)
       setAssignRoute(null)
       setSelectedDriver("")
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel atribuir a rota"))
-    }
-  }
-
-  const handleUnassign = async (route: Route) => {
-    try {
-      const response = await unassignRoute(route.id)
-      if (!response.ok) {
-        toast.error(response.message)
-        return
-      }
-
-      setRoutes((prev) =>
-        prev.map((r) =>
-          r.id === route.id
-            ? {
-                ...r,
-                status: "DISPONIVEL" as const,
-                requestedDriverId: null,
-                driverId: null,
-                driverName: null,
-                driverVehicleType: null,
-                assignedAt: null,
-              }
-            : r
-        )
-      )
-      toast.success(`Rota ${route.atId || route.id} desatribuida`)
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel desatribuir a rota"))
     }
   }
 
@@ -240,45 +251,24 @@ export default function RoutesPage() {
             : r
         )
       )
+      setSelectedRoute((prev) =>
+        prev?.id === route.id
+          ? {
+              ...prev,
+              noShow: true,
+              status: makeAvailable ? "DISPONIVEL" : prev.status,
+              requestedDriverId: makeAvailable ? null : prev.requestedDriverId,
+              driverId: makeAvailable ? null : prev.driverId,
+              driverName: makeAvailable ? null : prev.driverName,
+              driverVehicleType: makeAvailable ? null : prev.driverVehicleType,
+              assignedAt: makeAvailable ? null : prev.assignedAt,
+            }
+          : prev
+      )
       toast.success(makeAvailable ? `Rota ${route.atId || route.id} liberada como no-show` : `Rota ${route.atId || route.id} marcada como no-show`)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel marcar a rota como no-show"))
     }
-  }
-
-  const handleBlock = async (route: Route) => {
-    try {
-      const response = await blockRoute(route.id)
-      if (!response.ok) {
-        toast.error(response.message)
-        return
-      }
-
-      setRoutes((prev) =>
-        prev.map((r) =>
-          r.id === route.id
-            ? {
-                ...r,
-                status: "BLOQUEADA" as const,
-                driverId: null,
-                driverName: null,
-                driverVehicleType: null,
-                assignedAt: null,
-              }
-            : r
-        )
-      )
-      toast.success(`Rota ${route.atId || route.id} bloqueada`)
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel bloquear a rota"))
-    }
-  }
-
-  const getSimulatedDriver = (route: Route) => {
-    const eligible = drivers
-      .filter((d) => d.vehicleType === route.requiredVehicleType || !route.requiredVehicleType)
-      .sort((a, b) => b.priorityScore - a.priorityScore)
-    return eligible[0] || null
   }
 
   const assignableDrivers = useMemo(() => {
@@ -316,6 +306,19 @@ export default function RoutesPage() {
             : r
         )
       )
+      setSelectedRoute((prev) =>
+        prev?.id === route.id
+          ? {
+              ...prev,
+              status: "DISPONIVEL",
+              requestedDriverId: null,
+              driverId: null,
+              driverName: null,
+              driverVehicleType: null,
+              assignedAt: null,
+            }
+          : prev
+      )
       toast.success(`Rota ${route.atId || route.id} liberada para o bot`)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel liberar a rota para o bot"))
@@ -339,6 +342,10 @@ export default function RoutesPage() {
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel exportar o CSV"))
     }
+  }
+
+  const toggleRouteSelection = (route: Route) => {
+    setSelectedRoute((current) => (current?.id === route.id ? null : route))
   }
 
   return (
@@ -436,106 +443,180 @@ export default function RoutesPage() {
             Carregando rotas...
           </div>
         ) : (
-        <div className="min-w-0 w-full max-w-full overflow-x-auto rounded-lg border bg-card">
-          <Table className="min-w-[1180px] table-fixed">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[110px]">AT</TableHead>
-                <TableHead className="w-[95px]">Data</TableHead>
-                <TableHead className="w-[90px]">Gaiola</TableHead>
-                <TableHead className="w-[100px]">Status</TableHead>
-                <TableHead className="w-[90px]">No-Show</TableHead>
-                <TableHead className="w-[120px]">Cidade</TableHead>
-                <TableHead className="w-[140px]">Bairro</TableHead>
-                <TableHead className="w-[110px]">Veiculo</TableHead>
-                <TableHead className="w-[100px]">Sug. DS</TableHead>
-                <TableHead className="w-[150px]">Motorista</TableHead>
-                <TableHead className="w-[80px]">KM</TableHead>
-                <TableHead className="w-[80px]">SPR</TableHead>
-                <TableHead className="w-[80px]">Volume</TableHead>
-                <TableHead className="w-[70px]">GG</TableHead>
-                <TableHead className="w-[180px]">Acoes</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((route) => (
-                <TableRow key={route.id}>
-                  <TableCell className="truncate font-mono text-xs text-muted-foreground">{route.atId || route.id}</TableCell>
-                  <TableCell className="truncate text-xs text-muted-foreground">{route.routeDate || "-"}</TableCell>
-                  <TableCell className="truncate text-sm text-card-foreground">{route.gaiola || "-"}</TableCell>
-                  <TableCell><StatusBadge status={route.status} /></TableCell>
-                  <TableCell>{route.noShow ? <Badge variant="outline" className="bg-warning/10 text-warning border-warning/30">No-Show</Badge> : <span className="text-sm text-muted-foreground">-</span>}</TableCell>
-                  <TableCell className="truncate text-sm text-card-foreground">{route.cidade}</TableCell>
-                  <TableCell className="truncate text-sm text-card-foreground">{route.bairro}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className="max-w-full truncate text-xs">{route.requiredVehicleType}</Badge>
-                  </TableCell>
-                  <TableCell className="truncate text-sm text-muted-foreground">{route.suggestionDriverDs || "-"}</TableCell>
-                  <TableCell>
-                    {route.driverName ? (
-                      <span className="block truncate text-sm font-medium text-card-foreground">{route.driverName}</span>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">-</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="truncate text-sm text-muted-foreground">{route.km} km</TableCell>
-                  <TableCell className="truncate text-sm text-muted-foreground">{route.spr || "-"}</TableCell>
-                  <TableCell className="truncate text-sm text-muted-foreground">{route.volume}</TableCell>
-                  <TableCell className="truncate text-sm text-muted-foreground">{route.gg || "-"}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center justify-end gap-1">
-                      {route.status !== "DISPONIVEL" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleMakeAvailable(route)}
-                          className="h-8 px-2 text-xs"
-                        >
-                          Liberar
-                        </Button>
-                      )}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Acoes</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          {route.status === "DISPONIVEL" && (
-                            <DropdownMenuItem onClick={() => setAssignRoute(route)}>
-                              <UserPlus className="mr-2 h-4 w-4" /> Atribuir Manualmente
-                            </DropdownMenuItem>
-                          )}
-                          {route.status === "ATRIBUIDA" && (
-                            <DropdownMenuItem onClick={() => handleUnassign(route)}>
-                              <UserMinus className="mr-2 h-4 w-4" /> Desatribuir
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem onClick={() => handleMarkNoShow(route, route.status === "ATRIBUIDA")}>
-                            <RefreshCw className="mr-2 h-4 w-4" /> {route.status === "ATRIBUIDA" ? "No-Show e Liberar" : "Marcar No-Show"}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setSimulateRoute(route)}>
-                            <Sparkles className="mr-2 h-4 w-4" /> Simular Atribuicao
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          {route.status !== "BLOQUEADA" && (
-                            <DropdownMenuItem onClick={() => handleBlock(route)} className="text-destructive">
-                              <Lock className="mr-2 h-4 w-4" /> Bloquear Rota
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem>
-                            <RefreshCw className="mr-2 h-4 w-4" /> Reprocessar
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+          <div className={`grid min-w-0 gap-6 ${selectedRoute ? "lg:grid-cols-[minmax(0,1.2fr)_360px]" : ""}`}>
+            <div className="min-w-0 w-full max-w-full overflow-x-auto rounded-lg border bg-card">
+              <Table className="min-w-[760px] table-fixed">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[140px]">AT</TableHead>
+                    <TableHead className="w-[110px]">Gaiola</TableHead>
+                    <TableHead className="w-[120px]">Status</TableHead>
+                    <TableHead className="w-[150px]">Cidade</TableHead>
+                    <TableHead className="w-[180px]">Bairro</TableHead>
+                    <TableHead className="w-[320px]">Acoes</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filtered.map((route) => {
+                    const isSelected = selectedRoute?.id === route.id
+                    return (
+                      <TableRow
+                        key={route.id}
+                        onClick={() => toggleRouteSelection(route)}
+                        className={`cursor-pointer ${
+                          route.noShow ? "bg-red-50/80 hover:bg-red-100/80" : ""
+                        } ${isSelected ? "ring-1 ring-inset ring-primary" : ""}`}
+                      >
+                        <TableCell className="truncate font-mono text-xs text-muted-foreground">{route.atId || route.id}</TableCell>
+                        <TableCell className="truncate text-sm text-card-foreground">{route.gaiola || "-"}</TableCell>
+                        <TableCell>
+                          <Badge
+                            variant="outline"
+                            className={
+                              route.noShow
+                                ? "border-destructive/30 bg-destructive/15 text-destructive"
+                                : route.status === "ATRIBUIDA"
+                                  ? "border-chart-1/30 bg-chart-1/10 text-chart-1"
+                                  : route.status === "BLOQUEADA"
+                                    ? "border-chart-3/30 bg-chart-3/10 text-chart-3"
+                                    : "border-chart-2/30 bg-chart-2/10 text-chart-2"
+                            }
+                          >
+                            {route.noShow ? "No-Show" : route.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="truncate text-sm text-card-foreground">{route.cidade}</TableCell>
+                        <TableCell className="truncate text-sm text-card-foreground">{route.bairro}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void handleMarkNoShow(route, false)
+                              }}
+                              disabled={route.noShow}
+                              className="h-8 px-2 text-xs"
+                            >
+                              <RefreshCw className="mr-2 h-4 w-4" />
+                              No-Show
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setAssignRoute(route)
+                              }}
+                              className="h-8 px-2 text-xs"
+                            >
+                              <UserPlus className="mr-2 h-4 w-4" />
+                              Atribuir
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void handleMakeAvailable(route)
+                              }}
+                              disabled={route.status === "DISPONIVEL"}
+                              className="h-8 px-2 text-xs"
+                            >
+                              Liberar
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            {selectedRoute ? (
+              <Card className="h-fit">
+                <CardContent className="space-y-4 p-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-foreground">Detalhes da Rota</h3>
+                    <p className="text-sm text-muted-foreground">
+                      {selectedRoute.atId || selectedRoute.id}
+                    </p>
+                  </div>
+
+                  <div className="grid gap-3 text-sm">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p>
+                      <p className="font-medium text-card-foreground">
+                        {selectedRoute.status}{selectedRoute.noShow ? " | No-Show" : ""}
+                      </p>
                     </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Data e Turno</p>
+                      <p className="font-medium text-card-foreground">
+                        {selectedRoute.routeDate || "-"} | {selectedRoute.shift || "-"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Local</p>
+                      <p className="font-medium text-card-foreground">
+                        {selectedRoute.cidade || "-"} | {selectedRoute.bairro || "-"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Gaiola</p>
+                      <p className="font-medium text-card-foreground">{selectedRoute.gaiola || "-"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Veiculo</p>
+                      <p className="font-medium text-card-foreground">{selectedRoute.requiredVehicleType || "-"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Sugestao DS</p>
+                      <p className="font-medium text-card-foreground">{selectedRoute.suggestionDriverDs || "-"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Operacao</p>
+                      <p className="font-medium text-card-foreground">
+                        KM {selectedRoute.km || "-"} | SPR {selectedRoute.spr || "-"} | Volume {selectedRoute.volume || "-"} | GG {selectedRoute.gg || "-"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-4">
+                    <h4 className="text-sm font-semibold text-foreground">Motorista Atual</h4>
+                    <div className="mt-3 grid gap-3 text-sm">
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Nome</p>
+                        <p className="font-medium text-card-foreground">{selectedRoute.driverName || "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">ID</p>
+                        <p className="font-medium text-card-foreground">{selectedRoute.driverId || "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Veiculo</p>
+                        <p className="font-medium text-card-foreground">{selectedRoute.driverVehicleType || "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Placa</p>
+                        <p className="font-medium text-card-foreground">{selectedRoute.driverPlate || "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Acuracia</p>
+                        <p className="font-medium text-card-foreground">{selectedRoute.driverAccuracy || "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Atribuida em</p>
+                        <p className="font-medium text-card-foreground">{selectedRoute.assignedAt || "-"}</p>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+          </div>
         )}
       </div>
 
@@ -582,41 +663,6 @@ export default function RoutesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Simulate Dialog */}
-      <Dialog open={!!simulateRoute} onOpenChange={() => setSimulateRoute(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Simulacao de Atribuicao</DialogTitle>
-            <DialogDescription>
-              Rota {simulateRoute?.atId || simulateRoute?.id} - Veiculo: {simulateRoute?.requiredVehicleType}
-            </DialogDescription>
-          </DialogHeader>
-          {simulateRoute && (() => {
-            const best = getSimulatedDriver(simulateRoute)
-            return best ? (
-              <div className="rounded-lg border p-4">
-                <p className="text-sm text-muted-foreground mb-2">O algoritmo escolheria:</p>
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                    <Sparkles className="h-5 w-5 text-primary" />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-card-foreground">{best.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {best.vehicleType} | DS: {best.ds} | Score: {best.priorityScore} | No-Show: {best.noShowCount}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">Nenhum motorista elegivel encontrado.</p>
-            )
-          })()}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setSimulateRoute(null)}>Fechar</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

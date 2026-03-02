@@ -1,6 +1,8 @@
 import { api } from "./api"
 import type {
   AssignmentOverview,
+  HubOption,
+  ManagedUser,
   User,
   AuditLog,
   ConversationState,
@@ -11,6 +13,7 @@ import type {
   PaginatedResponse,
   Route,
   RoutePlanningMapPayload,
+  RoutePlanningPreference,
   RoutePlanningPayload,
   RoutePlanningRunResult,
   SyncLog,
@@ -34,6 +37,45 @@ export interface DashboardPayload {
   routesPerDay: { date: string; atribuidas: number; disponiveis: number; bloqueadas: number }[]
   routeDistribution: { status: string; count: number; fill: string }[]
   topDrivers: { name: string; score: number; routes: number }[]
+  noShow: {
+    summary: {
+      total: number
+      last30Days: number
+      today: number
+      rate: number
+      affectedCities: number
+      affectedClusters: number
+      topShift: string | null
+      topCity: string | null
+      topCluster: string | null
+    }
+    byDay: { date: string; count: number }[]
+    byShift: { label: string; count: number }[]
+    byCity: { label: string; count: number }[]
+    byCluster: { label: string; count: number }[]
+    byClusterTrend: Array<{
+      date: string
+      values: { label: string; count: number }[]
+    }>
+    byVehicle: { label: string; count: number }[]
+    byAssignmentSource: { label: string; count: number }[]
+    byWeekday: { label: string; count: number }[]
+    recentRoutes: Array<{
+      id: string
+      atId: string
+      routeDate: string | null
+      shift: string | null
+      cidade: string | null
+      bairro: string | null
+      driverId: string | null
+      driverName: string | null
+      driverVehicleType: string | null
+      assignmentSource: string
+      cluster: string | null
+      createdAt: string | null
+      updatedAt: string | null
+    }>
+  }
 }
 
 interface ApiActionResponse {
@@ -41,9 +83,84 @@ interface ApiActionResponse {
   message: string
 }
 
+export interface UserManagementPayload {
+  users: ManagedUser[]
+  hubs: HubOption[]
+}
+
+export interface DriversAnalyticsPayload {
+  summary: {
+    totalActiveDrivers: number
+    blockedCount: number
+    highRiskCount: number
+    totalNoShow: number
+    avgScore: number
+    avgDs: number
+  }
+  dsAnalysis: {
+    above90Count: number
+    between80And90Count: number
+    below80Count: number
+    maxDs: number
+    minDs: number
+    byVehicle: Array<{
+      label: string
+      avgDs: number
+      count: number
+    }>
+    topDs: Array<{
+      id: string
+      name: string | null
+      vehicleType: string | null
+      ds: number
+    }>
+    lowDs: Array<{
+      id: string
+      name: string | null
+      vehicleType: string | null
+      ds: number
+    }>
+  }
+  byVehicle: Array<{
+    label: string
+    count: number
+  }>
+  topScore: Array<{
+    id: string
+    name: string | null
+    vehicleType: string | null
+    ds: string | null
+    noShowCount: number
+    declineRate: number
+    priorityScore: number
+  }>
+  topRisk: Array<{
+    id: string
+    name: string | null
+    vehicleType: string | null
+    ds: string | null
+    noShowCount: number
+    declineRate: number
+    priorityScore: number
+  }>
+  filterOptions: {
+    vehicleTypes: string[]
+    dsValues: string[]
+  }
+}
+
 export interface OverviewPayload {
-  inconsistentCount: number
-  data: Array<AssignmentOverview & { inconsistency: string | null }>
+  routeRequests: Array<{
+    driverId: string
+    driverName: string | null
+    vehicleType: string | null
+    displayedRoutes: string[]
+    displayedAt: string | null
+    requestedAt: string | null
+    choseRoute: boolean
+    chosenRoute: string | null
+    chosenAt: string | null
+  }>
 }
 
 export interface BotHealthPayload {
@@ -115,6 +232,11 @@ export async function fetchDrivers(params?: {
   return response.data.data
 }
 
+export async function fetchDriversAnalytics() {
+  const response = await api.get<DriversAnalyticsPayload>("/api/drivers/analytics")
+  return response.data
+}
+
 export async function updateDriverPriorityScore(driverId: string, priorityScore: number) {
   const response = await api.patch<ApiActionResponse>(`/api/drivers/${driverId}/priority-score`, {
     priorityScore,
@@ -141,6 +263,16 @@ export async function fetchRoutePlanning(params?: {
   const response = await api.get<RoutePlanningPayload>("/api/route-planning", {
     params,
   })
+  return response.data
+}
+
+export async function saveRoutePlanningPreferences(
+  preferences: Array<{ cluster: string; driverId: string }>
+) {
+  const response = await api.put<{ ok: boolean; message: string; preferences: RoutePlanningPreference[] }>(
+    "/api/route-planning/preferences",
+    { preferences }
+  )
   return response.data
 }
 
@@ -181,6 +313,11 @@ export async function blockRoute(routeId: string) {
 
 export async function markRouteNoShow(routeId: string, makeAvailable = false) {
   const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/no-show`, { makeAvailable })
+  return response.data
+}
+
+export async function clearRouteNoShow(routeId: string) {
+  const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/clear-no-show`)
   return response.data
 }
 
@@ -253,6 +390,34 @@ export async function fetchSettings() {
 
 export async function saveSettings(payload: SettingsPayload) {
   const response = await api.put<ApiActionResponse>("/api/settings", payload)
+  return response.data
+}
+
+export async function fetchManagedUsers() {
+  const response = await api.get<UserManagementPayload>("/api/users")
+  return response.data
+}
+
+export async function createManagedUser(payload: {
+  name: string
+  email: string
+  password: string
+  role: "ADMIN" | "ANALISTA" | "SUPERVISOR"
+  hubId?: string | null
+}) {
+  const response = await api.post<ApiActionResponse & { user: ManagedUser }>("/api/users", payload)
+  return response.data
+}
+
+export async function updateManagedUser(
+  userId: string,
+  payload: {
+    role?: "ADMIN" | "ANALISTA" | "SUPERVISOR"
+    hubId?: string | null
+    isActive?: boolean
+  }
+) {
+  const response = await api.patch<ApiActionResponse & { user: ManagedUser }>(`/api/users/${userId}`, payload)
   return response.data
 }
 

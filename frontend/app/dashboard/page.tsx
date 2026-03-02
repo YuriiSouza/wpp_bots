@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react"
 import { PageHeader } from "@/components/page-header"
 import { KpiCards } from "@/components/dashboard/kpi-cards"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import {
+  BreakdownBarChart,
+  BreakdownPieChart,
+  NoShowByClusterTrendChart,
+  NoShowPerDayChart,
   RoutesPerDayChart,
   RouteDistributionChart,
   TopDriversChart,
@@ -66,6 +72,8 @@ export default function DashboardPage() {
               <TopDriversChart data={dashboard.topDrivers} />
               <RankingTable drivers={dashboard.topDrivers} />
             </div>
+
+            <NoShowAnalyticsSection data={dashboard.noShow} />
           </>
         )}
       </div>
@@ -98,5 +106,143 @@ function RankingTable({ drivers }: { drivers: DashboardPayload["topDrivers"] }) 
         ))}
       </div>
     </div>
+  )
+}
+
+function NoShowAnalyticsSection({ data }: { data: DashboardPayload["noShow"] }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h3 className="text-xl font-semibold text-foreground">Analise de No-Show</h3>
+        <p className="text-sm text-muted-foreground">Visao dedicada para recorrencia, concentracao e padroes operacionais</p>
+      </div>
+
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard label="No-Show Total" value={String(data.summary.total)} hint="Historico consolidado" />
+        <MetricCard label="Ultimos 30 Dias" value={String(data.summary.last30Days)} hint="Janela recente" />
+        <MetricCard label="No-Show Hoje" value={String(data.summary.today)} hint="Referencia do dia atual" />
+        <MetricCard label="Taxa de No-Show" value={`${data.summary.rate}%`} hint="Sobre o total de rotas registradas" />
+      </div>
+
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard label="Cidades Afetadas" value={String(data.summary.affectedCities)} hint={data.summary.topCity ? `Maior concentracao: ${data.summary.topCity}` : "Sem destaque"} />
+        <MetricCard label="Clusters Afetados" value={String(data.summary.affectedClusters)} hint={data.summary.topCluster ? `Maior concentracao: ${data.summary.topCluster}` : "Sem destaque"} />
+        <MetricCard label="Turno Mais Critico" value={data.summary.topShift || "-"} hint="Maior volume recente" />
+        <MetricCard label="Cidade Mais Critica" value={data.summary.topCity || "-"} hint="Recorrencia mais alta" />
+      </div>
+
+      <div className="grid gap-4 grid-cols-1 xl:grid-cols-3">
+        <NoShowPerDayChart data={data.byDay} />
+        <BreakdownPieChart title="No-Show por Turno" description="Onde o problema concentra mais" data={data.byShift} />
+      </div>
+
+      <div className="grid gap-4 grid-cols-1 xl:grid-cols-3">
+        <BreakdownPieChart title="No-Show por Cidade" description="Top cidades com maior incidencia" data={data.byCity} />
+        <BreakdownBarChart title="No-Show por Dia da Semana" description="Distribuicao semanal" data={data.byWeekday} />
+      </div>
+
+      <div className="grid gap-4 grid-cols-1">
+        <NoShowByClusterTrendChart data={data.byClusterTrend} />
+      </div>
+
+      <div className="grid gap-4 grid-cols-1">
+        <RecentNoShowCard rows={data.recentRoutes} />
+      </div>
+    </div>
+  )
+}
+
+function MetricCard({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 p-4">
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
+        <p className="text-2xl font-bold text-card-foreground">{value}</p>
+        <p className="text-xs text-muted-foreground">{hint}</p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function BreakdownCard({
+  title,
+  description,
+  items,
+}: {
+  title: string
+  description: string
+  items: Array<{ label: string; count: number }>
+}) {
+  const max = Math.max(...items.map((item) => item.count), 1)
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {items.length ? (
+          <div className="flex flex-col gap-3">
+            {items.map((item) => (
+              <div key={`${title}-${item.label}`} className="space-y-1.5">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="truncate text-card-foreground">{item.label}</span>
+                  <Badge variant="outline">{item.count}</Badge>
+                </div>
+                <div className="h-2 rounded-full bg-muted">
+                  <div
+                    className="h-2 rounded-full bg-primary"
+                    style={{ width: `${Math.max(6, (item.count / max) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Sem no-show suficiente para esta visao.</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RecentNoShowCard({ rows }: { rows: DashboardPayload["noShow"]["recentRoutes"] }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">No-Show Recentes</CardTitle>
+        <CardDescription>Ultimas ocorrencias registradas</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {rows.length ? (
+          <div className="flex flex-col gap-3">
+            {rows.map((row) => (
+              <div key={row.id} className="rounded-lg border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-muted-foreground">{row.atId}</span>
+                    <Badge variant="outline">{row.shift || "Sem turno"}</Badge>
+                    <Badge variant="outline">{row.cluster || "Sem cluster"}</Badge>
+                  </div>
+                  <Badge variant="secondary">{row.assignmentSource}</Badge>
+                </div>
+                <p className="mt-2 text-sm font-medium text-card-foreground">
+                  {row.cidade || "Sem cidade"}{row.bairro ? ` | ${row.bairro}` : ""}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {row.driverName || "Sem motorista"}{row.driverId ? ` (${row.driverId})` : ""} {row.driverVehicleType ? `| ${row.driverVehicleType}` : ""}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {row.routeDate || row.updatedAt || row.createdAt || "-"}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Nenhum no-show recente encontrado.</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }

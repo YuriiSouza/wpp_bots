@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Settings, Save, RotateCcw, Shield, Sliders, Users } from "lucide-react"
+import { useAuthContext } from "@/components/auth-provider"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -12,12 +13,34 @@ import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { fetchSettings, getApiErrorMessage, saveSettings, type SettingsPayload } from "@/lib/admin-api"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  createManagedUser,
+  fetchManagedUsers,
+  fetchSettings,
+  getApiErrorMessage,
+  saveSettings,
+  updateManagedUser,
+  type SettingsPayload,
+  type UserManagementPayload,
+} from "@/lib/admin-api"
 import { toast } from "sonner"
 
 export default function SettingsPage() {
+  const { hasRole } = useAuthContext()
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
+  const [userManagement, setUserManagement] = useState<UserManagementPayload | null>(null)
+  const [isUsersLoading, setIsUsersLoading] = useState(false)
+  const [isCreatingUser, setIsCreatingUser] = useState(false)
+  const [newUser, setNewUser] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: "ANALISTA" as "ADMIN" | "ANALISTA" | "SUPERVISOR",
+    hubId: "hub-sp",
+  })
   const [isLoading, setIsLoading] = useState(true)
+  const isAdmin = hasRole("ADMIN")
 
   useEffect(() => {
     void (async () => {
@@ -30,6 +53,23 @@ export default function SettingsPage() {
       }
     })()
   }, [])
+
+  useEffect(() => {
+    if (!isAdmin) return
+
+    void loadUsers()
+  }, [isAdmin])
+
+  const loadUsers = async () => {
+    setIsUsersLoading(true)
+    try {
+      setUserManagement(await fetchManagedUsers())
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel carregar os usuarios"))
+    } finally {
+      setIsUsersLoading(false)
+    }
+  }
 
   const handleSave = async () => {
     if (!settings) return
@@ -60,6 +100,119 @@ export default function SettingsPage() {
     toast.info("Configuracoes resetadas para padrao")
   }
 
+  const handleCreateUser = async () => {
+    if (!newUser.name || !newUser.email || !newUser.password) {
+      toast.error("Preencha nome, e-mail e senha")
+      return
+    }
+
+    setIsCreatingUser(true)
+    try {
+      const response = await createManagedUser({
+        ...newUser,
+        hubId: newUser.role === "ADMIN" ? null : newUser.hubId,
+      })
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setUserManagement((current) =>
+        current
+          ? {
+              ...current,
+              users: [response.user, ...current.users],
+            }
+          : current
+      )
+      setNewUser({
+        name: "",
+        email: "",
+        password: "",
+        role: "ANALISTA",
+        hubId: userManagement?.hubs[0]?.id || "hub-sp",
+      })
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel criar o usuario"))
+    } finally {
+      setIsCreatingUser(false)
+    }
+  }
+
+  const handleToggleUser = async (userId: string, isActive: boolean) => {
+    try {
+      const response = await updateManagedUser(userId, { isActive: !isActive })
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setUserManagement((current) =>
+        current
+          ? {
+              ...current,
+              users: current.users.map((user) =>
+                user.id === userId ? response.user : user
+              ),
+            }
+          : current
+      )
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o usuario"))
+    }
+  }
+
+  const handleRoleChange = async (
+    userId: string,
+    role: "ADMIN" | "ANALISTA" | "SUPERVISOR"
+  ) => {
+    try {
+      const response = await updateManagedUser(userId, { role })
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setUserManagement((current) =>
+        current
+          ? {
+              ...current,
+              users: current.users.map((user) =>
+                user.id === userId ? response.user : user
+              ),
+            }
+          : current
+      )
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o papel"))
+    }
+  }
+
+  const handleHubChange = async (userId: string, hubId: string) => {
+    try {
+      const response = await updateManagedUser(userId, { hubId })
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setUserManagement((current) =>
+        current
+          ? {
+              ...current,
+              users: current.users.map((user) =>
+                user.id === userId ? response.user : user
+              ),
+            }
+          : current
+      )
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o hub"))
+    }
+  }
+
   if (isLoading || !settings) {
     return (
       <div className="flex flex-col">
@@ -83,6 +236,9 @@ export default function SettingsPage() {
             <TabsTrigger value="algorithm" className="gap-2"><Sliders className="h-4 w-4" /> Algoritmo</TabsTrigger>
             <TabsTrigger value="permissions" className="gap-2"><Shield className="h-4 w-4" /> Permissoes</TabsTrigger>
             <TabsTrigger value="system" className="gap-2"><Settings className="h-4 w-4" /> Sistema</TabsTrigger>
+            {isAdmin ? (
+              <TabsTrigger value="users" className="gap-2"><Users className="h-4 w-4" /> Usuarios</TabsTrigger>
+            ) : null}
           </TabsList>
 
           <TabsContent value="algorithm" className="mt-6">
@@ -196,6 +352,177 @@ export default function SettingsPage() {
               </Card>
             </div>
           </TabsContent>
+
+          {isAdmin ? (
+            <TabsContent value="users" className="mt-6">
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Criar Usuario</CardTitle>
+                    <CardDescription>O admin pode criar novos acessos para o painel</CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-4">
+                    <div className="flex flex-col gap-2">
+                      <Label>Nome</Label>
+                      <Input
+                        value={newUser.name}
+                        onChange={(e) => setNewUser((current) => ({ ...current, name: e.target.value }))}
+                        placeholder="Nome completo"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label>E-mail</Label>
+                      <Input
+                        value={newUser.email}
+                        onChange={(e) => setNewUser((current) => ({ ...current, email: e.target.value }))}
+                        placeholder="usuario@rotabot.com"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label>Senha</Label>
+                      <Input
+                        type="password"
+                        value={newUser.password}
+                        onChange={(e) => setNewUser((current) => ({ ...current, password: e.target.value }))}
+                        placeholder="Minimo 4 caracteres"
+                      />
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="flex flex-col gap-2">
+                        <Label>Papel</Label>
+                        <Select
+                          value={newUser.role}
+                          onValueChange={(value: "ADMIN" | "ANALISTA" | "SUPERVISOR") =>
+                            setNewUser((current) => ({
+                              ...current,
+                              role: value,
+                              hubId: value === "ADMIN" ? "" : current.hubId || userManagement?.hubs[0]?.id || "hub-sp",
+                            }))
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ADMIN">ADMIN</SelectItem>
+                            <SelectItem value="ANALISTA">ANALISTA</SelectItem>
+                            <SelectItem value="SUPERVISOR">SUPERVISOR</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Label>Hub</Label>
+                        <Select
+                          value={newUser.role === "ADMIN" ? "none" : newUser.hubId || "none"}
+                          onValueChange={(value) =>
+                            setNewUser((current) => ({ ...current, hubId: value === "none" ? "" : value }))
+                          }
+                          disabled={newUser.role === "ADMIN"}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Sem hub</SelectItem>
+                            {(userManagement?.hubs || []).map((hub) => (
+                              <SelectItem key={hub.id} value={hub.id}>{hub.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <Button onClick={handleCreateUser} disabled={isCreatingUser}>
+                      <Users className="mr-2 h-4 w-4" />
+                      {isCreatingUser ? "Criando..." : "Criar usuario"}
+                    </Button>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <CardTitle className="text-base">Usuarios Cadastrados</CardTitle>
+                        <CardDescription>Ative, desative e ajuste o papel dos acessos existentes</CardDescription>
+                      </div>
+                      <Button variant="outline" onClick={() => void loadUsers()} disabled={isUsersLoading}>
+                        {isUsersLoading ? "Atualizando..." : "Atualizar"}
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {isUsersLoading && !userManagement ? (
+                      <p className="text-sm text-muted-foreground">Carregando usuarios...</p>
+                    ) : (
+                      <div className="flex max-h-[560px] flex-col gap-3 overflow-y-auto pr-1">
+                        {(userManagement?.users || []).map((user) => (
+                          <div key={user.id} className="rounded-lg border p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-card-foreground">{user.name}</p>
+                                <p className="text-xs text-muted-foreground">{user.email}</p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <Badge variant="outline">{user.role}</Badge>
+                                  <Badge variant={user.isActive ? "outline" : "secondary"}>
+                                    {user.isActive ? "Ativo" : "Inativo"}
+                                  </Badge>
+                                  <Badge variant="outline">{user.hubName || "Sem hub"}</Badge>
+                                </div>
+                              </div>
+                              <Button
+                                variant={user.isActive ? "outline" : "default"}
+                                onClick={() => void handleToggleUser(user.id, user.isActive)}
+                              >
+                                {user.isActive ? "Desativar" : "Ativar"}
+                              </Button>
+                            </div>
+
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                              <div className="flex flex-col gap-2">
+                                <Label className="text-xs">Papel</Label>
+                                <Select
+                                  value={user.role}
+                                  onValueChange={(value: "ADMIN" | "ANALISTA" | "SUPERVISOR") =>
+                                    void handleRoleChange(user.id, value)
+                                  }
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="ADMIN">ADMIN</SelectItem>
+                                    <SelectItem value="ANALISTA">ANALISTA</SelectItem>
+                                    <SelectItem value="SUPERVISOR">SUPERVISOR</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="flex flex-col gap-2">
+                                <Label className="text-xs">Hub</Label>
+                                <Select
+                                  value={user.hubId || "none"}
+                                  onValueChange={(value) => void handleHubChange(user.id, value === "none" ? "" : value)}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="none">Sem hub</SelectItem>
+                                    {(userManagement?.hubs || []).map((hub) => (
+                                      <SelectItem key={hub.id} value={hub.id}>{hub.name}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </TabsContent>
+          ) : null}
         </Tabs>
       </div>
     </div>

@@ -265,7 +265,9 @@ export default function BlocklistPage() {
                 <TableRow key={item.driverId}>
                   <TableCell>
                     <div>
-                      <p className="font-medium text-card-foreground">{driverMap.get(item.driverId)}</p>
+                      <p className="font-medium text-card-foreground">
+                        {item.driverName || driverMap.get(item.driverId) || item.driverId}
+                      </p>
                       <p className="text-xs text-muted-foreground font-mono">{item.driverId}</p>
                     </div>
                   </TableCell>
@@ -301,7 +303,7 @@ export default function BlocklistPage() {
               {actionItem?.displayStatus === "ACTIVE" ? "Desbloquear" : "Bloquear"} Motorista
             </DialogTitle>
             <DialogDescription>
-              {driverMap.get(actionItem?.driverId ?? "")} ({actionItem?.driverId})
+              {actionItem?.driverName || driverMap.get(actionItem?.driverId ?? "") || actionItem?.driverId} ({actionItem?.driverId})
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 flex flex-col gap-3">

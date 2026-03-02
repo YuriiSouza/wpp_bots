@@ -150,11 +150,20 @@ export function useAuth() {
     }
   }, [])
 
-  const register = useCallback(async (name: string, email: string, password: string) => {
+  const register = useCallback(
+    async (
+      name: string,
+      email: string,
+      password: string,
+      hubId?: string | null,
+      telegramChatId?: string | null
+    ) => {
     const response = await api.post<{ accessToken: string; user?: User }>("/auth/register", {
       name,
       email,
       password,
+      hubId: hubId || null,
+      telegramChatId: telegramChatId || null,
     })
     const token = response.data.accessToken
     const resolvedUser = response.data.user || parseUserFromToken(token)
@@ -167,7 +176,9 @@ export function useAuth() {
     localStorage.setItem("auth_user", JSON.stringify(resolvedUser))
     setUser(resolvedUser)
     return resolvedUser
-  }, [])
+    },
+    []
+  )
 
   const logout = useCallback(() => {
     localStorage.removeItem("auth_token")

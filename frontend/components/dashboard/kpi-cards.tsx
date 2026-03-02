@@ -11,6 +11,7 @@ interface KpiCardsProps {
 }
 
 export function KpiCards({ stats }: KpiCardsProps) {
+  const lastSyncStatus = String(stats.lastSync?.status || "").toLowerCase()
   const cards = [
     {
       label: "Motoristas Ativos",
@@ -55,7 +56,7 @@ export function KpiCards({ stats }: KpiCardsProps) {
       icon: RefreshCw,
       color: "text-chart-5",
       bg: "bg-chart-5/10",
-      subtitle: stats.lastSync?.status === "SUCCESS" ? "Sucesso" : "Falha",
+      subtitle: stats.lastSync ? (lastSyncStatus === "success" ? "Sucesso" : "Falha") : undefined,
     },
   ]
 

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BlocklistStatus, RouteStatus } from '@prisma/client';
+import { RouteStatus } from '@prisma/client';
 import { AdminCommonService } from '../admin-common/admin-common.service';
 import { TelegramService } from '../telegram/telegram.service';
 
@@ -12,18 +12,24 @@ export class SupportService {
 
   private async resolveTicketChatId(ticketId: string, driverId: string): Promise<number | null> {
     try {
-      const client = this.common.redisService.client();
-      const keys = await client.keys('telegram:state:*');
+      const indexedChatId = await this.common.redisService.client().get(
+        `telegram:driver:chat:${String(driverId).trim()}`,
+      );
+      if (!indexedChatId) return null;
 
-      for (const key of keys) {
-        const state = await this.common.redisService.get<any>(key);
-        if (!state?.driverId || state.driverId !== driverId) continue;
-        if (state.supportTicketId && state.supportTicketId !== ticketId) continue;
+      const state = await this.common.redisService.get<any>(
+        `telegram:state:${indexedChatId}`,
+      );
+      if (!state?.driverId || state.driverId !== driverId) {
+        return null;
+      }
+      if (state.supportTicketId && state.supportTicketId !== ticketId) {
+        return null;
+      }
 
-        const chatId = Number(key.replace('telegram:state:', '').trim());
-        if (Number.isFinite(chatId)) {
-          return chatId;
-        }
+      const chatId = Number(indexedChatId);
+      if (Number.isFinite(chatId)) {
+        return chatId;
       }
     } catch {
       // Redis lookup must not break support flow.
@@ -158,7 +164,7 @@ export class SupportService {
       noShowCount: ticket.driver.noShowCount,
       declineRate: ticket.driver.declineRate,
       priorityScore: ticket.driver.priorityScore,
-      isBlocked: blocklist?.status === BlocklistStatus.ACTIVE,
+      isBlocked: String(blocklist?.status || '') === 'BLOCKED',
       hasActiveRoute: !!activeRoute,
       activeRouteStatus: activeRoute?.status || null,
       lastRoutes: lastRoutes.map((route) => ({

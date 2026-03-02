@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { format, differenceInSeconds } from "date-fns"
 import { ptBR } from "date-fns/locale/pt-BR"
 import { RefreshCw, ChevronDown, ChevronUp, AlertCircle, CheckCircle2, Clock } from "lucide-react"
@@ -16,10 +16,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { fetchSyncLogs, getApiErrorMessage, resetQueue, runSync } from "@/lib/admin-api"
 import type { SyncLog } from "@/lib/types"
 import { toast } from "sonner"
+import { getCurrentRouteWindow } from "@/lib/route-window"
 
 export default function SyncPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -58,22 +58,9 @@ export default function SyncPage() {
     let syncDate: string | undefined
     let syncShift: "AM" | "PM" | "PM2" | undefined
     if (action === "routes") {
-      const value = window.prompt("Informe a data das rotas (YYYY-MM-DD)", new Date().toISOString().slice(0, 10))
-      if (value === null) return
-      syncDate = value.trim()
-      if (!syncDate) {
-        toast.error("Data obrigatoria para atualizar rotas")
-        return
-      }
-
-      const shiftValue = window.prompt("Informe o turno das rotas (AM, PM ou PM2)", "AM")
-      if (shiftValue === null) return
-      const normalizedShift = shiftValue.trim().toUpperCase()
-      if (normalizedShift !== "AM" && normalizedShift !== "PM" && normalizedShift !== "PM2") {
-        toast.error("Turno invalido. Use AM, PM ou PM2")
-        return
-      }
-      syncShift = normalizedShift
+      const currentWindow = getCurrentRouteWindow()
+      syncDate = currentWindow.date
+      syncShift = currentWindow.shift
     }
 
     setRunningAction(action)
@@ -173,39 +160,36 @@ export default function SyncPage() {
                     ? differenceInSeconds(new Date(sync.finishedAt), new Date(sync.startedAt))
                     : null
                   return (
-                    <Collapsible key={sync.id} open={isExpanded} onOpenChange={() => toggleExpand(sync.id)} asChild>
-                      <>
-                        <TableRow className={sync.status === "FAILED" ? "bg-destructive/5" : ""}>
-                          <TableCell>
-                            <CollapsibleTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-7 w-7">
-                                {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                              </Button>
-                            </CollapsibleTrigger>
-                          </TableCell>
-                          <TableCell><StatusBadge status={sync.status} /></TableCell>
-                          <TableCell className="text-sm text-card-foreground">
-                            {format(new Date(sync.startedAt), "dd/MM/yy HH:mm:ss", { locale: ptBR })}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-1">
-                              <Clock className="h-3 w-3 text-muted-foreground" />
-                              <span className="text-sm text-card-foreground">{duration ?? "-"}s</span>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-sm text-card-foreground">{sync.driversCount}</TableCell>
-                          <TableCell className="text-sm text-card-foreground">{sync.routesAvailable}</TableCell>
-                          <TableCell className="text-sm text-card-foreground">{sync.routesAssigned}</TableCell>
-                          <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">
-                            {sync.message || "-"}
-                          </TableCell>
-                        </TableRow>
-                        <CollapsibleContent asChild>
-                          <TableRow>
-                            <TableCell colSpan={8} className="bg-muted/50 p-4">
-                              <div className="rounded-lg bg-card p-4 border">
-                                <h4 className="text-sm font-semibold text-card-foreground mb-2">Log Detalhado</h4>
-                                <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono">
+                    <Fragment key={sync.id}>
+                      <TableRow key={sync.id} className={sync.status === "FAILED" ? "bg-destructive/5" : ""}>
+                        <TableCell>
+                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleExpand(sync.id)}>
+                            {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                          </Button>
+                        </TableCell>
+                        <TableCell><StatusBadge status={sync.status} /></TableCell>
+                        <TableCell className="text-sm text-card-foreground">
+                          {format(new Date(sync.startedAt), "dd/MM/yy HH:mm:ss", { locale: ptBR })}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            <Clock className="h-3 w-3 text-muted-foreground" />
+                            <span className="text-sm text-card-foreground">{duration ?? "-"}s</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-sm text-card-foreground">{sync.driversCount}</TableCell>
+                        <TableCell className="text-sm text-card-foreground">{sync.routesAvailable}</TableCell>
+                        <TableCell className="text-sm text-card-foreground">{sync.routesAssigned}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">
+                          {sync.message || "-"}
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded ? (
+                        <TableRow key={`${sync.id}-details`}>
+                          <TableCell colSpan={8} className="bg-muted/50 p-4">
+                            <div className="rounded-lg bg-card p-4 border">
+                              <h4 className="text-sm font-semibold text-card-foreground mb-2">Log Detalhado</h4>
+                              <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono">
 {`ID: ${sync.id}
 Status: ${sync.status}
 Inicio: ${sync.startedAt}
@@ -214,13 +198,12 @@ Motoristas processados: ${sync.driversCount}
 Rotas disponiveis: ${sync.routesAvailable}
 Rotas atribuidas: ${sync.routesAssigned}
 ${sync.message ? `Erro: ${sync.message}` : "Sem erros"}`}
-                                </pre>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        </CollapsibleContent>
-                      </>
-                    </Collapsible>
+                              </pre>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
                   )
                 })}
               </TableBody>

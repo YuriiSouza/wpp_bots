@@ -37,7 +37,6 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import {
   addBlocklistDriver,
-  type DriversAnalyticsPayload,
   fetchBlocklist,
   fetchDriversAnalytics,
   fetchDriversPage,
@@ -47,14 +46,10 @@ import {
   updateDriverPriorityScore,
 } from "@/lib/admin-api"
 import type { Driver } from "@/lib/types"
+import type { DriversAnalyticsPayload } from "@/lib/admin-api"
 import { toast } from "sonner"
 
 type SortKey = "name" | "priorityScore" | "noShowCount" | "declineRate"
-
-function formatPercentValue(value: number) {
-  const normalized = value <= 1 ? value * 100 : value
-  return `${Math.round(normalized * 10) / 10}%`
-}
 
 export default function DriversPage() {
   const PAGE_SIZE = 20
@@ -66,7 +61,7 @@ export default function DriversPage() {
   const [editDriver, setEditDriver] = useState<Driver | null>(null)
   const [editScore, setEditScore] = useState("")
   const [drivers, setDrivers] = useState<Driver[]>([])
-  const [analytics, setAnalytics] = useState<DriversAnalyticsPayload | null>(null)
+  const [analyticsPayload, setAnalyticsPayload] = useState<DriversAnalyticsPayload | null>(null)
   const [page, setPage] = useState(1)
   const [totalDrivers, setTotalDrivers] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
@@ -96,8 +91,8 @@ export default function DriversPage() {
         setDrivers(driverData.data)
         setTotalDrivers(driverData.total)
         setTotalPages(driverData.totalPages)
-        setAnalytics(analyticsData)
-        setBlockedIds(new Set(blocklistData.filter((item) => item.status === "ACTIVE").map((item) => item.driverId)))
+        setAnalyticsPayload(analyticsData)
+        setBlockedIds(new Set(blocklistData.filter((item) => item.status === "BLOCKED").map((item) => item.driverId)))
       } catch (error) {
         toast.error(getApiErrorMessage(error, "Nao foi possivel carregar os motoristas"))
       } finally {
@@ -115,12 +110,12 @@ export default function DriversPage() {
   }, [page, search, vehicleFilter, dsFilter, sortBy, sortDir])
 
   const vehicleTypes = useMemo(
-    () => analytics?.filterOptions.vehicleTypes || [],
-    [analytics]
+    () => analyticsPayload?.filterOptions.vehicleTypes || [],
+    [analyticsPayload]
   )
   const dsValues = useMemo(
-    () => analytics?.filterOptions.dsValues || [],
-    [analytics]
+    () => analyticsPayload?.filterOptions.dsValues || [],
+    [analyticsPayload]
   )
 
   const getRiskLevel = (d: Driver) => {
@@ -130,13 +125,19 @@ export default function DriversPage() {
     return { level: "Baixo", color: "text-success", bg: "bg-success/15" }
   }
 
-  const refreshAnalytics = async () => {
-    try {
-      setAnalytics(await fetchDriversAnalytics())
-    } catch {
-      // Primary load already surfaces an error toast; post-action refresh can fail silently.
+  const analytics = useMemo(() => {
+    return {
+      sampleSize: analyticsPayload?.summary.totalActiveDrivers || 0,
+      blockedCount: analyticsPayload?.summary.blockedCount || 0,
+      highRiskCount: analyticsPayload?.summary.highRiskCount || 0,
+      totalNoShow: analyticsPayload?.summary.totalNoShow || 0,
+      avgScore: analyticsPayload?.summary.avgScore || 0,
+      avgDs: analyticsPayload?.summary.avgDs || 0,
+      byVehicle: analyticsPayload?.byVehicle || [],
+      topRisk: analyticsPayload?.topRisk || [],
+      topScore: analyticsPayload?.topScore || [],
     }
-  }
+  }, [analyticsPayload])
 
   const handleSaveScore = async () => {
     if (!editDriver) return
@@ -155,7 +156,7 @@ export default function DriversPage() {
       setDrivers((prev) =>
         prev.map((d) => (d.id === editDriver.id ? { ...d, priorityScore: newScore } : d))
       )
-      void refreshAnalytics()
+      void fetchDriversAnalytics().then(setAnalyticsPayload).catch(() => {})
       toast.success(`Priority score de ${editDriver.name} atualizado para ${newScore}`)
       setEditDriver(null)
     } catch (error) {
@@ -174,7 +175,7 @@ export default function DriversPage() {
       setDrivers((prev) =>
         prev.map((d) => (d.id === driver.id ? { ...d, noShowCount: 0 } : d))
       )
-      void refreshAnalytics()
+      void fetchDriversAnalytics().then(setAnalyticsPayload).catch(() => {})
       toast.success(`noShowCount de ${driver.name} resetado`)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel resetar o no-show"))
@@ -201,7 +202,6 @@ export default function DriversPage() {
         }
         return next
       })
-      void refreshAnalytics()
       toast.success(`${driver.name} ${isBlocked ? "desbloqueado" : "bloqueado"}`)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel alterar o status do motorista"))
@@ -229,37 +229,37 @@ export default function DriversPage() {
               <MetricCard
                 icon={Users}
                 label="Motoristas"
-                value={String(analytics?.summary.totalActiveDrivers || 0)}
-                hint="Somente motoristas ativos da base"
+                value={String(totalDrivers)}
+                hint={`Base analisada: ${analytics.sampleSize}`}
               />
               <MetricCard
                 icon={Trophy}
                 label="Score Medio"
-                value={String(analytics?.summary.avgScore || 0)}
+                value={String(analytics.avgScore)}
                 hint="Media do priority score"
               />
               <MetricCard
                 icon={TrendingUp}
                 label="DS Medio"
-                value={formatPercentValue(analytics?.summary.avgDs || 0)}
+                value={String(analytics.avgDs)}
                 hint="Media de DS"
               />
               <MetricCard
                 icon={AlertTriangle}
                 label="Risco Alto"
-                value={String(analytics?.summary.highRiskCount || 0)}
+                value={String(analytics.highRiskCount)}
                 hint="Motoristas com maior exposicao"
               />
               <MetricCard
                 icon={ShieldBan}
                 label="Bloqueados"
-                value={String(analytics?.summary.blockedCount || 0)}
+                value={String(analytics.blockedCount)}
                 hint="Atualmente na blocklist"
               />
               <MetricCard
                 icon={TrendingDown}
                 label="No-Show"
-                value={String(analytics?.summary.totalNoShow || 0)}
+                value={String(analytics.totalNoShow)}
                 hint="Soma no recorte analisado"
               />
             </div>
@@ -268,18 +268,16 @@ export default function DriversPage() {
               <InsightListCard
                 title="Veiculos Mais Presentes"
                 description="Distribuicao da frota no recorte"
-                items={(analytics?.byVehicle || []).map((item) => ({
+                items={analytics.byVehicle.map((item) => ({
                   label: item.label,
                   value: `${item.count} motoristas`,
-                  progress: analytics?.summary.totalActiveDrivers
-                    ? (item.count / analytics.summary.totalActiveDrivers) * 100
-                    : 0,
+                  progress: analytics.sampleSize ? (item.count / analytics.sampleSize) * 100 : 0,
                 }))}
               />
               <InsightListCard
                 title="Top Score"
                 description="Melhores priority scores"
-                items={(analytics?.topScore || []).map((driver) => ({
+                items={analytics.topScore.map((driver) => ({
                   label: driver.name || driver.id,
                   value: `${driver.priorityScore} pts`,
                   progress: driver.priorityScore,
@@ -288,73 +286,10 @@ export default function DriversPage() {
               <InsightListCard
                 title="Maior Risco"
                 description="Quem exige mais atencao"
-                items={(analytics?.topRisk || []).map((driver) => ({
+                items={analytics.topRisk.map((driver) => ({
                   label: driver.name || driver.id,
                   value: `${driver.noShowCount} no-show | ${(driver.declineRate * 100).toFixed(0)}% decline`,
                   progress: Math.min(100, driver.noShowCount * 10 + driver.declineRate * 100),
-                }))}
-              />
-            </div>
-
-            <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-5">
-              <MetricCard
-                icon={TrendingUp}
-                label="DS >= 90%"
-                value={String(analytics?.dsAnalysis.above90Count || 0)}
-                hint="Motoristas em faixa forte"
-              />
-              <MetricCard
-                icon={TrendingUp}
-                label="DS 80-89%"
-                value={String(analytics?.dsAnalysis.between80And90Count || 0)}
-                hint="Faixa de atencao"
-              />
-              <MetricCard
-                icon={TrendingDown}
-                label="DS < 80%"
-                value={String(analytics?.dsAnalysis.below80Count || 0)}
-                hint="Faixa critica"
-              />
-              <MetricCard
-                icon={Trophy}
-                label="Maior DS"
-                value={formatPercentValue(analytics?.dsAnalysis.maxDs || 0)}
-                hint="Melhor DS ativo"
-              />
-              <MetricCard
-                icon={AlertTriangle}
-                label="Menor DS"
-                value={formatPercentValue(analytics?.dsAnalysis.minDs || 0)}
-                hint="Menor DS ativo"
-              />
-            </div>
-
-            <div className="grid gap-4 grid-cols-1 xl:grid-cols-3">
-              <InsightListCard
-                title="Top DS"
-                description="Melhores DS entre os ativos"
-                items={(analytics?.dsAnalysis.topDs || []).map((driver) => ({
-                  label: driver.name || driver.id,
-                  value: `${formatPercentValue(driver.ds)}${driver.vehicleType ? ` | ${driver.vehicleType}` : ""}`,
-                  progress: driver.ds,
-                }))}
-              />
-              <InsightListCard
-                title="DS Critico"
-                description="Menores DS que exigem acao"
-                items={(analytics?.dsAnalysis.lowDs || []).map((driver) => ({
-                  label: driver.name || driver.id,
-                  value: `${formatPercentValue(driver.ds)}${driver.vehicleType ? ` | ${driver.vehicleType}` : ""}`,
-                  progress: driver.ds,
-                }))}
-              />
-              <InsightListCard
-                title="DS Medio por Veiculo"
-                description="Comparativo por tipo de veiculo"
-                items={(analytics?.dsAnalysis.byVehicle || []).map((item) => ({
-                  label: item.label,
-                  value: `${formatPercentValue(item.avgDs)} | ${item.count} motoristas`,
-                  progress: item.avgDs,
                 }))}
               />
             </div>
@@ -474,10 +409,7 @@ export default function DriversPage() {
                             </div>
 
                             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                              <DriverMetric
-                                label="DS"
-                                value={driver.ds ? formatPercentValue(Number(driver.ds)) : "-"}
-                              />
+                              <DriverMetric label="DS" value={driver.ds || "-"} />
                               <DriverMetric label="Score" value={String(driver.priorityScore)} />
                               <DriverMetric label="No-Show" value={String(driver.noShowCount)} />
                               <DriverMetric label="Decline" value={`${(driver.declineRate * 100).toFixed(0)}%`} />

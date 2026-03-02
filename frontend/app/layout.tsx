@@ -8,8 +8,8 @@ import './globals.css'
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" })
 
 export const metadata: Metadata = {
-  title: 'RotaBot Admin - Operacao e Atendimento',
-  description: 'Painel administrativo para operacao, rotas, motoristas e central de atendimento integrada ao Telegram',
+  title: 'Fleet Analysis - Operacao e Atendimento',
+  description: 'Painel Fleet Analysis para operacao, rotas, motoristas e central de atendimento integrada ao Telegram',
 }
 
 export const viewport: Viewport = {

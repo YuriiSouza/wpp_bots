@@ -103,7 +103,7 @@ export const mockOverviews: AssignmentOverview[] = Array.from({ length: 15 }, (_
 // ===== Blocklist =====
 export const mockBlocklist: DriverBlocklist[] = mockDrivers.slice(0, 6).map((d, i) => ({
   driverId: d.id,
-  status: i < 4 ? "ACTIVE" as const : "INACTIVE" as const,
+  status: i < 4 ? "BLOCKED" as const : "UNBLOCKED" as const,
   timesListed: Math.floor(Math.random() * 5 + 1),
   lastActivatedAt: new Date(Date.now() - Math.random() * 7 * 86400000).toISOString(),
   lastInactivatedAt: i >= 4 ? new Date(Date.now() - Math.random() * 3 * 86400000).toISOString() : null,
@@ -124,7 +124,7 @@ export const mockFaqItems: FaqItem[] = [
 export const mockAuditLogs: AuditLog[] = [
   { id: "aud-1", entityType: "Driver", entityId: "DRV0001", action: "UPDATE_PRIORITY", userId: "admin-1", userName: "Admin Master", before: { priorityScore: 45 }, after: { priorityScore: 72 }, createdAt: new Date(Date.now() - 3600000).toISOString() },
   { id: "aud-2", entityType: "Route", entityId: "RT00005", action: "MANUAL_ASSIGN", userId: "admin-1", userName: "Admin Master", before: { status: "DISPONIVEL", driverId: null }, after: { status: "ATRIBUIDA", driverId: "DRV0003" }, createdAt: new Date(Date.now() - 7200000).toISOString() },
-  { id: "aud-3", entityType: "DriverBlocklist", entityId: "DRV0002", action: "BLOCK", userId: "admin-1", userName: "Admin Master", before: { status: "INACTIVE" }, after: { status: "ACTIVE" }, createdAt: new Date(Date.now() - 10800000).toISOString() },
+  { id: "aud-3", entityType: "DriverBlocklist", entityId: "DRV0002", action: "BLOCK", userId: "admin-1", userName: "Admin Master", before: { status: "UNBLOCKED" }, after: { status: "BLOCKED" }, createdAt: new Date(Date.now() - 10800000).toISOString() },
   { id: "aud-4", entityType: "FaqItem", entityId: "faq-1", action: "UPDATE", userId: "admin-1", userName: "Admin Master", before: { title: "Como cadastrar?" }, after: { title: "Como me cadastrar?" }, createdAt: new Date(Date.now() - 14400000).toISOString() },
   { id: "aud-5", entityType: "Driver", entityId: "DRV0005", action: "RESET_NOSHOW", userId: "admin-1", userName: "Admin Master", before: { noShowCount: 5 }, after: { noShowCount: 0 }, createdAt: new Date(Date.now() - 18000000).toISOString() },
   { id: "aud-6", entityType: "Route", entityId: "RT00010", action: "UNASSIGN", userId: "admin-1", userName: "Admin Master", before: { status: "ATRIBUIDA", driverId: "DRV0007" }, after: { status: "DISPONIVEL", driverId: null }, createdAt: new Date(Date.now() - 21600000).toISOString() },
@@ -146,7 +146,7 @@ export const mockDashboardStats: DashboardStats = {
   occupationRate: Math.round(
     (mockRoutes.filter((r) => r.status === "ATRIBUIDA").length / mockRoutes.length) * 100
   ),
-  blockedDrivers: mockBlocklist.filter((b) => b.status === "ACTIVE").length,
+  blockedDrivers: mockBlocklist.filter((b) => b.status === "BLOCKED").length,
   lastSync: mockSyncLogs[0],
   avgDeclineRate: Math.round(
     (mockDrivers.reduce((acc, d) => acc + d.declineRate, 0) / mockDrivers.length) * 100

@@ -31,6 +31,10 @@ export type SyncRoutesSummary = {
 export class SyncService implements OnModuleInit {
   private readonly logger = new Logger(SyncService.name);
   private lastScheduledRun: string | null = null;
+  private readonly DASHBOARD_EXECUTIVE_CACHE_PREFIX = 'cache:dashboard:executive';
+  private readonly DASHBOARD_NOSHOW_CACHE_PREFIX = 'cache:dashboard:noshow';
+  private readonly DRIVERS_LIST_CACHE_PREFIX = 'cache:drivers:list';
+  private readonly DRIVERS_ANALYTICS_CACHE_PREFIX = 'cache:drivers:analytics';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -188,11 +192,105 @@ export class SyncService implements OnModuleInit {
     dsPercent: number,
     declineRate: number,
     noShowCount: number,
+    weights?: {
+      noShowWeight: number;
+      declineWeight: number;
+      dsWeight: number;
+    },
   ): number {
+    const config = weights || {
+      noShowWeight: 30,
+      declineWeight: 25,
+      dsWeight: 20,
+    };
+    const totalWeight = Math.max(
+      1,
+      config.noShowWeight + config.declineWeight + config.dsWeight,
+    );
     const noShowComponent = Math.max(0, 100 - noShowCount * 10);
-    const score = dsPercent * 0.6 + (100 - declineRate) * 0.3 + noShowComponent * 0.1;
+    const score =
+      (dsPercent * config.dsWeight +
+        (100 - declineRate) * config.declineWeight +
+        noShowComponent * config.noShowWeight) /
+      totalWeight;
     const bounded = Math.max(0, Math.min(100, score));
     return Number(bounded.toFixed(2));
+  }
+
+  private async getAlgorithmConfig(): Promise<{
+    noShowWeight: number;
+    declineWeight: number;
+    dsWeight: number;
+    blockThreshold: number;
+    autoBlock: boolean;
+  }> {
+    const row = await (this.prisma as any).systemConfig.findUnique({
+      where: { key: 'algorithm' },
+    });
+    const value = (row?.value || {}) as Record<string, unknown>;
+    const toNumber = (raw: unknown, fallback: number) => {
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    return {
+      noShowWeight: Math.max(0, toNumber(value.noShowWeight, 30)),
+      declineWeight: Math.max(0, toNumber(value.declineWeight, 25)),
+      dsWeight: Math.max(0, toNumber(value.dsWeight, 20)),
+      blockThreshold: Math.max(0, Math.min(100, toNumber(value.blockThreshold, 70))),
+      autoBlock: value.autoBlock === undefined ? true : Boolean(value.autoBlock),
+    };
+  }
+
+  private async applyAutomaticBlocklist(
+    driverId: string,
+    priorityScore: number,
+    config: {
+      noShowWeight: number;
+      declineWeight: number;
+      dsWeight: number;
+      blockThreshold: number;
+      autoBlock: boolean;
+    },
+  ): Promise<boolean> {
+    if (!config.autoBlock || priorityScore > config.blockThreshold) {
+      return false;
+    }
+
+    const existing = await this.prisma.driverBlocklist.findUnique({
+      where: { driverId },
+      select: { status: true, timesListed: true },
+    });
+
+    if (!existing) {
+      await this.prisma.driverBlocklist.create({
+        data: {
+          driverId,
+          status: 'BLOCKED' as any,
+          timesListed: 1,
+          lastActivatedAt: new Date(),
+        },
+      });
+      await this.redis.client().set(`telegram:blocklist:cache:driver:${driverId}`, '1', 'EX', 3600);
+      return true;
+    }
+
+    const currentStatus = String(existing.status || '');
+    if (currentStatus === 'BLOCKED' || currentStatus === 'ACTIVE') {
+      await this.redis.client().set(`telegram:blocklist:cache:driver:${driverId}`, '1', 'EX', 3600);
+      return false;
+    }
+
+    await this.prisma.driverBlocklist.update({
+      where: { driverId },
+      data: {
+        status: 'BLOCKED' as any,
+        timesListed: { increment: 1 },
+        lastActivatedAt: new Date(),
+      },
+    });
+    await this.redis.client().set(`telegram:blocklist:cache:driver:${driverId}`, '1', 'EX', 3600);
+    return true;
   }
 
   private async getRowsFromAnyRange(ranges: string[]): Promise<string[][]> {
@@ -208,6 +306,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private async syncDriverPriorityMetrics(): Promise<void> {
+    const algorithm = await this.getAlgorithmConfig();
     const disponibilidadeRows = await this.getRowsFromAnyRange([
       `'Disponibilidade'!A:E`,
       `'disponibilidade'!A:E`,
@@ -251,13 +350,14 @@ export class SyncService implements OnModuleInit {
     const drivers = await this.prisma.driver.findMany({
       select: { id: true, ds: true },
     });
+    let changedAutoBlock = false;
 
     for (const driver of drivers) {
       const conv = convocationByDriver.get(driver.id) || { total: 0, declined: 0 };
       const noShowCount = noShowByDriver.get(driver.id) || 0;
       const declineRate = conv.total > 0 ? (conv.declined / conv.total) * 100 : 0;
       const dsPercent = this.parsePercent(driver.ds);
-      const priorityScore = this.calculatePriorityScore(dsPercent, declineRate, noShowCount);
+      const priorityScore = this.calculatePriorityScore(dsPercent, declineRate, noShowCount, algorithm);
 
       await this.prisma.driver.update({
         where: { id: driver.id },
@@ -267,6 +367,21 @@ export class SyncService implements OnModuleInit {
           priorityScore,
         },
       });
+
+      if (await this.applyAutomaticBlocklist(driver.id, priorityScore, algorithm)) {
+        changedAutoBlock = true;
+      }
+    }
+
+    await this.clearRedisPatterns([
+      `${this.DASHBOARD_EXECUTIVE_CACHE_PREFIX}:*`,
+      `${this.DASHBOARD_NOSHOW_CACHE_PREFIX}:*`,
+      `${this.DRIVERS_LIST_CACHE_PREFIX}:*`,
+      `${this.DRIVERS_ANALYTICS_CACHE_PREFIX}:*`,
+    ]);
+
+    if (changedAutoBlock) {
+      this.logger.log('Bloqueio automatico aplicado para um ou mais motoristas no sync.');
     }
   }
 

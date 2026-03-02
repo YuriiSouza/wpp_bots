@@ -1,10 +1,14 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { PageHeader } from "@/components/page-header"
 import { KpiCards } from "@/components/dashboard/kpi-cards"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
   BreakdownBarChart,
   BreakdownPieChart,
@@ -14,21 +18,41 @@ import {
   RouteDistributionChart,
   TopDriversChart,
 } from "@/components/dashboard/dashboard-charts"
-import { fetchDashboard, getApiErrorMessage, type DashboardPayload } from "@/lib/admin-api"
+import {
+  fetchDashboard,
+  fetchOperationContext,
+  getApiErrorMessage,
+  updateOperationContext,
+  type DashboardPayload,
+} from "@/lib/admin-api"
 import { toast } from "sonner"
 
 export default function DashboardPage() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [shift, setShift] = useState<"AM" | "PM" | "PM2">("AM")
+  const [isSavingShift, setIsSavingShift] = useState(false)
+  const [showShiftReminder, setShowShiftReminder] = useState(false)
+  const today = new Date().toISOString().slice(0, 10)
+  const hour = new Date().getHours()
+  const expectedShift = useMemo<"AM" | "PM" | "PM2">(() => {
+    if (hour >= 15) return "PM2"
+    if (hour >= 8) return "PM"
+    return "AM"
+  }, [hour])
 
   useEffect(() => {
     let active = true
 
     const loadDashboard = async () => {
       try {
-        const data = await fetchDashboard()
+        const [data, context] = await Promise.all([
+          fetchDashboard(),
+          fetchOperationContext(),
+        ])
         if (active) {
           setDashboard(data)
+          setShift(context.shift)
         }
       } catch (error) {
         toast.error(getApiErrorMessage(error, "Nao foi possivel carregar o dashboard"))
@@ -46,6 +70,35 @@ export default function DashboardPage() {
     }
   }, [])
 
+  useEffect(() => {
+    if ((hour >= 8 && hour < 15 && shift === "AM") || (hour >= 15 && (shift === "AM" || shift === "PM"))) {
+      setShowShiftReminder(true)
+    } else {
+      setShowShiftReminder(false)
+    }
+  }, [hour, shift])
+
+  const handleShiftChange = async (value: "AM" | "PM" | "PM2") => {
+    setShift(value)
+    setIsSavingShift(true)
+    try {
+      const response = await updateOperationContext({
+        date: today,
+        shift: value,
+      })
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+      setShift(response.context.shift)
+      toast.success("Turno vigente atualizado.")
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o turno vigente"))
+    } finally {
+      setIsSavingShift(false)
+    }
+  }
+
   return (
     <div className="flex flex-col">
       <PageHeader title="Dashboard" />
@@ -54,6 +107,34 @@ export default function DashboardPage() {
           <h2 className="text-2xl font-bold text-foreground">Dashboard Executivo</h2>
           <p className="text-sm text-muted-foreground">Visao geral operacional em tempo real</p>
         </div>
+
+        <Card>
+          <CardContent className="flex flex-col gap-4 p-4 md:flex-row md:items-end md:justify-between">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Data vigente</Label>
+                <div className="rounded-md border bg-muted px-3 py-2 text-sm text-card-foreground">{today}</div>
+              </div>
+              <div className="space-y-2">
+                <Label>Turno vigente</Label>
+                <Select value={shift} onValueChange={(value: "AM" | "PM" | "PM2") => void handleShiftChange(value)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="AM">AM</SelectItem>
+                    <SelectItem value="PM">PM1</SelectItem>
+                    <SelectItem value="PM2">PM2</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Janela operacional usada pelo bot para validar rota ativa no dia atual.
+              {isSavingShift ? " Salvando..." : ""}
+            </p>
+          </CardContent>
+        </Card>
 
         {isLoading || !dashboard ? (
           <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">
@@ -77,6 +158,25 @@ export default function DashboardPage() {
           </>
         )}
       </div>
+
+      <Dialog open={showShiftReminder} onOpenChange={setShowShiftReminder}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Atualize o turno vigente</DialogTitle>
+            <DialogDescription>
+              Agora são {hour}:00 e o turno selecionado ainda é {shift === "PM" ? "PM1" : shift}. O turno esperado para este horário é {expectedShift === "PM" ? "PM1" : expectedShift}.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowShiftReminder(false)}>
+              Lembrar depois
+            </Button>
+            <Button onClick={() => void handleShiftChange(expectedShift)}>
+              Mudar para {expectedShift === "PM" ? "PM1" : expectedShift}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -86,12 +186,12 @@ function RankingTable({ drivers }: { drivers: DashboardPayload["topDrivers"] }) 
   return (
     <div className="rounded-lg border bg-card">
       <div className="border-b p-4">
-        <h3 className="text-base font-semibold text-card-foreground">Ranking Priority Score</h3>
-        <p className="text-xs text-muted-foreground">Top motoristas ordenados por score</p>
+        <h3 className="text-base font-semibold text-card-foreground">Ranking por DS</h3>
+        <p className="text-xs text-muted-foreground">Top motoristas ordenados por DS</p>
       </div>
       <div className="divide-y">
         {sorted.map((d, i) => (
-          <div key={d.name} className="flex items-center gap-3 px-4 py-3">
+          <div key={`${d.name}-${d.score}-${i}`} className="flex items-center gap-3 px-4 py-3">
             <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
               i < 3 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
             }`}>
@@ -101,7 +201,7 @@ function RankingTable({ drivers }: { drivers: DashboardPayload["topDrivers"] }) 
               <p className="text-sm font-medium text-card-foreground truncate">{d.name}</p>
               <p className="text-xs text-muted-foreground">{d.routes} rotas</p>
             </div>
-            <span className="text-sm font-bold text-card-foreground">{d.score}</span>
+            <span className="text-sm font-bold text-card-foreground">{d.score}%</span>
           </div>
         ))}
       </div>
@@ -131,12 +231,12 @@ function NoShowAnalyticsSection({ data }: { data: DashboardPayload["noShow"] }) 
         <MetricCard label="Cidade Mais Critica" value={data.summary.topCity || "-"} hint="Recorrencia mais alta" />
       </div>
 
-      <div className="grid gap-4 grid-cols-1 xl:grid-cols-3">
+      <div className="grid gap-4 grid-cols-1">
         <NoShowPerDayChart data={data.byDay} />
-        <BreakdownPieChart title="No-Show por Turno" description="Onde o problema concentra mais" data={data.byShift} />
       </div>
 
       <div className="grid gap-4 grid-cols-1 xl:grid-cols-3">
+        <BreakdownPieChart title="No-Show por Turno" description="Onde o problema concentra mais" data={data.byShift} />
         <BreakdownPieChart title="No-Show por Cidade" description="Top cidades com maior incidencia" data={data.byCity} />
         <BreakdownBarChart title="No-Show por Dia da Semana" description="Distribuicao semanal" data={data.byWeekday} />
       </div>

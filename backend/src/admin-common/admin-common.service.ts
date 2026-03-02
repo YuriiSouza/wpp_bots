@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BlocklistStatus, RouteStatus } from '@prisma/client';
+import { RouteStatus } from '@prisma/client';
 import { createConnection } from 'net';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';

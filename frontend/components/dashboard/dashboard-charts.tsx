@@ -124,26 +124,25 @@ export function TopDriversChart({ data }: TopDriversChartProps) {
   return (
     <Card className="col-span-full lg:col-span-2">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Top 10 Motoristas por Performance</CardTitle>
-        <CardDescription>Ranking por priority score</CardDescription>
+        <CardTitle className="text-base">Top 10 Motoristas por DS</CardTitle>
+        <CardDescription>Ranking por DS</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 5, right: 10, left: -20, bottom: 0 }} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" className="stroke-border" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 11 }} className="fill-muted-foreground" />
-              <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} className="fill-muted-foreground" width={70} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "var(--color-card)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: "8px",
-                  fontSize: "12px",
-                  color: "var(--color-card-foreground)",
-                }}
+            <BarChart data={data} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+              <XAxis
+                dataKey="name"
+                tick={{ fontSize: 11 }}
+                className="fill-muted-foreground"
+                interval={0}
+                angle={-25}
+                textAnchor="end"
+                height={60}
               />
-              <Bar dataKey="score" name="Score" fill="var(--color-chart-1)" radius={[0, 4, 4, 0]} barSize={20} />
+              <YAxis tick={{ fontSize: 11 }} className="fill-muted-foreground" />
+              <Bar dataKey="score" name="DS" fill="var(--color-chart-1)" radius={[4, 4, 0, 0]} barSize={26} />
             </BarChart>
           </ResponsiveContainer>
         </div>

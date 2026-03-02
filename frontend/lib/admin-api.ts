@@ -88,6 +88,11 @@ export interface UserManagementPayload {
   hubs: HubOption[]
 }
 
+export interface OperationContextPayload {
+  date: string
+  shift: "AM" | "PM" | "PM2"
+}
+
 export interface DriversAnalyticsPayload {
   summary: {
     totalActiveDrivers: number
@@ -154,7 +159,10 @@ export interface OverviewPayload {
     driverId: string
     driverName: string | null
     vehicleType: string | null
-    displayedRoutes: string[]
+    displayedRoutes: Array<{
+      atId: string
+      bairro: string | null
+    }>
     displayedAt: string | null
     requestedAt: string | null
     choseRoute: boolean
@@ -398,12 +406,39 @@ export async function fetchManagedUsers() {
   return response.data
 }
 
+export async function fetchHubs() {
+  const response = await api.get<HubOption[]>("/api/hubs")
+  return response.data
+}
+
+export async function fetchOperationContext() {
+  const response = await api.get<OperationContextPayload>("/api/operation-context")
+  return response.data
+}
+
+export async function updateOperationContext(payload: OperationContextPayload) {
+  const response = await api.put<ApiActionResponse & { context: OperationContextPayload }>(
+    "/api/operation-context",
+    payload
+  )
+  return response.data
+}
+
+export async function createHub(payload: {
+  name: string
+  timezone?: string
+}) {
+  const response = await api.post<ApiActionResponse & { hub: HubOption }>("/api/hubs", payload)
+  return response.data
+}
+
 export async function createManagedUser(payload: {
   name: string
   email: string
   password: string
   role: "ADMIN" | "ANALISTA" | "SUPERVISOR"
   hubId?: string | null
+  telegramChatId?: string | null
 }) {
   const response = await api.post<ApiActionResponse & { user: ManagedUser }>("/api/users", payload)
   return response.data
@@ -415,6 +450,7 @@ export async function updateManagedUser(
     role?: "ADMIN" | "ANALISTA" | "SUPERVISOR"
     hubId?: string | null
     isActive?: boolean
+    telegramChatId?: string | null
   }
 ) {
   const response = await api.patch<ApiActionResponse & { user: ManagedUser }>(`/api/users/${userId}`, payload)

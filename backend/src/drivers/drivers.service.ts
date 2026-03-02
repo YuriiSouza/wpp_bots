@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { BlocklistStatus } from '@prisma/client';
 import { AdminCommonService } from '../admin-common/admin-common.service';
 
 @Injectable()
@@ -82,30 +81,30 @@ export class DriversService {
       await this.common.prisma.driverBlocklist.create({
         data: {
           driverId,
-          status: BlocklistStatus.ACTIVE,
+          status: 'BLOCKED' as any,
           timesListed: 1,
           lastActivatedAt: new Date(),
         },
       });
       await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), true, 3600);
-      return { ok: true, message: `Motorista ${driverId} adicionado na lista de bloqueio (ativo).` };
+      return { ok: true, message: `Motorista ${driverId} adicionado na lista de bloqueio (bloqueado).` };
     }
 
-    if (existing.status === BlocklistStatus.ACTIVE) {
+    if (String(existing.status) === 'BLOCKED') {
       await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), true, 3600);
-      return { ok: true, message: `Motorista ${driverId} ja esta ativo na lista de bloqueio.` };
+      return { ok: true, message: `Motorista ${driverId} ja esta bloqueado na lista de bloqueio.` };
     }
 
     await this.common.prisma.driverBlocklist.update({
       where: { driverId },
       data: {
-        status: BlocklistStatus.ACTIVE,
+        status: 'BLOCKED' as any,
         timesListed: { increment: 1 },
         lastActivatedAt: new Date(),
       },
     });
     await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), true, 3600);
-    return { ok: true, message: `Motorista ${driverId} reativado na lista de bloqueio.` };
+    return { ok: true, message: `Motorista ${driverId} bloqueado novamente na lista de bloqueio.` };
   }
 
   async removeBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
@@ -121,19 +120,19 @@ export class DriversService {
       return { ok: false, message: `Motorista ${driverId} nao esta cadastrado na lista de bloqueio.` };
     }
 
-    if (existing.status === BlocklistStatus.INACTIVE) {
+    if (String(existing.status) === 'UNBLOCKED') {
       await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), false, 3600);
-      return { ok: true, message: `Motorista ${driverId} ja esta inativo na lista de bloqueio.` };
+      return { ok: true, message: `Motorista ${driverId} ja esta desbloqueado na lista de bloqueio.` };
     }
 
     await this.common.prisma.driverBlocklist.update({
       where: { driverId },
       data: {
-        status: BlocklistStatus.INACTIVE,
+        status: 'UNBLOCKED' as any,
         lastInactivatedAt: new Date(),
       },
     });
     await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), false, 3600);
-    return { ok: true, message: `Motorista ${driverId} marcado como inativo na lista de bloqueio.` };
+    return { ok: true, message: `Motorista ${driverId} marcado como desbloqueado na lista de bloqueio.` };
   }
 }

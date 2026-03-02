@@ -8,6 +8,7 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
+import { getCurrentRouteWindow } from "@/lib/route-window"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -52,6 +53,7 @@ export default function RoutesPage() {
   const today = new Date().toISOString().slice(0, 10)
   const [search, setSearch] = useState("")
   const [dayFilter, setDayFilter] = useState(today)
+  const [shiftFilter, setShiftFilter] = useState("all")
   const [statusFilter, setStatusFilter] = useState("all")
   const [cityFilter, setCityFilter] = useState("all")
   const [vehicleFilter, setVehicleFilter] = useState("all")
@@ -99,46 +101,17 @@ export default function RoutesPage() {
   }, [])
 
   const handleRefresh = async () => {
-    const promptedDate = window.prompt(
-      "Informe a data para sincronizar as rotas (AAAA-MM-DD).",
-      dayFilter || today
-    )
-
-    if (!promptedDate) {
-      return
-    }
-
-    const normalizedDate = promptedDate.trim()
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
-      toast.error("Data invalida. Use o formato AAAA-MM-DD.")
-      return
-    }
-
-    const promptValue = window.prompt(
-      "Informe o turno para sincronizar as rotas (AM, PM ou PM2).",
-      "AM"
-    )
-    if (!promptValue) {
-      return
-    }
-
-    const normalizedShift = promptValue.trim().toUpperCase()
-    if (!["AM", "PM", "PM2"].includes(normalizedShift)) {
-      toast.error("Turno invalido. Use AM, PM ou PM2.")
-      return
-    }
-
-    const selectedShift = normalizedShift as "AM" | "PM" | "PM2"
+    const currentWindow = getCurrentRouteWindow()
 
     setIsRefreshing(true)
     try {
-      const syncResponse = await runSync("routes", normalizedDate, selectedShift)
+      const syncResponse = await runSync("routes")
       if (!syncResponse.ok) {
         toast.error(syncResponse.message)
         return
       }
 
-      setDayFilter(normalizedDate)
+      setDayFilter(currentWindow.date)
       await loadData(true)
       toast.success("Rotas sincronizadas com a planilha e atualizadas no banco.")
     } catch {
@@ -149,6 +122,7 @@ export default function RoutesPage() {
   }
 
   const cities = useMemo(() => [...new Set(routes.map((r) => r.cidade).filter(Boolean))], [routes])
+  const shifts = useMemo(() => [...new Set(routes.map((r) => r.shift).filter(Boolean))], [routes])
   const vehicles = useMemo(() => [...new Set(routes.map((r) => r.requiredVehicleType).filter(Boolean))], [routes])
 
   const filtered = useMemo(() => {
@@ -164,6 +138,7 @@ export default function RoutesPage() {
       )
     }
     if (dayFilter) result = result.filter((r) => (r.routeDate || "") === dayFilter)
+    if (shiftFilter !== "all") result = result.filter((r) => (r.shift || "") === shiftFilter)
     if (statusFilter !== "all") result = result.filter((r) => r.status === statusFilter)
     if (cityFilter !== "all") result = result.filter((r) => r.cidade === cityFilter)
     if (vehicleFilter !== "all") result = result.filter((r) => r.requiredVehicleType === vehicleFilter)
@@ -173,7 +148,7 @@ export default function RoutesPage() {
       if (aPriority !== bPriority) return aPriority - bPriority
       return (b.routeDate || "").localeCompare(a.routeDate || "")
     })
-  }, [routes, search, dayFilter, statusFilter, cityFilter, vehicleFilter])
+  }, [routes, search, dayFilter, shiftFilter, statusFilter, cityFilter, vehicleFilter])
 
   const statusCounts = useMemo(() => ({
     total: routes.length,
@@ -400,6 +375,17 @@ export default function RoutesPage() {
               <Button variant="outline" onClick={() => setDayFilter(today)} className="w-full sm:w-auto">
                 Hoje
               </Button>
+              <Select value={shiftFilter} onValueChange={setShiftFilter}>
+                <SelectTrigger className="w-full sm:w-[140px]">
+                  <SelectValue placeholder="Turno" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos Turnos</SelectItem>
+                  {shifts.map((shift) => (
+                    <SelectItem key={shift} value={shift!}>{shift}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="w-full sm:w-[150px]">
                   <SelectValue placeholder="Status" />
@@ -450,6 +436,7 @@ export default function RoutesPage() {
                   <TableRow>
                     <TableHead className="w-[140px]">AT</TableHead>
                     <TableHead className="w-[110px]">Gaiola</TableHead>
+                    <TableHead className="w-[130px]">Cluster</TableHead>
                     <TableHead className="w-[120px]">Status</TableHead>
                     <TableHead className="w-[150px]">Cidade</TableHead>
                     <TableHead className="w-[180px]">Bairro</TableHead>
@@ -464,11 +451,14 @@ export default function RoutesPage() {
                         key={route.id}
                         onClick={() => toggleRouteSelection(route)}
                         className={`cursor-pointer ${
-                          route.noShow ? "bg-red-50/80 hover:bg-red-100/80" : ""
+                          route.noShow
+                            ? "border-l-4 border-destructive bg-destructive/5 hover:bg-destructive/10 dark:bg-destructive/10 dark:hover:bg-destructive/15"
+                            : ""
                         } ${isSelected ? "ring-1 ring-inset ring-primary" : ""}`}
                       >
                         <TableCell className="truncate font-mono text-xs text-muted-foreground">{route.atId || route.id}</TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">{route.gaiola || "-"}</TableCell>
+                        <TableCell className="truncate text-sm text-card-foreground">{route.cluster || "-"}</TableCell>
                         <TableCell>
                           <Badge
                             variant="outline"

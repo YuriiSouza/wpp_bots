@@ -164,8 +164,30 @@ export class AppController {
     @Body('name') name: string,
     @Body('email') email: string,
     @Body('password') password: string,
+    @Body('hubId') hubId?: string,
+    @Body('telegramChatId') telegramChatId?: string,
   ) {
-    return this.appService.register(name, email, password);
+    return this.appService.register(name, email, password, hubId, telegramChatId);
+  }
+
+  @Get('api/hubs')
+  async getHubs() {
+    return this.appService.getHubs();
+  }
+
+  @Get('api/operation-context')
+  async getOperationContext() {
+    return this.appService.getOperationContext();
+  }
+
+  @Put('api/operation-context')
+  async updateOperationContext(@Body() payload: Record<string, unknown>) {
+    return this.appService.updateOperationContext(payload);
+  }
+
+  @Post('api/hubs')
+  async createHub(@Body() payload: Record<string, unknown>) {
+    return this.appService.createHub(payload);
   }
 
   @Get('api/users')

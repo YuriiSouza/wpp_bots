@@ -29,10 +29,17 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   private readonly QUEUE_ACTIVE_META_KEY_MOTO =
     'telegram:queue:active:meta:moto';
   private readonly ROUTE_TIMEOUT_PREFIX = 'telegram:route:timeout';
+  private readonly ROUTE_DISPATCH_PREFIX = 'telegram:route:dispatch';
+  private readonly QUEUE_WAIT_NOTICE_PREFIX = 'telegram:queue:wait-notice';
   private readonly ROUTE_TIMEOUT_LOCK_KEY = 'telegram:route:timeout:lock';
   private readonly LOG_PREFIX = 'telegram:log';
   private readonly ROUTES_NOTE_KEY = 'telegram:routes:note';
   private readonly BLOCKLIST_CACHE_PREFIX = 'telegram:blocklist:cache:driver';
+  private readonly DRIVER_CHAT_PREFIX = 'telegram:driver:chat';
+  private readonly CHAT_DRIVER_PREFIX = 'telegram:chat:driver';
+  private readonly OVERVIEW_ROUTE_REQUESTS_CACHE_KEY =
+    'cache:overview:route-requests:v1';
+  private readonly ANALYST_TELEGRAM_CHATS_KEY = 'analystTelegramChats';
   private readonly BLOCKLIST_WAIT_SECONDS = 120;
 
   private timeoutWatcher?: NodeJS.Timeout;
@@ -55,16 +62,46 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return `telegram:state:${chatId}`;
   }
 
+  private driverChatKey(driverId: string) {
+    return `${this.DRIVER_CHAT_PREFIX}:${driverId}`;
+  }
+
+  private chatDriverKey(chatId: string) {
+    return `${this.CHAT_DRIVER_PREFIX}:${chatId}`;
+  }
+
   private async getState(chatId: string): Promise<DriverSession | null> {
     return this.redis.get<DriverSession>(this.stateKey(chatId));
   }
 
   private async setState(chatId: string, state: DriverSession) {
+    const client = this.redis.client();
+    const previousDriverId = await client.get(this.chatDriverKey(chatId));
+
     await this.redis.set(this.stateKey(chatId), state, this.STATE_TTL);
+
+    const nextDriverId = String(state.driverId || '').trim();
+    if (previousDriverId && previousDriverId !== nextDriverId) {
+      await client.del(this.driverChatKey(previousDriverId));
+    }
+
+    if (nextDriverId) {
+      await client.set(this.driverChatKey(nextDriverId), chatId, 'EX', this.STATE_TTL);
+      await client.set(this.chatDriverKey(chatId), nextDriverId, 'EX', this.STATE_TTL);
+      return;
+    }
+
+    await client.del(this.chatDriverKey(chatId));
   }
 
   private async clearState(chatId: string) {
+    const client = this.redis.client();
+    const driverId = await client.get(this.chatDriverKey(chatId));
     await this.redis.del(this.stateKey(chatId));
+    await client.del(this.chatDriverKey(chatId));
+    if (driverId) {
+      await client.del(this.driverChatKey(driverId));
+    }
   }
 
   private queueMarker(chatId: string) {
@@ -102,6 +139,14 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return `${this.ROUTE_TIMEOUT_PREFIX}:${chatId}`;
   }
 
+  private routeDispatchKey(chatId: string) {
+    return `${this.ROUTE_DISPATCH_PREFIX}:${chatId}`;
+  }
+
+  private queueWaitNoticeKey(chatId: string) {
+    return `${this.QUEUE_WAIT_NOTICE_PREFIX}:${chatId}`;
+  }
+
   private logKey(date = new Date()) {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -111,10 +156,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.timeoutWatcher = setInterval(() => {
-      void this.requeueExpiredActive('general');
-      void this.requeueExpiredActive('moto');
-      void this.tryActivateWaitingQueue('general');
-      void this.tryActivateWaitingQueue('moto');
+      void this.maintainQueueGroup('general');
+      void this.maintainQueueGroup('moto');
     }, 5000);
   }
 
@@ -130,9 +173,12 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return `telegram:queue:empty_since:${group}`;
   }
 
-  private async isChatBlocklisted(chatId: string): Promise<boolean> {
-    const state = await this.getState(chatId);
-    const driverId = state?.driverId;
+  private async isChatBlocklisted(
+    chatId: string,
+    state?: DriverSession | null,
+  ): Promise<boolean> {
+    const currentState = state ?? (await this.getState(chatId));
+    const driverId = currentState?.driverId;
     if (!driverId) return false;
     const cacheKey = `${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`;
     const cached = await this.redis.get<boolean>(cacheKey);
@@ -142,7 +188,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       where: { driverId },
       select: { status: true },
     });
-    const isActive = row?.status === 'ACTIVE';
+    const isActive = String(row?.status || '') === 'BLOCKED';
     await this.redis.set(cacheKey, isActive, 3600);
     return isActive;
   }
@@ -192,7 +238,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
 
     if (
       state?.driverId &&
-      ['solicitou_rotas', 'rotas_exibidas', 'rota_solicitada', 'rota_atribuida'].includes(action)
+      ['solicitou_rotas', 'rotas_exibidas', 'rota_solicitada', 'rota_atribuida', 'rota_cancelada'].includes(action)
     ) {
       await this.prisma.auditLog.create({
         data: {
@@ -210,6 +256,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
           },
         },
       });
+      await this.redis.client().del(this.OVERVIEW_ROUTE_REQUESTS_CACHE_KEY);
       return;
     }
 
@@ -221,9 +268,91 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   }
 
   private async driverAlreadyAssigned(driverId: string): Promise<boolean> {
-    const hasSheet = await this.sheets.driverAlreadyHasRoute(driverId);
-    if (hasSheet) return true;
     return this.routes.driverHasRoute(driverId);
+  }
+
+  private formatCurrentRouteMessage(route: {
+    id?: string | null;
+    atId?: string | null;
+    gaiola?: string | null;
+    cidade?: string | null;
+    bairro?: string | null;
+    routeDate?: string | null;
+    shift?: string | null;
+    requiredVehicleType?: string | null;
+    assignmentSource?: string | null;
+  }) {
+    let message = `Você já possui uma rota ativa:
+Gaiola: ${route.gaiola || '-'}
+Data: ${route.routeDate || '-'}
+Turno: ${route.shift || '-'}
+Cidade: ${route.cidade || '-'}
+Bairro: ${route.bairro || '-'}`;
+
+    if (String(route.assignmentSource || '') === 'TELEGRAM_BOT') {
+      message += '\n\nSe quiser cancelar esta solicitação, digite: 5';
+    }
+
+    return message;
+  }
+
+  private async showCurrentRoute(chatId: string, state: DriverSession) {
+    if (!state.driverId) {
+      await this.telegram.sendMessage(Number(chatId), 'Sessão expirada. Informe seu ID novamente.');
+      await this.clearState(chatId);
+      return;
+    }
+
+    const route = await this.routes.getCurrentRouteForDriver(state.driverId);
+    if (!route) {
+      await this.telegram.sendMessage(Number(chatId), 'Você não possui rota ativa no momento.');
+      await this.sendMainMenu(Number(chatId));
+      return;
+    }
+
+    await this.telegram.sendMessage(Number(chatId), this.formatCurrentRouteMessage(route));
+    await this.sendMainMenu(Number(chatId));
+  }
+
+  private async cancelCurrentTelegramRoute(chatId: string, state: DriverSession) {
+    if (!state.driverId) {
+      await this.telegram.sendMessage(Number(chatId), 'Sessão expirada. Informe seu ID novamente.');
+      await this.clearState(chatId);
+      return;
+    }
+
+    const result = await this.routes.cancelTelegramRouteRequest(state.driverId);
+    if (!result.ok) {
+      if (result.reason === 'NO_ROUTE') {
+        await this.telegram.sendMessage(Number(chatId), 'Você não possui rota ativa para cancelar.');
+      } else {
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Sua rota atual não foi solicitada pelo bot e não pode ser cancelada por aqui.',
+        );
+      }
+      await this.sendMainMenu(Number(chatId));
+      return;
+    }
+
+    await this.logEvent('rota_cancelada', state, {
+      rota: result.route.atId || result.route.id,
+    });
+    await this.notifyAnalystsAboutRouteEvent({
+      action: 'CANCELOU',
+      driverId: state.driverId,
+      driverName: state.driverName,
+      vehicleType: state.vehicleType,
+      routeLabel: result.route.gaiola || result.route.atId || result.route.id,
+      atId: result.route.atId,
+    });
+    await this.telegram.sendMessage(
+      Number(chatId),
+      `Solicitação da rota ${result.route.gaiola || result.route.atId || result.route.id} cancelada com sucesso.
+
+Ela já voltou a ficar disponível para outros motoristas.`,
+    );
+    await this.sendMainMenu(Number(chatId));
   }
 
   private async pickNextFromQueue(group: 'moto' | 'general'): Promise<string | null> {
@@ -243,7 +372,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
           index,
           score: await this.resolveChatPriorityScore(chatId, state),
           isFiorino: this.isFiorino(state?.vehicleType),
-          blocklisted: await this.isChatBlocklisted(chatId),
+          blocklisted: await this.isChatBlocklisted(chatId, state),
         };
       }),
     );
@@ -294,6 +423,16 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return `telegram:queue:lock:${group}`;
   }
 
+  private async maintainQueueGroup(group: 'moto' | 'general') {
+    const active = await this.redis.client().get(this.queueActiveKey(group));
+    if (active) {
+      await this.requeueExpiredActive(group);
+      return;
+    }
+
+    await this.tryActivateWaitingQueue(group);
+  }
+
   private async withQueueLock<T>(
     group: 'moto' | 'general',
     fn: () => Promise<T>,
@@ -303,9 +442,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     const maxAttempts = 8;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const locked = await client.setnx(lockKey, '1');
-      if (locked === 1) {
-        await client.expire(lockKey, 5);
+      const locked = await client.set(lockKey, '1', 'EX', 5, 'NX');
+      if (locked === 'OK') {
         try {
           return await fn();
         } finally {
@@ -327,21 +465,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       const next = await this.pickNextFromQueue(group);
       if (!next) return null;
 
-      await client.set(
-        this.queueActiveKey(group),
-        next,
-        'EX',
-        this.QUEUE_TTL,
-      );
-      await client.set(
-        this.queueActiveMetaKey(group),
-        JSON.stringify({
-          chatId: next,
-          startedAt: Date.now(),
-        }),
-        'EX',
-        this.QUEUE_TTL * 2,
-      );
+      await this.setActiveQueueChat(group, next);
       return next;
     });
   }
@@ -350,11 +474,37 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     await this.redis.client().del(this.routeTimeoutKey(chatId));
   }
 
-  private async refreshActiveMeta(
-    chatId: string,
+  private async clearRouteDispatch(chatId: string) {
+    await this.redis.client().del(this.routeDispatchKey(chatId));
+  }
+
+  private async sendQueueWaitingNotice(chatId: string) {
+    const client = this.redis.client();
+    const lock = await client.set(
+      this.queueWaitNoticeKey(chatId),
+      '1',
+      'EX',
+      8,
+      'NX',
+    );
+    if (lock !== 'OK') return;
+    await this.telegram.sendMessage(
+      Number(chatId),
+      'Você está na fila. Aguarde atendimento.',
+    );
+  }
+
+  private async setActiveQueueChat(
     group: 'moto' | 'general',
+    chatId: string,
   ) {
     const client = this.redis.client();
+    await client.set(
+      this.queueActiveKey(group),
+      chatId,
+      'EX',
+      this.QUEUE_TTL,
+    );
     await client.set(
       this.queueActiveMetaKey(group),
       JSON.stringify({
@@ -364,7 +514,6 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       'EX',
       this.QUEUE_TTL * 2,
     );
-    await client.expire(this.queueActiveKey(group), this.QUEUE_TTL);
   }
 
   private async setRouteTimeout(
@@ -423,9 +572,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   ): Promise<boolean> {
     const client = this.redis.client();
     const lockKey = `${this.ROUTE_TIMEOUT_LOCK_KEY}:${group}`;
-    const locked = await client.setnx(lockKey, '1');
-    if (locked !== 1) return false;
-    await client.expire(lockKey, 5);
+    const locked = await client.set(lockKey, '1', 'EX', 5, 'NX');
+    if (locked !== 'OK') return false;
 
     const metaRaw = await client.get(this.queueActiveMetaKey(group));
     if (!metaRaw) {
@@ -452,7 +600,11 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private async notifyQueueNext(next: string, group: 'moto' | 'general') {
+  private async notifyQueueNext(
+    next: string,
+    group: 'moto' | 'general',
+    announce = true,
+  ) {
     const state = await this.getState(next);
     if (!state?.vehicleType) {
       await this.clearState(next);
@@ -460,10 +612,23 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.telegram.sendMessage(
-      Number(next),
-      'Sua vez chegou. Buscando rotas disponíveis...',
+    const client = this.redis.client();
+    const lock = await client.set(
+      this.routeDispatchKey(next),
+      '1',
+      'EX',
+      this.QUEUE_TTL * 2,
+      'NX',
     );
+    if (lock !== 'OK') return;
+    await client.del(this.queueWaitNoticeKey(next));
+
+    if (announce) {
+      await this.telegram.sendMessage(
+        Number(next),
+        'Sua vez chegou. Buscando rotas disponíveis...',
+      );
+    }
     await this.sendRoutes(next, state);
   }
 
@@ -543,7 +708,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
         await client.rpush(this.queueListKey(group), ...nextQueue);
       await client.set(marker, '1', 'EX', this.QUEUE_TTL);
 
-      const isBlocklisted = await this.isChatBlocklisted(chatId);
+      const isBlocklisted = await this.isChatBlocklisted(chatId, currentState);
       if (!isBlocklisted) {
         await client.del(this.queueEmptySinceKey(group));
       }
@@ -561,6 +726,10 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   private async releaseAndNotifyNext(group: 'moto' | 'general') {
     await this.withQueueLock(group, async () => {
       const client = this.redis.client();
+      const active = await client.get(this.queueActiveKey(group));
+      if (active) {
+        await this.clearRouteDispatch(active);
+      }
 
       await client.del(this.queueActiveKey(group));
       await client.del(this.queueActiveMetaKey(group));
@@ -568,12 +737,7 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       const next = await this.pickNextFromQueue(group);
       if (!next) return;
 
-      await client.set(
-        this.queueActiveKey(group),
-        next,
-        'EX',
-        this.QUEUE_TTL,
-      );
+      await this.setActiveQueueChat(group, next);
 
       await this.notifyQueueNext(next, group);
     });
@@ -590,7 +754,9 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
 encerrar - Encerrar atendimento
 1 - Ver rotas disponíveis
 2 - Dúvidas frequentes
-3 - Falar com analista`,
+3 - Falar com analista
+4 - Consultar minha rota
+5 - Cancelar solicitação da rota`,
     );
   }
 
@@ -645,6 +811,103 @@ Peça ao analista para cadastrar em /acess/duvidas.
     const suffix = String(Date.now()).slice(-8);
     const chatSuffix = String(chatId).slice(-4);
     return `ATD-${suffix}-${chatSuffix}`;
+  }
+
+  private normalizeTelegramChatId(value: unknown): number | null {
+    const normalized = String(value ?? '').trim();
+    if (!/^-?\d+$/.test(normalized)) return null;
+    const chatId = Number(normalized);
+    return Number.isSafeInteger(chatId) ? chatId : null;
+  }
+
+  private async getAnalystNotificationTargets(driverId: string) {
+    const prisma = this.prisma as any;
+    const [driver, config, analysts] = await Promise.all([
+      prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { hubId: true },
+      }),
+      prisma.systemConfig.findUnique({
+        where: { key: this.ANALYST_TELEGRAM_CHATS_KEY },
+        select: { value: true },
+      }),
+      prisma.analyst.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          hubId: true,
+        },
+      }),
+    ]);
+
+    const rawMap =
+      config?.value && typeof config.value === 'object' && !Array.isArray(config.value)
+        ? (config.value as Record<string, unknown>)
+        : {};
+
+    const withChat = analysts
+      .map((analyst) => ({
+        ...analyst,
+        telegramChatId: this.normalizeTelegramChatId(rawMap[analyst.id]),
+      }))
+      .filter(
+        (
+          analyst,
+        ): analyst is {
+          id: string;
+          name: string;
+          role: string;
+          hubId: string | null;
+          telegramChatId: number;
+        } => analyst.telegramChatId !== null,
+      );
+
+    const prioritized = withChat.filter(
+      (analyst) =>
+        analyst.hubId === driver?.hubId ||
+        analyst.role === 'ADMIN' ||
+        analyst.role === 'SUPERVISOR',
+    );
+
+    return prioritized.length ? prioritized : withChat;
+  }
+
+  private async notifyAnalystsAboutRouteEvent(input: {
+    action: 'SOLICITOU' | 'CANCELOU';
+    driverId: string;
+    driverName?: string | null;
+    vehicleType?: string | null;
+    routeLabel: string;
+    atId?: string | null;
+  }) {
+    const targets = await this.getAnalystNotificationTargets(input.driverId);
+    if (!targets.length) return;
+
+    const messageLines = [
+      'Atualizacao de rota',
+      `Acao: ${input.action}`,
+      `Motorista: ${input.driverName || input.driverId} (${input.driverId})`,
+    ];
+
+    if (input.vehicleType) {
+      messageLines.push(`Veiculo: ${input.vehicleType}`);
+    }
+
+    messageLines.push(`Rota: ${input.routeLabel}`);
+
+    if (input.atId) {
+      messageLines.push(`AT: ${input.atId}`);
+    }
+
+    messageLines.push(`Horario: ${new Date().toLocaleString('pt-BR')}`);
+
+    await Promise.allSettled(
+      targets.map((target) =>
+        this.telegram.sendMessage(target.telegramChatId, messageLines.join('\n')),
+      ),
+    );
   }
 
   private async ensureSupportHub(driverId: string) {
@@ -785,6 +1048,20 @@ Peça ao analista para cadastrar em /acess/duvidas.
     });
   }
 
+  private async isSupportTicketStillOpen(ticketId?: string) {
+    if (!ticketId) return false;
+
+    const prisma = this.prisma as any;
+    const ticket = await prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { status: true },
+    });
+
+    return ['WAITING_ANALYST', 'IN_PROGRESS', 'WAITING_DRIVER'].includes(
+      String(ticket?.status || ''),
+    );
+  }
+
   /* =======================
       ROTAS
   ======================== */
@@ -888,7 +1165,6 @@ Para encerrar, digite: encerrar
       rotas: ordered.map((route) => route.atId).join(','),
     });
     const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
-    await this.refreshActiveMeta(chatId, group);
     await this.setRouteTimeout(chatId, state.vehicleType, group);
   }
 
@@ -904,6 +1180,14 @@ Para encerrar, digite: encerrar
     const chatId = String(message.chat.id);
     const text = message.text.trim();
     const command = this.normalizeCommand(text);
+
+    if (command === '/meuchatid') {
+      await this.telegram.sendMessage(
+        Number(chatId),
+        `Seu Telegram Chat ID e:\n${chatId}\n\nUse esse valor no campo "Telegram Chat ID" do usuario no painel.`,
+      );
+      return { ok: true };
+    }
 
     if (text === '/sync' || text === '/atualizar_dados') {
       if (await this.sync.isLocked()) {
@@ -1020,14 +1304,11 @@ Para encerrar, digite: encerrar
       await this.enqueue(chatId, state.vehicleType, group);
       const canStart = await this.tryAcquireQueue(chatId, group);
       if (canStart) {
-        await this.sendRoutes(chatId, state);
+        await this.notifyQueueNext(chatId, group, false);
         return { ok: true };
       }
 
-      await this.telegram.sendMessage(
-        Number(chatId),
-        'Você está na fila. Aguarde atendimento.',
-      );
+      await this.sendQueueWaitingNotice(chatId);
       return { ok: true };
     }
 
@@ -1084,6 +1365,16 @@ Para encerrar, digite: encerrar
         return { ok: true };
       }
 
+      if (text === '4') {
+        await this.showCurrentRoute(chatId, state);
+        return { ok: true };
+      }
+
+      if (text === '5') {
+        await this.cancelCurrentTelegramRoute(chatId, state);
+        return { ok: true };
+      }
+
       if (text === '2') {
         await this.setState(chatId, { ...state, state: DriverState.HELP_MENU });
         const help = await this.getDynamicHelp();
@@ -1129,13 +1420,19 @@ Para encerrar, digite: encerrar
 
       const hasRoute = await this.driverAlreadyAssigned(state.driverId!);
       if (hasRoute) {
-        await this.telegram.sendMessage(
-          Number(chatId),
-          `Você já possui rota solicitada. O bot não realiza trocas.
-        Atendimento encerrado.
-          `,
-        );
-        await this.clearState(chatId);
+        const route = await this.routes.getCurrentRouteForDriver(state.driverId!);
+        if (route) {
+          await this.telegram.sendMessage(
+            Number(chatId),
+            this.formatCurrentRouteMessage(route),
+          );
+        } else {
+          await this.telegram.sendMessage(
+            Number(chatId),
+            'Você já possui rota solicitada no turno atual. O bot não realiza trocas.',
+          );
+        }
+        await this.sendMainMenu(Number(chatId));
         return { ok: true };
       }
 
@@ -1148,14 +1445,11 @@ Para encerrar, digite: encerrar
           inQueue: true,
           queueGroup: group,
         });
-        await this.telegram.sendMessage(
-          Number(chatId),
-          'Você está na fila. Aguarde atendimento.',
-        );
+        await this.sendQueueWaitingNotice(chatId);
         return { ok: true };
       }
 
-      await this.sendRoutes(chatId, state);
+      await this.notifyQueueNext(chatId, group, false);
       return { ok: true };
     }
 
@@ -1185,9 +1479,12 @@ Para encerrar, digite: encerrar
       const route = routes[choice];
       const alreadyAssigned = await this.driverAlreadyAssigned(state.driverId!);
       if (alreadyAssigned) {
+        const currentRoute = await this.routes.getCurrentRouteForDriver(state.driverId!);
         await this.telegram.sendMessage(
           Number(chatId),
-          'Você já possui rota solicitada. O bot não realiza trocas.',
+          currentRoute
+            ? this.formatCurrentRouteMessage(currentRoute)
+            : 'Você já possui rota solicitada. O bot não realiza trocas.',
         );
         await this.setState(chatId, { ...state, state: DriverState.MENU });
         const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
@@ -1216,6 +1513,14 @@ Como pegar a rota:
 3. Em caso de dúvida, responda esta conversa para suporte.`,
       );
       await this.logEvent('rota_solicitada', state, { rota: route.atId });
+      await this.notifyAnalystsAboutRouteEvent({
+        action: 'SOLICITOU',
+        driverId: state.driverId!,
+        driverName: state.driverName,
+        vehicleType: state.vehicleType,
+        routeLabel: route.gaiola || route.atId || route.routeId,
+        atId: route.atId,
+      });
 
       try {
         await this.sheets.updateAssignmentRequest(route.routeId, state.driverId!);
@@ -1252,6 +1557,20 @@ Como pegar a rota:
         return { ok: true };
       }
 
+      if (state.supportTicketId && !(await this.isSupportTicketStillOpen(state.supportTicketId))) {
+        await this.setState(chatId, {
+          ...state,
+          state: DriverState.MENU,
+          supportTicketId: undefined,
+        });
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Seu atendimento com o analista ja foi encerrado. Se precisar, escolha novamente a opcao 3 - Falar com analista.',
+        );
+        await this.sendMainMenu(Number(chatId));
+        return { ok: true };
+      }
+
       let ticketId = state.supportTicketId;
       if (!ticketId) {
         const support = await this.createOrResumeSupportTicket(chatId, state);
@@ -1268,20 +1587,17 @@ Como pegar a rota:
 
       const created = await this.appendDriverSupportMessage(ticketId, text, state);
       if (!created) {
-        const support = await this.createOrResumeSupportTicket(chatId, state);
-        if (!support) {
-          await this.telegram.sendMessage(
-            Number(chatId),
-            'Nao foi possivel registrar sua mensagem no atendimento.',
-          );
-          return { ok: true };
-        }
-
         await this.setState(chatId, {
           ...state,
-          supportTicketId: support.ticket.id,
+          state: DriverState.MENU,
+          supportTicketId: undefined,
         });
-        await this.appendDriverSupportMessage(support.ticket.id, text, state);
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Seu atendimento com o analista foi encerrado. Para abrir um novo atendimento, escolha novamente a opcao 3 - Falar com analista.',
+        );
+        await this.sendMainMenu(Number(chatId));
+        return { ok: true };
       }
 
       await this.telegram.sendMessage(

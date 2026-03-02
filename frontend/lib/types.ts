@@ -1,6 +1,6 @@
 // ===== Enums =====
 export type RouteStatus = "DISPONIVEL" | "ATRIBUIDA" | "BLOQUEADA"
-export type BlocklistStatus = "ACTIVE" | "INACTIVE"
+export type BlocklistStatus = "BLOCKED" | "UNBLOCKED"
 export type UserRole = "ADMIN" | "ANALISTA" | "SUPERVISOR"
 
 // ===== Models =====
@@ -21,6 +21,7 @@ export interface Route {
   atId?: string | null
   routeDate?: string | null
   shift?: string | null
+  cluster?: string | null
   gaiola: string | null
   bairro: string | null
   cidade: string | null
@@ -120,6 +121,7 @@ export interface User {
 
 export interface ManagedUser extends User {
   isActive: boolean
+  telegramChatId?: string | null
   createdAt: string | null
   updatedAt: string | null
 }

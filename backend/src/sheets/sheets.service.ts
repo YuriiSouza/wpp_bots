@@ -58,6 +58,72 @@ export class SheetsService {
     return res.data.values || [];
   }
 
+  private normalizeCalculationDate(value: unknown) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+    const brMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (brMatch) {
+      const [, day, month, year] = brMatch;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  private normalizeCalculationShift(value: unknown) {
+    const raw = String(value || '').trim().toUpperCase();
+    if (raw === 'AM') return 'AM';
+    if (raw === 'PM' || raw === 'PM1') return 'PM';
+    if (raw === 'PM2') return 'PM2';
+    return '';
+  }
+
+  async getCurrentCalculationWindow(): Promise<{ date: string; shift: 'AM' | 'PM' | 'PM2' } | null> {
+    const rows = await this.getRows("'Calculation Tasks'!K:AF");
+    if (rows.length <= 1) return null;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const counts = new Map<string, number>();
+
+    for (const row of rows.slice(1)) {
+      const date = this.normalizeCalculationDate(row[0]);
+      const atId = String(row[17] || '').trim();
+      const shift = this.normalizeCalculationShift(row[21]);
+      if (!date || !atId || !shift) continue;
+
+      const key = `${date}|${shift}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+
+    if (!counts.size) return null;
+
+    const sorted = Array.from(counts.entries()).sort((left, right) => {
+      const [leftKey, leftCount] = left;
+      const [rightKey, rightCount] = right;
+      const [leftDate] = leftKey.split('|');
+      const [rightDate] = rightKey.split('|');
+
+      const leftIsToday = leftDate === today ? 1 : 0;
+      const rightIsToday = rightDate === today ? 1 : 0;
+      if (leftIsToday !== rightIsToday) return rightIsToday - leftIsToday;
+      if (leftCount !== rightCount) return rightCount - leftCount;
+      return rightKey.localeCompare(leftKey);
+    });
+
+    const [selectedKey] = sorted[0];
+    const [date, shift] = selectedKey.split('|');
+    if (!date || !shift) return null;
+
+    return {
+      date,
+      shift: shift as 'AM' | 'PM' | 'PM2',
+    };
+  }
+
   async batchUpdateValues(
     updates: { range: string; values: string[][] }[],
   ) {
@@ -156,11 +222,18 @@ export class SheetsService {
   async clearAssignmentRequest(routeId: string) {
     const route = await (this.prisma as any).route.findUnique({
       where: { id: routeId },
-      select: { sheetRowNumber: true },
+      select: { sheetRowNumber: true, driverId: true },
     });
     if (!route?.sheetRowNumber) return false;
-    await this.updateAssignmentRequestByRow(route.sheetRowNumber, '0');
+    await this.updateAssignmentRequestByRow(route.sheetRowNumber, '');
+    if (route.driverId) {
+      await this.clearDriverRouteCache(route.driverId);
+    }
     return true;
+  }
+
+  async clearDriverRouteCache(driverId: string) {
+    await this.redisService.del(`driver:hasRoute:${String(driverId)}`);
   }
 
   async updateRouteDriverId(atId: string, driverId: string) {

@@ -1,37 +1,55 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { MessageCircle, AlertCircle, Users, Activity, Wifi, WifiOff } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { MessageCircle, AlertCircle, Users, Activity, Wifi, WifiOff, RefreshCw } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import { Button } from "@/components/ui/button"
 import { fetchBotHealth, getApiErrorMessage, type BotHealthPayload } from "@/lib/admin-api"
 import { toast } from "sonner"
 
 export default function BotHealthPage() {
   const [health, setHealth] = useState<BotHealthPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null)
+
+  const load = useCallback(async (silent = false) => {
+    if (silent) {
+      setIsRefreshing(true)
+    }
+    try {
+      const data = await fetchBotHealth()
+      setHealth(data)
+      setLastUpdatedAt(new Date().toLocaleTimeString("pt-BR"))
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel carregar a saude do bot"))
+    } finally {
+      if (silent) {
+        setIsRefreshing(false)
+      } else {
+        setIsLoading(false)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
-    const load = async () => {
-      try {
-        const data = await fetchBotHealth()
-        if (active) setHealth(data)
-      } catch (error) {
-        toast.error(getApiErrorMessage(error, "Nao foi possivel carregar a saude do bot"))
-      } finally {
-        if (active) setIsLoading(false)
-      }
+
+    const safeLoad = async (silent = false) => {
+      if (!active) return
+      await load(silent)
     }
-    void load()
-    const interval = setInterval(() => void load(), 5000)
+
+    void safeLoad(false)
+    const interval = setInterval(() => void safeLoad(true), 5000)
     return () => {
       active = false
       clearInterval(interval)
     }
-  }, [])
+  }, [load])
 
   const healthCards = health
     ? [
@@ -50,11 +68,20 @@ export default function BotHealthPage() {
           <div>
             <h2 className="text-2xl font-bold text-foreground">Painel de Saude do Bot</h2>
             <p className="text-sm text-muted-foreground">Monitoramento em tempo real do bot Telegram</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Ultima atualizacao: {lastUpdatedAt || "-"}
+            </p>
           </div>
-          <Badge variant="outline" className={`gap-1.5 px-3 py-1.5 ${health?.status === "ONLINE" ? "bg-success/10 text-success border-success/30" : "bg-warning/10 text-warning border-warning/30"}`}>
-            {health?.status === "ONLINE" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-            {health?.status === "ONLINE" ? "Online" : "Degradado"}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className={`gap-1.5 px-3 py-1.5 ${health?.status === "ONLINE" ? "bg-success/10 text-success border-success/30" : "bg-warning/10 text-warning border-warning/30"}`}>
+              {health?.status === "ONLINE" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+              {health?.status === "ONLINE" ? "Online" : "Degradado"}
+            </Badge>
+            <Button variant="outline" size="sm" onClick={() => void load(true)} disabled={isRefreshing}>
+              <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+              Atualizar
+            </Button>
+          </div>
         </div>
 
         {isLoading || !health ? (

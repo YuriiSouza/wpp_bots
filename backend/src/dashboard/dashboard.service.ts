@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BlocklistStatus, RouteStatus } from '@prisma/client';
+import { RouteStatus } from '@prisma/client';
 import { AdminCommonService } from '../admin-common/admin-common.service';
 
 @Injectable()
@@ -23,7 +23,7 @@ export class DashboardService {
       prisma.route.count({ where: { status: RouteStatus.DISPONIVEL } }),
       prisma.route.count({ where: { status: RouteStatus.ATRIBUIDA } }),
       prisma.route.count({ where: { status: RouteStatus.BLOQUEADA } }),
-      prisma.driverBlocklist.count({ where: { status: BlocklistStatus.ACTIVE } }),
+      prisma.driverBlocklist.count({ where: { status: 'BLOCKED' as any } }),
       prisma.driver.aggregate({ _avg: { declineRate: true } }),
       prisma.syncLog.findFirst({ orderBy: { startedAt: 'desc' } }),
       prisma.driver.findMany({

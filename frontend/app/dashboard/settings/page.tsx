@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { Settings, Save, RotateCcw, Shield, Sliders, Users } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { Settings, Save, RotateCcw, Shield, Sliders, Users, RefreshCw } from "lucide-react"
 import { useAuthContext } from "@/components/auth-provider"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -15,12 +15,16 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
+  createHub,
   createManagedUser,
   fetchManagedUsers,
+  fetchOperationContext,
   fetchSettings,
   getApiErrorMessage,
   saveSettings,
+  updateOperationContext,
   updateManagedUser,
+  type OperationContextPayload,
   type SettingsPayload,
   type UserManagementPayload,
 } from "@/lib/admin-api"
@@ -32,27 +36,47 @@ export default function SettingsPage() {
   const [userManagement, setUserManagement] = useState<UserManagementPayload | null>(null)
   const [isUsersLoading, setIsUsersLoading] = useState(false)
   const [isCreatingUser, setIsCreatingUser] = useState(false)
+  const [isCreatingHub, setIsCreatingHub] = useState(false)
   const [newUser, setNewUser] = useState({
     name: "",
     email: "",
     password: "",
     role: "ANALISTA" as "ADMIN" | "ANALISTA" | "SUPERVISOR",
     hubId: "hub-sp",
+    telegramChatId: "",
   })
+  const [userTelegramChatDrafts, setUserTelegramChatDrafts] = useState<Record<string, string>>({})
+  const [newHub, setNewHub] = useState({
+    name: "",
+    timezone: "America/Sao_Paulo",
+  })
+  const [operationContext, setOperationContext] = useState<OperationContextPayload>({
+    date: new Date().toISOString().slice(0, 10),
+    shift: "AM",
+  })
+  const [isSavingOperationContext, setIsSavingOperationContext] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
   const isAdmin = hasRole("ADMIN")
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        setSettings(await fetchSettings())
-      } catch (error) {
-        toast.error(getApiErrorMessage(error, "Nao foi possivel carregar as configuracoes"))
-      } finally {
-        setIsLoading(false)
-      }
-    })()
+  const loadSettings = useCallback(async () => {
+    try {
+      const [settingsResponse, operationContextResponse] = await Promise.all([
+        fetchSettings(),
+        fetchOperationContext(),
+      ])
+      setSettings(settingsResponse)
+      setOperationContext(operationContextResponse)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel carregar as configuracoes"))
+    } finally {
+      setIsLoading(false)
+    }
   }, [])
+
+  useEffect(() => {
+    void loadSettings()
+  }, [loadSettings])
 
   useEffect(() => {
     if (!isAdmin) return
@@ -63,7 +87,13 @@ export default function SettingsPage() {
   const loadUsers = async () => {
     setIsUsersLoading(true)
     try {
-      setUserManagement(await fetchManagedUsers())
+      const response = await fetchManagedUsers()
+      setUserManagement(response)
+      setUserTelegramChatDrafts(
+        Object.fromEntries(
+          response.users.map((user) => [user.id, user.telegramChatId || ""])
+        )
+      )
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel carregar os usuarios"))
     } finally {
@@ -73,6 +103,7 @@ export default function SettingsPage() {
 
   const handleSave = async () => {
     if (!settings) return
+    setIsSaving(true)
     try {
       const response = await saveSettings(settings)
       if (!response.ok) {
@@ -82,6 +113,8 @@ export default function SettingsPage() {
       toast.success(response.message)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel salvar as configuracoes"))
+    } finally {
+      setIsSaving(false)
     }
   }
 
@@ -111,6 +144,7 @@ export default function SettingsPage() {
       const response = await createManagedUser({
         ...newUser,
         hubId: newUser.role === "ADMIN" ? null : newUser.hubId,
+        telegramChatId: newUser.telegramChatId || null,
       })
       if (!response.ok) {
         toast.error(response.message)
@@ -125,18 +159,78 @@ export default function SettingsPage() {
             }
           : current
       )
+      setUserTelegramChatDrafts((current) => ({
+        ...current,
+        [response.user.id]: response.user.telegramChatId || "",
+      }))
       setNewUser({
         name: "",
         email: "",
         password: "",
         role: "ANALISTA",
         hubId: userManagement?.hubs[0]?.id || "hub-sp",
+        telegramChatId: "",
       })
       toast.success(response.message)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel criar o usuario"))
     } finally {
       setIsCreatingUser(false)
+    }
+  }
+
+  const handleCreateHub = async () => {
+    if (!newHub.name.trim()) {
+      toast.error("Preencha o nome do hub")
+      return
+    }
+
+    setIsCreatingHub(true)
+    try {
+      const response = await createHub(newHub)
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setUserManagement((current) =>
+        current
+          ? {
+              ...current,
+              hubs: [...current.hubs, response.hub].sort((left, right) => left.name.localeCompare(right.name)),
+            }
+          : current
+      )
+      setNewHub({
+        name: "",
+        timezone: "America/Sao_Paulo",
+      })
+      setNewUser((current) => ({
+        ...current,
+        hubId: current.hubId || response.hub.id,
+      }))
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel criar o hub"))
+    } finally {
+      setIsCreatingHub(false)
+    }
+  }
+
+  const handleSaveOperationContext = async () => {
+    setIsSavingOperationContext(true)
+    try {
+      const response = await updateOperationContext(operationContext)
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+      setOperationContext(response.context)
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o turno vigente"))
+    } finally {
+      setIsSavingOperationContext(false)
     }
   }
 
@@ -158,6 +252,10 @@ export default function SettingsPage() {
             }
           : current
       )
+      setUserTelegramChatDrafts((current) => ({
+        ...current,
+        [userId]: response.user.telegramChatId || "",
+      }))
       toast.success(response.message)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o usuario"))
@@ -185,6 +283,10 @@ export default function SettingsPage() {
             }
           : current
       )
+      setUserTelegramChatDrafts((current) => ({
+        ...current,
+        [userId]: response.user.telegramChatId || "",
+      }))
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o papel"))
     }
@@ -208,8 +310,40 @@ export default function SettingsPage() {
             }
           : current
       )
+      setUserTelegramChatDrafts((current) => ({
+        ...current,
+        [userId]: response.user.telegramChatId || "",
+      }))
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o hub"))
+    }
+  }
+
+  const handleTelegramChatSave = async (userId: string) => {
+    try {
+      const response = await updateManagedUser(userId, {
+        telegramChatId: userTelegramChatDrafts[userId] || null,
+      })
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setUserManagement((current) =>
+        current
+          ? {
+              ...current,
+              users: current.users.map((user) => (user.id === userId ? response.user : user)),
+            }
+          : current
+      )
+      setUserTelegramChatDrafts((current) => ({
+        ...current,
+        [userId]: response.user.telegramChatId || "",
+      }))
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel salvar o Telegram Chat ID"))
     }
   }
 
@@ -229,6 +363,16 @@ export default function SettingsPage() {
         <div>
           <h2 className="text-2xl font-bold text-foreground">Configuracoes</h2>
           <p className="text-sm text-muted-foreground">Ajustes do algoritmo, permissoes e sistema</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => void loadSettings()}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Recarregar
+          </Button>
+          <Button onClick={handleSave} disabled={isSaving}>
+            <Save className="mr-2 h-4 w-4" />
+            {isSaving ? "Salvando..." : "Salvar configuracoes"}
+          </Button>
         </div>
 
         <Tabs defaultValue="algorithm" className="w-full">
@@ -314,18 +458,63 @@ export default function SettingsPage() {
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <CardHeader>
+                  <CardTitle className="text-base">Turno Vigente</CardTitle>
+                  <CardDescription>Controla a janela operacional usada pelo bot e pelo sync automatico</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="flex flex-col gap-2">
+                      <Label>Data vigente</Label>
+                      <Input
+                        type="date"
+                        value={operationContext.date}
+                        onChange={(e) =>
+                          setOperationContext((current) => ({ ...current, date: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label>Turno vigente</Label>
+                      <Select
+                        value={operationContext.shift}
+                        onValueChange={(value: "AM" | "PM" | "PM2") =>
+                          setOperationContext((current) => ({ ...current, shift: value }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="AM">AM</SelectItem>
+                          <SelectItem value="PM">PM</SelectItem>
+                          <SelectItem value="PM2">PM2</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <Button variant="outline" onClick={handleSaveOperationContext} disabled={isSavingOperationContext}>
+                    {isSavingOperationContext ? "Salvando..." : "Salvar turno vigente"}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
                   <CardTitle className="text-base">API Backend</CardTitle>
-                  <CardDescription>Configuracao da conexao com o backend NestJS</CardDescription>
+                  <CardDescription>Metadados de integracao exibidos no painel</CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
                   <div className="flex flex-col gap-2">
-                    <Label>URL da API</Label>
+                    <Label>URL de referencia da API</Label>
                     <Input value={settings.system.apiUrl} onChange={(e) => setSettings({ ...settings, system: { ...settings.system, apiUrl: e.target.value } })} />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label>Nome do Bot</Label>
+                    <Label>Nome exibido do Bot</Label>
                     <Input value={settings.system.telegramBotName} onChange={(e) => setSettings({ ...settings, system: { ...settings.system, telegramBotName: e.target.value } })} />
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    Esses campos sao informativos no estado atual e nao alteram a logica operacional do bot.
+                  </p>
                   <Button variant="outline" onClick={handleSave}>Salvar Sistema</Button>
                 </CardContent>
               </Card>
@@ -387,6 +576,14 @@ export default function SettingsPage() {
                         placeholder="Minimo 4 caracteres"
                       />
                     </div>
+                    <div className="flex flex-col gap-2">
+                      <Label>Telegram Chat ID</Label>
+                      <Input
+                        value={newUser.telegramChatId}
+                        onChange={(e) => setNewUser((current) => ({ ...current, telegramChatId: e.target.value }))}
+                        placeholder="Ex.: 123456789"
+                      />
+                    </div>
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="flex flex-col gap-2">
                         <Label>Papel</Label>
@@ -435,6 +632,42 @@ export default function SettingsPage() {
                       <Users className="mr-2 h-4 w-4" />
                       {isCreatingUser ? "Criando..." : "Criar usuario"}
                     </Button>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Hubs</CardTitle>
+                    <CardDescription>Cadastre hubs para usar nos acessos e no atendimento</CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-4">
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="flex flex-col gap-2">
+                        <Label>Nome do hub</Label>
+                        <Input
+                          value={newHub.name}
+                          onChange={(e) => setNewHub((current) => ({ ...current, name: e.target.value }))}
+                          placeholder="Hub Guarulhos"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Label>Timezone</Label>
+                        <Input
+                          value={newHub.timezone}
+                          onChange={(e) => setNewHub((current) => ({ ...current, timezone: e.target.value }))}
+                          placeholder="America/Sao_Paulo"
+                        />
+                      </div>
+                    </div>
+                    <Button onClick={handleCreateHub} disabled={isCreatingHub}>
+                      <Users className="mr-2 h-4 w-4" />
+                      {isCreatingHub ? "Criando..." : "Criar hub"}
+                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      {(userManagement?.hubs || []).map((hub) => (
+                        <Badge key={hub.id} variant="outline">{hub.name}</Badge>
+                      ))}
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -512,6 +745,27 @@ export default function SettingsPage() {
                                     ))}
                                   </SelectContent>
                                 </Select>
+                              </div>
+                              <div className="flex flex-col gap-2 sm:col-span-2">
+                                <Label className="text-xs">Telegram Chat ID</Label>
+                                <div className="flex gap-2">
+                                  <Input
+                                    value={userTelegramChatDrafts[user.id] || ""}
+                                    onChange={(e) =>
+                                      setUserTelegramChatDrafts((current) => ({
+                                        ...current,
+                                        [user.id]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Ex.: 123456789"
+                                  />
+                                  <Button
+                                    variant="outline"
+                                    onClick={() => void handleTelegramChatSave(user.id)}
+                                  >
+                                    Salvar
+                                  </Button>
+                                </div>
                               </div>
                             </div>
                           </div>

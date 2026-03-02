@@ -6,7 +6,6 @@ import { createConnection } from 'net';
 import { SyncService } from './sync/sync.service';
 import { SheetsService } from './sheets/sheets.service';
 import {
-  BlocklistStatus,
   Prisma,
   RouteStatus,
 } from '@prisma/client';
@@ -81,14 +80,21 @@ export class AppService {
   private readonly DASHBOARD_NOSHOW_CACHE_PREFIX = 'cache:dashboard:noshow';
   private readonly DRIVERS_LIST_CACHE_PREFIX = 'cache:drivers:list';
   private readonly DRIVERS_ANALYTICS_CACHE_PREFIX = 'cache:drivers:analytics';
+  private readonly ROUTES_CACHE_PREFIX = 'cache:routes:list';
+  private readonly BLOCKLIST_LIST_CACHE_PREFIX = 'cache:blocklist:list';
+  private readonly OVERVIEW_ROUTE_REQUESTS_CACHE_PREFIX = 'cache:overview:route-requests';
   private readonly DASHBOARD_EXECUTIVE_CACHE_TTL_SECONDS = 60;
   private readonly DASHBOARD_NOSHOW_CACHE_TTL_SECONDS = 60;
   private readonly DRIVERS_LIST_CACHE_TTL_SECONDS = 45;
   private readonly DRIVERS_ANALYTICS_CACHE_TTL_SECONDS = 90;
+  private readonly ROUTES_CACHE_TTL_SECONDS = 15;
+  private readonly BLOCKLIST_LIST_CACHE_TTL_SECONDS = 20;
+  private readonly OVERVIEW_ROUTE_REQUESTS_CACHE_TTL_SECONDS = 15;
   private readonly LOG_PREFIX = 'telegram:log';
   private readonly ROUTES_NOTE_KEY = 'telegram:routes:note';
   private readonly BLOCKLIST_CACHE_PREFIX = 'telegram:blocklist:cache:driver';
   private readonly ROUTE_PLANNING_PREFERENCES_KEY = 'routePlanningPreferences';
+  private readonly ANALYST_TELEGRAM_CHATS_KEY = 'analystTelegramChats';
 
   constructor(
     private readonly redisService: RedisService,
@@ -105,8 +111,126 @@ export class AppService {
     return value ? value.toISOString() : null;
   }
 
+  private getCurrentRouteWindow() {
+    const now = new Date();
+    const shift = now.getHours() < 12 ? 'AM' : now.getHours() < 18 ? 'PM' : 'PM2';
+    return {
+      date: now.toISOString().slice(0, 10),
+      shift: shift as 'AM' | 'PM' | 'PM2',
+    };
+  }
+
+  private async getEffectiveRouteWindow() {
+    const fallback = this.getCurrentRouteWindow();
+    const prisma = this.prisma as any;
+    const configured = await prisma.systemConfig.findUnique({
+      where: { key: 'operationContext' },
+      select: { value: true },
+    });
+    const value = (configured?.value || {}) as Record<string, unknown>;
+    const date = String(value.date || '').trim();
+    const shift = String(value.shift || '').trim().toUpperCase();
+
+    return {
+      date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : fallback.date,
+      shift: shift === 'AM' || shift === 'PM' || shift === 'PM2' ? (shift as 'AM' | 'PM' | 'PM2') : fallback.shift,
+    };
+  }
+
+  async getOperationContext() {
+    const window = await this.getEffectiveRouteWindow();
+    return {
+      date: window.date,
+      shift: window.shift,
+    };
+  }
+
+  async updateOperationContext(payload: { date?: string; shift?: string }) {
+    const fallback = this.getCurrentRouteWindow();
+    const date = String(payload?.date || '').trim() || fallback.date;
+    const shiftRaw = String(payload?.shift || '').trim().toUpperCase() || fallback.shift;
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('Data invalida');
+    }
+    if (!['AM', 'PM', 'PM2'].includes(shiftRaw)) {
+      throw new BadRequestException('Turno invalido');
+    }
+
+    const prisma = this.prisma as any;
+    await prisma.systemConfig.upsert({
+      where: { key: 'operationContext' },
+      create: {
+        key: 'operationContext',
+        value: { date, shift: shiftRaw },
+      },
+      update: {
+        value: { date, shift: shiftRaw },
+      },
+    });
+
+    return {
+      ok: true,
+      message: 'Turno vigente atualizado com sucesso',
+      context: { date, shift: shiftRaw as 'AM' | 'PM' | 'PM2' },
+    };
+  }
+
   private formatDayLabel(dateValue: Date) {
     return `${String(dateValue.getDate()).padStart(2, '0')}/${String(dateValue.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  private normalizeBlocklistStatusValue(status: unknown): 'BLOCKED' | 'UNBLOCKED' {
+    return String(status || '') === 'BLOCKED' || String(status || '') === 'ACTIVE'
+      ? 'BLOCKED'
+      : 'UNBLOCKED';
+  }
+
+  private normalizeTelegramChatIdInput(value: unknown): string | null {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return null;
+    if (!/^-?\d+$/.test(normalized)) {
+      throw new BadRequestException('Telegram Chat ID invalido');
+    }
+    return normalized;
+  }
+
+  private async getAnalystTelegramChatMap() {
+    const prisma = this.prisma as any;
+    const config = await prisma.systemConfig.findUnique({
+      where: { key: this.ANALYST_TELEGRAM_CHATS_KEY },
+      select: { value: true },
+    });
+    const rawValue = config?.value;
+    if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
+      return {} as Record<string, string>;
+    }
+
+    const entries = Object.entries(rawValue as Record<string, unknown>)
+      .map(([analystId, chatId]) => {
+        try {
+          return [analystId, this.normalizeTelegramChatIdInput(chatId)] as const;
+        } catch {
+          return [analystId, null] as const;
+        }
+      })
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
+
+    return Object.fromEntries(entries);
+  }
+
+  private async saveAnalystTelegramChatMap(map: Record<string, string>) {
+    const prisma = this.prisma as any;
+    await prisma.systemConfig.upsert({
+      where: { key: this.ANALYST_TELEGRAM_CHATS_KEY },
+      create: {
+        key: this.ANALYST_TELEGRAM_CHATS_KEY,
+        value: map,
+      },
+      update: {
+        value: map,
+      },
+    });
   }
 
   private resolveRouteReferenceDate(route: { routeDate?: string | null; createdAt: Date }) {
@@ -129,10 +253,25 @@ export class AppService {
   }
 
   private async clearCacheByPrefix(prefix: string) {
-    const keys = await this.redisService.client().keys(`${prefix}:*`);
-    if (keys.length) {
-      await this.redisService.client().del(...keys);
-    }
+    const client = this.redisService.client();
+    const match = `${prefix}:*`;
+    let cursor = '0';
+
+    do {
+      const [nextCursor, keys] = await client.scan(
+        cursor,
+        'MATCH',
+        match,
+        'COUNT',
+        100,
+      );
+
+      if (keys.length) {
+        await client.del(...keys);
+      }
+
+      cursor = nextCursor;
+    } while (cursor !== '0');
   }
 
   private async invalidateExecutiveDashboardCache() {
@@ -148,6 +287,18 @@ export class AppService {
       this.clearCacheByPrefix(this.DRIVERS_LIST_CACHE_PREFIX),
       this.clearCacheByPrefix(this.DRIVERS_ANALYTICS_CACHE_PREFIX),
     ]);
+  }
+
+  private async invalidateRoutesCache() {
+    await this.clearCacheByPrefix(this.ROUTES_CACHE_PREFIX);
+  }
+
+  private async invalidateBlocklistListCache() {
+    await this.clearCacheByPrefix(this.BLOCKLIST_LIST_CACHE_PREFIX);
+  }
+
+  private async invalidateOverviewRouteRequestsCache() {
+    await this.clearCacheByPrefix(this.OVERVIEW_ROUTE_REQUESTS_CACHE_PREFIX);
   }
 
   private async getPlanningClusterMap(): Promise<Map<string, string>> {
@@ -184,9 +335,10 @@ export class AppService {
       routesAvailable,
       routesAssigned,
       routesBlocked,
-      blockedDrivers,
+      blocklistStatuses,
       avgDriverAgg,
-      lastSync,
+      lastSuccessfulSync,
+      lastSyncAttempt,
       topDriversRaw,
       recentRoutes,
     ] = await Promise.all([
@@ -194,16 +346,22 @@ export class AppService {
       this.prisma.route.count({ where: { status: RouteStatus.DISPONIVEL } }),
       this.prisma.route.count({ where: { status: RouteStatus.ATRIBUIDA } }),
       this.prisma.route.count({ where: { status: RouteStatus.BLOQUEADA } }),
-      this.prisma.driverBlocklist.count({ where: { status: BlocklistStatus.ACTIVE } }),
+      this.prisma.driverBlocklist.findMany({
+        select: { status: true },
+      }),
       this.prisma.driver.aggregate({ _avg: { declineRate: true } }),
+      this.prisma.syncLog.findFirst({
+        where: { status: 'success' },
+        orderBy: { startedAt: 'desc' },
+      }),
       this.prisma.syncLog.findFirst({ orderBy: { startedAt: 'desc' } }),
       this.prisma.driver.findMany({
-        orderBy: [{ priorityScore: 'desc' }, { updatedAt: 'desc' }],
-        take: 10,
+        orderBy: [{ updatedAt: 'desc' }],
+        take: 100,
         select: {
           id: true,
           name: true,
-          priorityScore: true,
+          ds: true,
           _count: {
             select: {
               routes: {
@@ -226,6 +384,11 @@ export class AppService {
         orderBy: { createdAt: 'asc' },
       }),
     ]);
+
+    const blockedDrivers = blocklistStatuses.filter(
+      (entry) => this.normalizeBlocklistStatusValue(entry.status) === 'BLOCKED',
+    ).length;
+    const lastSync = lastSuccessfulSync || lastSyncAttempt;
 
     const totalRoutes = routesAvailable + routesAssigned + routesBlocked;
     const historyMap = new Map<string, { date: string; atribuidas: number; disponiveis: number; bloqueadas: number }>();
@@ -275,11 +438,14 @@ export class AppService {
         { status: 'Atribuidas', count: routesAssigned, fill: 'var(--color-chart-1)' },
         { status: 'Bloqueadas', count: routesBlocked, fill: 'var(--color-chart-3)' },
       ],
-      topDrivers: topDriversRaw.map((driver) => ({
-        name: driver.name?.split(' ')[0] || driver.id,
-        score: driver.priorityScore,
-        routes: driver._count.routes,
-      })),
+      topDrivers: topDriversRaw
+        .map((driver) => ({
+          name: driver.name?.split(' ')[0] || driver.id,
+          score: Number((this.normalizePlanningDs(driver.ds) * 100).toFixed(1)),
+          routes: driver._count.routes,
+        }))
+        .sort((left, right) => right.score - left.score || right.routes - left.routes)
+        .slice(0, 10),
     };
 
     await this.redisService.set(
@@ -584,7 +750,7 @@ export class AppService {
         FROM "Driver" d
         LEFT JOIN "DriverBlocklist" db
           ON db."driverId" = d."id"
-         AND db."status" = 'ACTIVE'
+         AND db."status"::text IN ('BLOCKED', 'ACTIVE')
         WHERE db."driverId" IS NULL
       )
     `;
@@ -633,7 +799,7 @@ export class AppService {
         this.prisma.$queryRaw<Array<{ blockedcount: bigint | number }>>(Prisma.sql`
           SELECT COUNT(*) AS "blockedcount"
           FROM "DriverBlocklist"
-          WHERE "status" = 'ACTIVE'
+          WHERE "status"::text IN ('BLOCKED', 'ACTIVE')
         `),
         this.prisma.$queryRaw<Array<{ label: string; count: bigint | number }>>(Prisma.sql`
           ${activeDriversSql}
@@ -922,6 +1088,24 @@ export class AppService {
   }
 
   async getRoutes() {
+    const cacheKey = `${this.ROUTES_CACHE_PREFIX}:v1`;
+    const cached = await this.redisService.get<any[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const historyRows = await this.sheets.getRows("'Historico ATs'!A:X").catch(() => []);
+    const clusterByAt = new Map<string, string>();
+
+    for (const row of historyRows.slice(1)) {
+      const atId = String(row[0] || '').trim();
+      const cluster = String(row[23] || '').trim();
+      if (!atId || !cluster) continue;
+      if (!clusterByAt.has(atId)) {
+        clusterByAt.set(atId, cluster);
+      }
+    }
+
     const routes = await (this.prisma as any).route.findMany({
       include: { driver: true },
       orderBy: [{ routeDate: 'desc' }, { createdAt: 'desc' }],
@@ -929,16 +1113,25 @@ export class AppService {
 
     const normalized = routes.map((route: any) => ({
       ...route,
+      cluster: clusterByAt.get(String(route.atId || '').trim()) || null,
       driverName: route.driverName || route.driver?.name || null,
       driverVehicleType: route.driverVehicleType || route.driver?.vehicleType || null,
     }));
 
-    return normalized.sort((a: any, b: any) => {
+    const payload = normalized.sort((a: any, b: any) => {
       const aPriority = a.noShow && a.status === RouteStatus.DISPONIVEL ? 0 : a.noShow ? 1 : 2;
       const bPriority = b.noShow && b.status === RouteStatus.DISPONIVEL ? 0 : b.noShow ? 1 : 2;
       if (aPriority !== bPriority) return aPriority - bPriority;
       return String(b.routeDate || '').localeCompare(String(a.routeDate || ''));
     });
+
+    await this.redisService.set(
+      cacheKey,
+      payload,
+      this.ROUTES_CACHE_TTL_SECONDS,
+    );
+
+    return payload;
   }
 
   async getRoutePlanning(
@@ -2226,6 +2419,7 @@ export class AppService {
       this.invalidateExecutiveDashboardCache(),
       this.invalidateNoShowDashboardCache(),
       this.invalidateDriversCaches(),
+      this.invalidateRoutesCache(),
     ]);
 
     return { ok: true, message: 'Rota atribuida com sucesso.' };
@@ -2264,6 +2458,7 @@ export class AppService {
       this.invalidateExecutiveDashboardCache(),
       this.invalidateNoShowDashboardCache(),
       this.invalidateDriversCaches(),
+      this.invalidateRoutesCache(),
     ]);
 
     return {
@@ -2303,6 +2498,7 @@ export class AppService {
       this.invalidateExecutiveDashboardCache(),
       this.invalidateNoShowDashboardCache(),
       this.invalidateDriversCaches(),
+      this.invalidateRoutesCache(),
     ]);
 
     return { ok: true, message: 'Rota bloqueada com sucesso.' };
@@ -2350,6 +2546,7 @@ export class AppService {
       this.invalidateExecutiveDashboardCache(),
       this.invalidateNoShowDashboardCache(),
       this.invalidateDriversCaches(),
+      this.invalidateRoutesCache(),
     ]);
 
     return {
@@ -2380,7 +2577,10 @@ export class AppService {
       after: { noShow: false },
     });
 
-    await this.invalidateNoShowDashboardCache();
+    await Promise.all([
+      this.invalidateNoShowDashboardCache(),
+      this.invalidateRoutesCache(),
+    ]);
 
     return {
       ok: true,
@@ -2389,25 +2589,87 @@ export class AppService {
   }
 
   async getBlocklist() {
+    const cacheKey = `${this.BLOCKLIST_LIST_CACHE_PREFIX}:v1`;
+    const cached = await this.redisService.get<any[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const entries = await this.prisma.driverBlocklist.findMany({
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
     });
     const driverIds = entries.map((entry) => entry.driverId);
-    const drivers = driverIds.length
-      ? await this.prisma.driver.findMany({
-          where: { id: { in: driverIds } },
-          select: {
-            id: true,
-            name: true,
-          },
-        })
-      : [];
-    const driverNameById = new Map(drivers.map((driver) => [driver.id, driver.name || null]));
+    const [drivers, recentRoutes, overviewRows] = driverIds.length
+      ? await Promise.all([
+          this.prisma.driver.findMany({
+            where: { id: { in: driverIds } },
+            select: {
+              id: true,
+              name: true,
+            },
+          }),
+          this.prisma.route.findMany({
+            where: {
+              driverId: { in: driverIds },
+            },
+            select: {
+              driverId: true,
+              driverName: true,
+              updatedAt: true,
+            },
+            orderBy: [{ updatedAt: 'desc' }],
+          }),
+          this.prisma.assignmentOverview.findMany({
+            where: {
+              driverId: { in: driverIds },
+            },
+            select: {
+              driverId: true,
+              payload: true,
+              updatedAt: true,
+            },
+            orderBy: [{ updatedAt: 'desc' }],
+          }),
+        ])
+      : [[], [], []];
+    const driverNameById = new Map<string, string | null>();
 
-    return entries.map((entry) => ({
+    recentRoutes.forEach((route) => {
+      if (!route.driverId || driverNameById.has(route.driverId)) return;
+      const routeName = String(route.driverName || '').trim();
+      if (routeName && routeName !== route.driverId) {
+        driverNameById.set(route.driverId, routeName);
+      }
+    });
+
+    overviewRows.forEach((row) => {
+      if (!row.driverId || driverNameById.has(row.driverId)) return;
+      const payload = (row.payload || {}) as Record<string, unknown>;
+      const overviewName = String(payload.driverName || '').trim();
+      if (overviewName && overviewName !== row.driverId) {
+        driverNameById.set(row.driverId, overviewName);
+      }
+    });
+
+    drivers.forEach((driver) => {
+      if (driverNameById.has(driver.id)) return;
+      const driverName = String(driver.name || '').trim();
+      driverNameById.set(driver.id, driverName && driverName !== driver.id ? driverName : null);
+    });
+
+    const payload = entries.map((entry) => ({
       ...entry,
+      status: this.normalizeBlocklistStatusValue(entry.status),
       driverName: driverNameById.get(entry.driverId) || null,
     }));
+
+    await this.redisService.set(
+      cacheKey,
+      payload,
+      this.BLOCKLIST_LIST_CACHE_TTL_SECONDS,
+    );
+
+    return payload;
   }
 
   async getFaqItems() {
@@ -2676,12 +2938,17 @@ export class AppService {
     nameRaw: string,
     emailRaw: string,
     passwordRaw: string,
+    hubIdRaw?: string | null,
+    telegramChatIdRaw?: string | null,
   ): Promise<{ accessToken: string; user: Record<string, unknown> }> {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
     const name = String(nameRaw || '').trim();
     const email = String(emailRaw || '').trim().toLowerCase();
     const password = String(passwordRaw || '').trim();
+    const telegramChatId = this.normalizeTelegramChatIdInput(telegramChatIdRaw);
+    const requestedHubId =
+      hubIdRaw == null ? 'hub-sp' : String(hubIdRaw).trim() || 'hub-sp';
 
     if (!name || name.length < 3) {
       throw new BadRequestException('Nome invalido');
@@ -2701,6 +2968,14 @@ export class AppService {
       throw new BadRequestException('E-mail ja cadastrado');
     }
 
+    const hub = await prisma.hub.findUnique({
+      where: { id: requestedHubId },
+      select: { id: true, name: true },
+    });
+    if (!hub) {
+      throw new BadRequestException('Hub invalido');
+    }
+
     const baseId = email
       .split('@')[0]
       .toLowerCase()
@@ -2716,11 +2991,17 @@ export class AppService {
         email,
         password,
         role: 'ANALISTA',
-        hubId: 'hub-sp',
+        hubId: requestedHubId,
         isActive: true,
       },
       include: { hub: true },
     });
+
+    if (telegramChatId) {
+      const chatMap = await this.getAnalystTelegramChatMap();
+      chatMap[created.id] = telegramChatId;
+      await this.saveAnalystTelegramChatMap(chatMap);
+    }
 
     const user = {
       id: created.id,
@@ -2744,6 +3025,69 @@ export class AppService {
     return { accessToken, user };
   }
 
+  async getHubs() {
+    await this.ensureSupportSeedData();
+    const prisma = this.prisma as any;
+
+    const hubs = await prisma.hub.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+    });
+
+    return hubs;
+  }
+
+  async createHub(payload: {
+    name?: string;
+    timezone?: string;
+  }) {
+    await this.ensureSupportSeedData();
+    const prisma = this.prisma as any;
+    const name = String(payload?.name || '').trim();
+    const timezone = String(payload?.timezone || 'America/Sao_Paulo').trim() || 'America/Sao_Paulo';
+
+    if (!name || name.length < 2) {
+      throw new BadRequestException('Nome do hub invalido');
+    }
+
+    const slugBase = name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24) || 'hub';
+    let hubId = `hub-${slugBase}`;
+    let suffix = 1;
+
+    while (
+      await prisma.hub.findUnique({
+        where: { id: hubId },
+        select: { id: true },
+      })
+    ) {
+      suffix += 1;
+      hubId = `hub-${slugBase}-${suffix}`;
+    }
+
+    const created = await prisma.hub.create({
+      data: {
+        id: hubId,
+        name,
+        timezone,
+        isActive: true,
+      },
+      select: { id: true, name: true },
+    });
+
+    return {
+      ok: true,
+      message: 'Hub criado com sucesso',
+      hub: created,
+    };
+  }
+
   private serializeManagedUser(analyst: {
     id: string;
     name: string;
@@ -2754,7 +3098,7 @@ export class AppService {
     createdAt: Date;
     updatedAt: Date;
     hub?: { name: string } | null;
-  }) {
+  }, telegramChatId?: string | null) {
     return {
       id: analyst.id,
       name: analyst.name,
@@ -2763,6 +3107,7 @@ export class AppService {
       hubId: analyst.hubId,
       hubName: analyst.hub?.name || null,
       isActive: analyst.isActive,
+      telegramChatId: telegramChatId || null,
       createdAt: this.toIsoString(analyst.createdAt),
       updatedAt: this.toIsoString(analyst.updatedAt),
     };
@@ -2771,6 +3116,7 @@ export class AppService {
   async getManagedUsers() {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
+    const chatMap = await this.getAnalystTelegramChatMap();
 
     const [users, hubs] = await Promise.all([
       prisma.analyst.findMany({
@@ -2784,7 +3130,7 @@ export class AppService {
     ]);
 
     return {
-      users: users.map((analyst) => this.serializeManagedUser(analyst)),
+      users: users.map((analyst) => this.serializeManagedUser(analyst, chatMap[analyst.id] || null)),
       hubs,
     };
   }
@@ -2795,6 +3141,7 @@ export class AppService {
     password?: string;
     role?: string;
     hubId?: string | null;
+    telegramChatId?: string | null;
   }) {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
@@ -2804,6 +3151,7 @@ export class AppService {
     const role = String(payload?.role || 'ANALISTA').trim().toUpperCase();
     const hubIdRaw = payload?.hubId == null ? 'hub-sp' : String(payload.hubId).trim();
     const hubId = hubIdRaw || null;
+    const telegramChatId = this.normalizeTelegramChatIdInput(payload?.telegramChatId);
 
     if (!name || name.length < 3) {
       throw new BadRequestException('Nome invalido');
@@ -2857,10 +3205,16 @@ export class AppService {
       include: { hub: true },
     });
 
+    if (telegramChatId) {
+      const chatMap = await this.getAnalystTelegramChatMap();
+      chatMap[created.id] = telegramChatId;
+      await this.saveAnalystTelegramChatMap(chatMap);
+    }
+
     return {
       ok: true,
       message: 'Usuario criado com sucesso',
-      user: this.serializeManagedUser(created),
+      user: this.serializeManagedUser(created, telegramChatId),
     };
   }
 
@@ -2870,6 +3224,7 @@ export class AppService {
       role?: string;
       hubId?: string | null;
       isActive?: boolean;
+      telegramChatId?: string | null;
     },
   ) {
     await this.ensureSupportSeedData();
@@ -2883,6 +3238,11 @@ export class AppService {
         : undefined;
     const isActive =
       typeof payload?.isActive === 'boolean' ? payload.isActive : undefined;
+    const hasTelegramChatId =
+      payload && Object.prototype.hasOwnProperty.call(payload, 'telegramChatId');
+    const telegramChatId = hasTelegramChatId
+      ? this.normalizeTelegramChatIdInput(payload?.telegramChatId)
+      : undefined;
 
     if (role && !['ADMIN', 'ANALISTA', 'SUPERVISOR'].includes(role)) {
       throw new BadRequestException('Papel invalido');
@@ -2916,10 +3276,25 @@ export class AppService {
       include: { hub: true },
     });
 
+    let resolvedTelegramChatId: string | null = null;
+    if (hasTelegramChatId) {
+      const chatMap = await this.getAnalystTelegramChatMap();
+      if (telegramChatId) {
+        chatMap[userId] = telegramChatId;
+        resolvedTelegramChatId = telegramChatId;
+      } else {
+        delete chatMap[userId];
+      }
+      await this.saveAnalystTelegramChatMap(chatMap);
+    } else {
+      const chatMap = await this.getAnalystTelegramChatMap();
+      resolvedTelegramChatId = chatMap[userId] || null;
+    }
+
     return {
       ok: true,
       message: 'Usuario atualizado com sucesso',
-      user: this.serializeManagedUser(updated),
+      user: this.serializeManagedUser(updated, resolvedTelegramChatId),
     };
   }
 
@@ -2930,6 +3305,12 @@ export class AppService {
   }
 
   private async getTodayRouteRequestOverview() {
+    const cacheKey = `${this.OVERVIEW_ROUTE_REQUESTS_CACHE_PREFIX}:v1`;
+    const cached = await this.redisService.get<any[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const logs = await this.prisma.auditLog.findMany({
@@ -3024,13 +3405,41 @@ export class AppService {
         })
       : [];
     const driverNameById = new Map(drivers.map((driver) => [driver.id, driver.name || null]));
+    const routeIds = Array.from(
+      new Set(
+        Array.from(requestMap.values()).flatMap((item) => [
+          ...item.displayedRoutes,
+          ...(item.chosenRoute ? [item.chosenRoute] : []),
+        ]),
+      ),
+    ).filter(Boolean);
+    const routes = routeIds.length
+      ? await this.prisma.route.findMany({
+          where: { atId: { in: routeIds } },
+          select: {
+            atId: true,
+            bairro: true,
+            updatedAt: true,
+          },
+          orderBy: [{ updatedAt: 'desc' }],
+        })
+      : [];
+    const routeBairroByAtId = new Map<string, string | null>();
+    for (const route of routes) {
+      const atId = String(route.atId || '').trim();
+      if (!atId || routeBairroByAtId.has(atId)) continue;
+      routeBairroByAtId.set(atId, route.bairro || null);
+    }
 
-    return Array.from(requestMap.values())
+    const payload = Array.from(requestMap.values())
       .map((item) => ({
         driverId: item.driverId,
         driverName: item.driverName || driverNameById.get(item.driverId) || null,
         vehicleType: item.vehicleType,
-        displayedRoutes: item.displayedRoutes,
+        displayedRoutes: item.displayedRoutes.map((atId) => ({
+          atId,
+          bairro: routeBairroByAtId.get(atId) || null,
+        })),
         displayedAt: item.displayedAt,
         requestedAt: item.requestedAt,
         choseRoute: !!item.chosenRoute,
@@ -3042,6 +3451,14 @@ export class AppService {
           String(left.chosenAt || left.displayedAt || ''),
         ),
       );
+
+    await this.redisService.set(
+      cacheKey,
+      payload,
+      this.OVERVIEW_ROUTE_REQUESTS_CACHE_TTL_SECONDS,
+    );
+
+    return payload;
   }
 
   async getSyncLogs() {
@@ -3359,7 +3776,7 @@ export class AppService {
       noShowCount: ticket.driver.noShowCount,
       declineRate: ticket.driver.declineRate,
       priorityScore: ticket.driver.priorityScore,
-      isBlocked: blocklist?.status === BlocklistStatus.ACTIVE,
+      isBlocked: String(blocklist?.status || '') === 'BLOCKED',
       hasActiveRoute: !!activeRoute,
       activeRouteStatus: activeRoute?.status || null,
       lastRoutes: lastRoutes.map((route) => ({
@@ -3717,7 +4134,7 @@ export class AppService {
       await this.prisma.driverBlocklist.create({
         data: {
           driverId,
-          status: BlocklistStatus.ACTIVE,
+          status: 'BLOCKED' as any,
           timesListed: 1,
           lastActivatedAt: new Date(),
         },
@@ -3726,19 +4143,20 @@ export class AppService {
       await Promise.all([
         this.invalidateExecutiveDashboardCache(),
         this.invalidateDriversCaches(),
+        this.invalidateBlocklistListCache(),
       ]);
-      return { ok: true, message: `Motorista ${driverId} adicionado na lista de bloqueio (ativo).` };
+      return { ok: true, message: `Motorista ${driverId} adicionado na lista de bloqueio (bloqueado).` };
     }
 
-    if (existing.status === BlocklistStatus.ACTIVE) {
+    if (String(existing.status) === 'BLOCKED') {
       await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
-      return { ok: true, message: `Motorista ${driverId} ja esta ativo na lista de bloqueio.` };
+      return { ok: true, message: `Motorista ${driverId} ja esta bloqueado na lista de bloqueio.` };
     }
 
     await this.prisma.driverBlocklist.update({
       where: { driverId },
       data: {
-        status: BlocklistStatus.ACTIVE,
+        status: 'BLOCKED' as any,
         timesListed: { increment: 1 },
         lastActivatedAt: new Date(),
       },
@@ -3747,8 +4165,9 @@ export class AppService {
     await Promise.all([
       this.invalidateExecutiveDashboardCache(),
       this.invalidateDriversCaches(),
+      this.invalidateBlocklistListCache(),
     ]);
-    return { ok: true, message: `Motorista ${driverId} reativado na lista de bloqueio.` };
+    return { ok: true, message: `Motorista ${driverId} bloqueado novamente na lista de bloqueio.` };
   }
 
   async removeBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
@@ -3764,15 +4183,15 @@ export class AppService {
       return { ok: false, message: `Motorista ${driverId} nao esta cadastrado na lista de bloqueio.` };
     }
 
-    if (existing.status === BlocklistStatus.INACTIVE) {
+    if (String(existing.status) === 'UNBLOCKED') {
       await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
-      return { ok: true, message: `Motorista ${driverId} ja esta inativo na lista de bloqueio.` };
+      return { ok: true, message: `Motorista ${driverId} ja esta desbloqueado na lista de bloqueio.` };
     }
 
     await this.prisma.driverBlocklist.update({
       where: { driverId },
       data: {
-        status: BlocklistStatus.INACTIVE,
+        status: 'UNBLOCKED' as any,
         lastInactivatedAt: new Date(),
       },
     });
@@ -3780,8 +4199,9 @@ export class AppService {
     await Promise.all([
       this.invalidateExecutiveDashboardCache(),
       this.invalidateDriversCaches(),
+      this.invalidateBlocklistListCache(),
     ]);
-    return { ok: true, message: `Motorista ${driverId} marcado como inativo na lista de bloqueio.` };
+    return { ok: true, message: `Motorista ${driverId} marcado como desbloqueado na lista de bloqueio.` };
   }
 
   async createFaqItem(
@@ -4038,17 +4458,20 @@ export class AppService {
       }
 
       if (action === 'routes') {
-        if (!date) {
-          return { ok: false, message: 'Data obrigatoria para sincronizar rotas.' };
-        }
-        if (!shift) {
-          return { ok: false, message: 'Turno obrigatorio para sincronizar rotas.' };
-        }
+        const inferredWindow = await this.sheets.getCurrentCalculationWindow();
+        const fallbackWindow = this.getCurrentRouteWindow();
+        const selectedDate =
+          String(date || '').trim() || inferredWindow?.date || fallbackWindow.date;
+        const selectedShift =
+          (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2' | '') ||
+          inferredWindow?.shift ||
+          fallbackWindow.shift;
 
-        const routes = await this.sync.syncRoutesOnly(date, shift);
+        const routes = await this.sync.syncRoutesOnly(selectedDate, selectedShift);
+        await this.invalidateRoutesCache();
         return {
           ok: true,
-          message: `Rotas atualizadas com sucesso para ${date} (${shift}). Disponiveis: ${routes.routesAvailable}. Atribuidas: ${routes.routesAssigned}.`,
+          message: `Rotas atualizadas com sucesso para ${selectedDate} (${selectedShift}). Disponiveis: ${routes.routesAvailable}. Atribuidas: ${routes.routesAssigned}.`,
         };
       }
 
@@ -4187,8 +4610,8 @@ export class AppService {
         })
       : [];
     const blocklistMap = new Map(blocklistDrivers.map((d) => [d.id, d]));
-
-    const recentLogs = logs.slice(-20).join('\n');
+    const logLines = await redis.lrange(this.logKey(), 0, -1);
+    const recentLogs = logLines.slice(-20).join('\n');
 
     const routes = await this.prisma.route.findMany({
       include: { driver: true },
@@ -4329,11 +4752,12 @@ export class AppService {
                       typeof info?.priorityScore === 'number'
                         ? info.priorityScore.toFixed(2)
                         : '0.00';
-                    const status = entry.status === 'ACTIVE' ? 'Ativo' : 'Inativo';
+                    const normalizedStatus = this.normalizeBlocklistStatusValue(entry.status);
+                    const status = normalizedStatus === 'BLOCKED' ? 'Bloqueado' : 'Desbloqueado';
                     const actionButton =
-                      entry.status === 'ACTIVE'
-                        ? `<button onclick="removeBlocklistDriver('${id}')">Inativar</button>`
-                        : `<button onclick="addBlocklistDriverById('${id}')">Ativar</button>`;
+                      normalizedStatus === 'BLOCKED'
+                        ? `<button onclick="removeBlocklistDriver('${id}')">Desbloquear</button>`
+                        : `<button onclick="addBlocklistDriverById('${id}')">Bloquear</button>`;
                     return `<tr><td>${id}</td><td>${name}</td><td>${vehicle}</td><td>${ds}</td><td>${noShow}</td><td>${declineRate}</td><td>${score}</td><td>${status}</td><td>${entry.timesListed}</td><td>${actionButton}</td></tr>`;
                   })
                   .join('')

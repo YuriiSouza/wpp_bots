@@ -90,6 +90,8 @@ export default function SupportCenterPage() {
         status: statusFilter,
       }),
     enabled: !!user,
+    refetchInterval: 5000,
+    refetchIntervalInBackground: true,
   })
 
   const tickets = ticketsQuery.data?.tickets || []
@@ -111,12 +113,16 @@ export default function SupportCenterPage() {
     queryKey: ["support", "messages", selectedTicket?.id],
     queryFn: () => fetchTicketMessages(selectedTicket!.id),
     enabled: !!selectedTicket,
+    refetchInterval: selectedTicket ? 3000 : false,
+    refetchIntervalInBackground: true,
   })
 
   const contextQuery = useQuery({
     queryKey: ["support", "context", selectedTicket?.id],
     queryFn: () => fetchTicketContext(selectedTicket!.id),
     enabled: !!selectedTicket,
+    refetchInterval: selectedTicket ? 5000 : false,
+    refetchIntervalInBackground: true,
   })
 
   const analystsQuery = useQuery({
@@ -264,7 +270,7 @@ export default function SupportCenterPage() {
                 </Select>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="h-[calc(72vh-76px)] overflow-y-auto space-y-3">
               {ticketsQuery.isLoading ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Spinner />

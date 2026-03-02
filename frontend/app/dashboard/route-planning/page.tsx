@@ -47,6 +47,7 @@ import type {
   RoutePlanningPayload,
   RoutePlanningPreference,
 } from "@/lib/types"
+import { getCurrentRouteWindow } from "@/lib/route-window"
 import { toast } from "sonner"
 
 type ShiftFilter = "all" | "AM" | "PM" | "PM2"
@@ -139,40 +140,11 @@ export default function RoutePlanningPage() {
   }, [date, shift, focus, atFilter, clusterFilter, brFilter])
 
   const handleRefresh = async () => {
-    const promptedDate = window.prompt(
-      "Informe a data para sincronizar as rotas (AAAA-MM-DD).",
-      date || today,
-    )
-
-    if (!promptedDate) {
-      return
-    }
-
-    const normalizedDate = promptedDate.trim()
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
-      toast.error("Data invalida. Use o formato AAAA-MM-DD.")
-      return
-    }
-
-    const promptValue = window.prompt(
-      "Informe o turno para sincronizar as rotas (AM, PM ou PM2).",
-      shift === "all" ? "AM" : shift,
-    )
-    if (!promptValue) {
-      return
-    }
-
-    const normalizedShift = promptValue.trim().toUpperCase()
-    if (!["AM", "PM", "PM2"].includes(normalizedShift)) {
-      toast.error("Turno invalido. Use AM, PM ou PM2.")
-      return
-    }
-
-    const selectedShift = normalizedShift as "AM" | "PM" | "PM2"
+    const currentWindow = getCurrentRouteWindow()
 
     setIsRefreshing(true)
     try {
-      const syncResponse = await runSync("routes", normalizedDate, selectedShift)
+      const syncResponse = await runSync("routes")
       if (!syncResponse.ok) {
         toast.error(syncResponse.message)
         return
@@ -180,8 +152,8 @@ export default function RoutePlanningPage() {
 
       const [planning, map] = await Promise.all([
         fetchRoutePlanning({
-          date: normalizedDate,
-          shift: selectedShift,
+          date: currentWindow.date,
+          shift: currentWindow.shift,
           atId: atFilter === "all" ? undefined : atFilter,
           focus,
         }),
@@ -191,8 +163,8 @@ export default function RoutePlanningPage() {
         }),
       ])
 
-      setDate(normalizedDate)
-      setShift(selectedShift)
+      setDate(currentWindow.date)
+      setShift(currentWindow.shift)
       setPayload(planning)
       setMapPayload(map)
       toast.success("Rotas sincronizadas com a planilha e atualizadas no banco.")

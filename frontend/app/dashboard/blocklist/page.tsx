@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { format } from "date-fns"
 import { ptBR } from "date-fns/locale/pt-BR"
-import { ShieldBan, ShieldCheck, Search, AlertTriangle } from "lucide-react"
+import { Search, AlertTriangle } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { StatusBadge } from "@/components/status-badge"
 import { Card, CardContent } from "@/components/ui/card"
@@ -37,7 +37,7 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   addBlocklistDriver,
   fetchBlocklist,
-  fetchDrivers,
+  fetchDriversPage,
   getApiErrorMessage,
   removeBlocklistDriver,
 } from "@/lib/admin-api"
@@ -45,7 +45,7 @@ import type { Driver, DriverBlocklist } from "@/lib/types"
 import { toast } from "sonner"
 
 type BlocklistRow = DriverBlocklist & {
-  displayStatus: "ACTIVE" | "INACTIVE" | "UNLISTED"
+  displayStatus: "BLOCKED" | "UNBLOCKED" | "UNLISTED"
 }
 
 export default function BlocklistPage() {
@@ -62,11 +62,72 @@ export default function BlocklistPage() {
 
     const loadData = async () => {
       try {
-        const [blocklistData, driverData] = await Promise.all([fetchBlocklist(), fetchDrivers()])
+        const [blocklistData, driverData] = await Promise.all([
+          fetchBlocklist(),
+          fetchDriversPage({
+            page: 1,
+            pageSize: search ? 50 : 200,
+            search: search || undefined,
+            sortBy: "name",
+            sortDir: "asc",
+          }),
+        ])
         if (!active) return
 
-        setBlocklist(blocklistData)
-        setDrivers(driverData)
+        const missingNameIds = Array.from(
+          new Set(
+            blocklistData
+              .filter((item) => !String(item.driverName || "").trim())
+              .map((item) => item.driverId)
+              .filter(Boolean)
+          )
+        )
+
+        let resolvedById = new Map<string, string>()
+        if (missingNameIds.length) {
+          const resolvedRows = await Promise.all(
+            missingNameIds.map(async (driverId) => {
+              try {
+                const result = await fetchDriversPage({
+                  page: 1,
+                  pageSize: 5,
+                  search: driverId,
+                  sortBy: "name",
+                  sortDir: "asc",
+                })
+                const match = result.data.find((driver) => driver.id === driverId)
+                const name = String(match?.name || "").trim()
+                return name ? [driverId, name] as const : null
+              } catch {
+                return null
+              }
+            })
+          )
+
+          resolvedById = new Map(
+            resolvedRows.filter((row): row is readonly [string, string] => Boolean(row))
+          )
+        }
+
+        const normalizedBlocklist = blocklistData.map((item) => ({
+          ...item,
+          driverName: item.driverName || resolvedById.get(item.driverId) || null,
+        }))
+
+        const extraDrivers = Array.from(resolvedById.entries()).map(([id, name]) => ({
+          id,
+          name,
+          vehicleType: null,
+          ds: null,
+          noShowCount: 0,
+          declineRate: 0,
+          priorityScore: 0,
+          updatedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+        }))
+
+        setBlocklist(normalizedBlocklist)
+        setDrivers([...driverData.data, ...extraDrivers])
       } catch (error) {
         toast.error(getApiErrorMessage(error, "Nao foi possivel carregar a blocklist"))
       } finally {
@@ -81,7 +142,7 @@ export default function BlocklistPage() {
     return () => {
       active = false
     }
-  }, [])
+  }, [search])
 
   const driverMap = useMemo(() => {
     const map = new Map<string, string>()
@@ -96,11 +157,12 @@ export default function BlocklistPage() {
       result = result.filter(
         (b) =>
           b.driverId.toLowerCase().includes(q) ||
+          (b.driverName || "").toLowerCase().includes(q) ||
           driverMap.get(b.driverId)?.toLowerCase().includes(q)
       )
     }
     if (statusFilter !== "all") result = result.filter((b) => b.status === statusFilter)
-    return result.map((item) => ({ ...item, displayStatus: item.status as "ACTIVE" | "INACTIVE" }))
+    return result.map((item) => ({ ...item, displayStatus: item.status as "BLOCKED" | "UNBLOCKED" }))
   }, [blocklist, search, statusFilter, driverMap])
 
   const rows = useMemo(() => {
@@ -119,7 +181,8 @@ export default function BlocklistPage() {
       .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, "pt-BR"))
       .map((driver) => ({
         driverId: driver.id,
-        status: "INACTIVE",
+        driverName: driver.name || null,
+        status: "UNBLOCKED",
         displayStatus: "UNLISTED",
         timesListed: 0,
         lastActivatedAt: null,
@@ -131,18 +194,15 @@ export default function BlocklistPage() {
     return [...filtered, ...extraRows]
   }, [drivers, filtered, search, statusFilter])
 
-  const activeCnt = blocklist.filter((b) => b.status === "ACTIVE").length
-  const inactiveCnt = blocklist.filter((b) => b.status === "INACTIVE").length
-
   const handleToggle = async () => {
     if (!actionItem || !justification.trim()) {
       toast.error("Justificativa obrigatoria")
       return
     }
-    const newStatus = actionItem.displayStatus === "ACTIVE" ? "INACTIVE" : "ACTIVE"
+    const newStatus = actionItem.displayStatus === "BLOCKED" ? "UNBLOCKED" : "BLOCKED"
     try {
       const response =
-        newStatus === "ACTIVE"
+        newStatus === "BLOCKED"
           ? await addBlocklistDriver(actionItem.driverId)
           : await removeBlocklistDriver(actionItem.driverId)
 
@@ -157,10 +217,11 @@ export default function BlocklistPage() {
           return [
             {
               driverId: actionItem.driverId,
-              status: newStatus as "ACTIVE" | "INACTIVE",
+              driverName: actionItem.driverName || driverMap.get(actionItem.driverId) || null,
+              status: newStatus as "BLOCKED" | "UNBLOCKED",
               timesListed: 1,
-              lastActivatedAt: newStatus === "ACTIVE" ? new Date().toISOString() : null,
-              lastInactivatedAt: newStatus === "INACTIVE" ? new Date().toISOString() : null,
+              lastActivatedAt: newStatus === "BLOCKED" ? new Date().toISOString() : null,
+              lastInactivatedAt: newStatus === "UNBLOCKED" ? new Date().toISOString() : null,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             },
@@ -172,17 +233,17 @@ export default function BlocklistPage() {
           b.driverId === actionItem.driverId
             ? {
                 ...b,
-                status: newStatus as "ACTIVE" | "INACTIVE",
-                timesListed: newStatus === "ACTIVE" ? b.timesListed + 1 : b.timesListed,
-                lastActivatedAt: newStatus === "ACTIVE" ? new Date().toISOString() : b.lastActivatedAt,
-                lastInactivatedAt: newStatus === "INACTIVE" ? new Date().toISOString() : b.lastInactivatedAt,
+                status: newStatus as "BLOCKED" | "UNBLOCKED",
+                timesListed: newStatus === "BLOCKED" ? b.timesListed + 1 : b.timesListed,
+                lastActivatedAt: newStatus === "BLOCKED" ? new Date().toISOString() : b.lastActivatedAt,
+                lastInactivatedAt: newStatus === "UNBLOCKED" ? new Date().toISOString() : b.lastInactivatedAt,
                 updatedAt: new Date().toISOString(),
               }
             : b
         )
       })
       toast.success(
-        `${driverMap.get(actionItem.driverId) || actionItem.driverId} ${newStatus === "ACTIVE" ? "bloqueado" : "desbloqueado"}`
+        `${actionItem.driverName || driverMap.get(actionItem.driverId) || actionItem.driverId} ${newStatus === "BLOCKED" ? "bloqueado" : "desbloqueado"}`
       )
       setActionItem(null)
       setJustification("")
@@ -200,26 +261,6 @@ export default function BlocklistPage() {
             <h2 className="text-2xl font-bold text-foreground">Gestao de Blocklist</h2>
             <p className="text-sm text-muted-foreground">Controle de bloqueio de motoristas</p>
           </div>
-          <div className="flex gap-3">
-            <Card className="px-4 py-2">
-              <div className="flex items-center gap-2">
-                <ShieldBan className="h-4 w-4 text-destructive" />
-                <div>
-                  <p className="text-xs text-muted-foreground">Bloqueados</p>
-                  <p className="text-lg font-bold text-card-foreground">{activeCnt}</p>
-                </div>
-              </div>
-            </Card>
-            <Card className="px-4 py-2">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-success" />
-                <div>
-                  <p className="text-xs text-muted-foreground">Inativos</p>
-                  <p className="text-lg font-bold text-card-foreground">{inactiveCnt}</p>
-                </div>
-              </div>
-            </Card>
-          </div>
         </div>
 
         <Card>
@@ -235,8 +276,8 @@ export default function BlocklistPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="ACTIVE">Ativo</SelectItem>
-                  <SelectItem value="INACTIVE">Inativo</SelectItem>
+                  <SelectItem value="BLOCKED">Bloqueado</SelectItem>
+                  <SelectItem value="UNBLOCKED">Desbloqueado</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -281,11 +322,11 @@ export default function BlocklistPage() {
                   </TableCell>
                   <TableCell>
                     <Button
-                      variant={item.displayStatus === "ACTIVE" ? "outline" : "destructive"}
+                      variant={item.displayStatus === "BLOCKED" ? "outline" : "destructive"}
                       size="sm"
                       onClick={() => setActionItem(item)}
                     >
-                      {item.displayStatus === "ACTIVE" ? "Desbloquear" : "Bloquear"}
+                      {item.displayStatus === "BLOCKED" ? "Desbloquear" : "Bloquear"}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -300,7 +341,7 @@ export default function BlocklistPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {actionItem?.displayStatus === "ACTIVE" ? "Desbloquear" : "Bloquear"} Motorista
+              {actionItem?.displayStatus === "BLOCKED" ? "Desbloquear" : "Bloquear"} Motorista
             </DialogTitle>
             <DialogDescription>
               {actionItem?.driverName || driverMap.get(actionItem?.driverId ?? "") || actionItem?.driverId} ({actionItem?.driverId})

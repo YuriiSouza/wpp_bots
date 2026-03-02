@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { MessageSquareText } from "lucide-react"
+import { MessageSquareText, Search } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import {
   Table,
   TableBody,
@@ -18,11 +19,22 @@ import { toast } from "sonner"
 export default function OverviewPage() {
   const [overview, setOverview] = useState<OverviewPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [search, setSearch] = useState("")
   const routeRequestCount = overview?.routeRequests.length || 0
   const chosenCount = useMemo(
     () => (overview?.routeRequests || []).filter((item) => item.choseRoute).length,
     [overview],
   )
+  const filteredRequests = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    if (!term) return overview?.routeRequests || []
+
+    return (overview?.routeRequests || []).filter((item) => {
+      const driverName = String(item.driverName || "").toLowerCase()
+      const driverId = String(item.driverId || "").toLowerCase()
+      return driverName.includes(term) || driverId.includes(term)
+    })
+  }, [overview, search])
 
   useEffect(() => {
     let active = true
@@ -70,6 +82,18 @@ export default function OverviewPage() {
               </div>
             </div>
 
+            <div className="border-b p-6">
+              <div className="relative max-w-sm">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Pesquisar por nome ou ID do motorista"
+                  className="pl-9"
+                />
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -83,8 +107,8 @@ export default function OverviewPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {routeRequestCount ? (
-                    (overview?.routeRequests || []).map((request) => (
+                  {filteredRequests.length ? (
+                    filteredRequests.map((request) => (
                       <TableRow key={`${request.driverId}-${request.displayedAt || request.requestedAt || "sem-hora"}`}>
                         <TableCell>
                           <div>
@@ -102,9 +126,14 @@ export default function OverviewPage() {
                         <TableCell className="max-w-[320px]">
                           {request.displayedRoutes.length ? (
                             <div className="flex flex-wrap gap-1">
-                              {request.displayedRoutes.map((routeId) => (
-                                <Badge key={`${request.driverId}-${routeId}`} variant="secondary" className="font-mono text-[11px]">
-                                  {routeId}
+                              {request.displayedRoutes.map((route, index) => (
+                                <Badge
+                                  key={`${request.driverId}-${route.atId || "sem-at"}-${index}`}
+                                  variant="secondary"
+                                  className="text-[11px]"
+                                >
+                                  <span className="font-mono">{route.atId}</span>
+                                  {route.bairro ? ` • ${route.bairro}` : ""}
                                 </Badge>
                               ))}
                             </div>
@@ -135,7 +164,9 @@ export default function OverviewPage() {
                   ) : (
                     <TableRow>
                       <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
-                        Nenhuma solicitacao de rota registrada hoje.
+                        {routeRequestCount
+                          ? "Nenhum motorista encontrado com a busca atual."
+                          : "Nenhuma solicitacao de rota registrada hoje."}
                       </TableCell>
                     </TableRow>
                   )}

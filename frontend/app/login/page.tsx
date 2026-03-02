@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Headset, Eye, EyeOff } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -8,6 +8,9 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/hooks/use-auth"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { fetchHubs } from "@/lib/admin-api"
+import type { HubOption } from "@/lib/types"
 
 export default function LoginPage() {
   const router = useRouter()
@@ -16,9 +19,24 @@ export default function LoginPage() {
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [hubId, setHubId] = useState("")
+  const [telegramChatId, setTelegramChatId] = useState("")
+  const [hubs, setHubs] = useState<HubOption[]>([])
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetchHubs()
+        setHubs(response)
+        setHubId((current) => current || response[0]?.id || "")
+      } catch {
+        setHubs([])
+      }
+    })()
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -26,7 +44,7 @@ export default function LoginPage() {
     setIsLoading(true)
     try {
       if (mode === "register") {
-        await register(name, email, password)
+        await register(name, email, password, hubId || null, telegramChatId || null)
       } else {
         await login(email, password)
       }
@@ -46,7 +64,7 @@ export default function LoginPage() {
             <Headset className="h-6 w-6 text-primary-foreground" />
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-bold text-foreground">RotaBot Admin</h1>
+            <h1 className="text-2xl font-bold text-foreground">Fleet Analysis</h1>
             <p className="text-sm text-muted-foreground">Operacao, atendimento e comunicacao via Telegram</p>
           </div>
         </div>
@@ -67,17 +85,46 @@ export default function LoginPage() {
                 </div>
               )}
               {mode === "register" ? (
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="name">Nome</Label>
-                  <Input
-                    id="name"
-                    type="text"
-                    placeholder="Seu nome"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    required
-                  />
-                </div>
+                <>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="name">Nome</Label>
+                    <Input
+                      id="name"
+                      type="text"
+                      placeholder="Seu nome"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label>Hub</Label>
+                    <Select value={hubId || "none"} onValueChange={(value) => setHubId(value === "none" ? "" : value)}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione um hub" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {hubs.length ? (
+                          hubs.map((hub) => (
+                            <SelectItem key={hub.id} value={hub.id}>{hub.name}</SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="none">Sem hubs cadastrados</SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="telegram-chat-id">Telegram Chat ID (Opcional)</Label>
+                    <Input
+                      id="telegram-chat-id"
+                      type="text"
+                      placeholder="Ex.: 123456789"
+                      value={telegramChatId}
+                      onChange={(e) => setTelegramChatId(e.target.value)}
+                    />
+                  </div>
+                </>
               ) : null}
               <div className="flex flex-col gap-2">
                 <Label htmlFor="email">E-mail</Label>

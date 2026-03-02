@@ -17,7 +17,7 @@ import {
   FileText,
   Bot,
   Settings,
-  LogOut,
+  UserCircle2,
 } from "lucide-react"
 import {
   Sidebar,
@@ -63,7 +63,7 @@ const systemNav = [
 
 export function AppSidebar() {
   const pathname = usePathname()
-  const { user, logout } = useAuthContext()
+  const { user } = useAuthContext()
 
   const isActive = (href: string) => {
     if (href === "/dashboard") return pathname === "/dashboard"
@@ -78,8 +78,8 @@ export function AppSidebar() {
             <Headset className="h-4 w-4 text-primary-foreground" />
           </div>
           <div className="flex flex-col group-data-[collapsible=icon]:hidden">
-            <span className="text-sm font-semibold text-sidebar-foreground">RotaBot Support</span>
-            <span className="text-xs text-sidebar-foreground/60">Central Telegram</span>
+            <span className="text-sm font-semibold text-sidebar-foreground">Fleet Analysis</span>
+            <span className="text-xs text-sidebar-foreground/60">Central operacional</span>
           </div>
         </div>
       </SidebarHeader>
@@ -158,12 +158,14 @@ export function AppSidebar() {
       <SidebarFooter className="p-3">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={logout} tooltip="Sair">
-              <LogOut className="h-4 w-4" />
-              <div className="flex flex-col group-data-[collapsible=icon]:hidden">
-                <span className="text-xs font-medium">{user?.name}</span>
-                <span className="text-xs text-sidebar-foreground/60">{user?.role}</span>
-              </div>
+            <SidebarMenuButton asChild isActive={isActive("/dashboard/profile")} tooltip="Perfil">
+              <Link href="/dashboard/profile">
+                <UserCircle2 className="h-4 w-4" />
+                <div className="flex flex-col group-data-[collapsible=icon]:hidden">
+                  <span className="text-xs font-medium">{user?.name}</span>
+                  <span className="text-xs text-sidebar-foreground/60">{user?.role}</span>
+                </div>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

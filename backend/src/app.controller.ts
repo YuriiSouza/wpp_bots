@@ -37,6 +37,11 @@ export class AppController {
     });
   }
 
+  @Get('api/drivers/analytics')
+  async getDriversAnalytics() {
+    return this.appService.getDriversAnalytics();
+  }
+
   @Patch('api/drivers/:driverId/priority-score')
   async updateDriverPriorityScore(
     @Param('driverId') driverId: string,
@@ -72,6 +77,11 @@ export class AppController {
     @Body('focus') focus?: 'DS' | 'VOLUME',
   ) {
     return this.appService.runRoutePlanning(date, shift, focus);
+  }
+
+  @Put('api/route-planning/preferences')
+  async updateRoutePlanningPreferences(@Body('preferences') preferences?: Array<Record<string, unknown>>) {
+    return this.appService.updateRoutePlanningPreferences(preferences || []);
   }
 
   @Get('api/route-planning/map')
@@ -129,6 +139,11 @@ export class AppController {
     return this.appService.markRouteNoShow(routeId, makeAvailable);
   }
 
+  @Post('api/routes/:routeId/clear-no-show')
+  async clearRouteNoShow(@Param('routeId') routeId: string) {
+    return this.appService.clearRouteNoShow(routeId);
+  }
+
   @Get('api/blocklist')
   async getBlocklist() {
     return this.appService.getBlocklist();
@@ -151,6 +166,24 @@ export class AppController {
     @Body('password') password: string,
   ) {
     return this.appService.register(name, email, password);
+  }
+
+  @Get('api/users')
+  async getManagedUsers() {
+    return this.appService.getManagedUsers();
+  }
+
+  @Post('api/users')
+  async createManagedUser(@Body() payload: Record<string, unknown>) {
+    return this.appService.createManagedUser(payload);
+  }
+
+  @Patch('api/users/:userId')
+  async updateManagedUser(
+    @Param('userId') userId: string,
+    @Body() payload: Record<string, unknown>,
+  ) {
+    return this.appService.updateManagedUser(userId, payload);
   }
 
   @Get('api/overview')

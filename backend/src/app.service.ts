@@ -7,6 +7,7 @@ import { SyncService } from './sync/sync.service';
 import { SheetsService } from './sheets/sheets.service';
 import {
   BlocklistStatus,
+  Prisma,
   RouteStatus,
 } from '@prisma/client';
 
@@ -22,6 +23,7 @@ type PlanningPhase = 'FASE A' | 'FASE B';
 
 interface PlanningDriver {
   id: string;
+  name: string;
   veiculo: string;
   disponivel: boolean;
   ds: number;
@@ -50,8 +52,21 @@ interface PlanningAssignment {
 interface RoutePlanningComputation {
   assignments: PlanningAssignment[];
   drivers: PlanningDriver[];
+  preferredAssignments: Array<{
+    cluster: string;
+    clusterName: string | null;
+    driverId: string;
+    driverName: string | null;
+    vehicleType: string | null;
+    available: boolean;
+  }>;
   outputK: string[][];
   logRows: string[][];
+}
+
+interface RoutePlanningPreferenceEntry {
+  cluster: string;
+  driverId: string;
 }
 
 type RoutePlanningFocus = 'DS' | 'VOLUME';
@@ -62,9 +77,18 @@ export class AppService {
   private readonly QUEUE_ACTIVE_KEY_GENERAL = 'telegram:queue:active:general';
   private readonly QUEUE_LIST_KEY_MOTO = 'telegram:queue:list:moto';
   private readonly QUEUE_ACTIVE_KEY_MOTO = 'telegram:queue:active:moto';
+  private readonly DASHBOARD_EXECUTIVE_CACHE_PREFIX = 'cache:dashboard:executive';
+  private readonly DASHBOARD_NOSHOW_CACHE_PREFIX = 'cache:dashboard:noshow';
+  private readonly DRIVERS_LIST_CACHE_PREFIX = 'cache:drivers:list';
+  private readonly DRIVERS_ANALYTICS_CACHE_PREFIX = 'cache:drivers:analytics';
+  private readonly DASHBOARD_EXECUTIVE_CACHE_TTL_SECONDS = 60;
+  private readonly DASHBOARD_NOSHOW_CACHE_TTL_SECONDS = 60;
+  private readonly DRIVERS_LIST_CACHE_TTL_SECONDS = 45;
+  private readonly DRIVERS_ANALYTICS_CACHE_TTL_SECONDS = 90;
   private readonly LOG_PREFIX = 'telegram:log';
   private readonly ROUTES_NOTE_KEY = 'telegram:routes:note';
   private readonly BLOCKLIST_CACHE_PREFIX = 'telegram:blocklist:cache:driver';
+  private readonly ROUTE_PLANNING_PREFERENCES_KEY = 'routePlanningPreferences';
 
   constructor(
     private readonly redisService: RedisService,
@@ -81,7 +105,80 @@ export class AppService {
     return value ? value.toISOString() : null;
   }
 
-  async getDashboardData() {
+  private formatDayLabel(dateValue: Date) {
+    return `${String(dateValue.getDate()).padStart(2, '0')}/${String(dateValue.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  private resolveRouteReferenceDate(route: { routeDate?: string | null; createdAt: Date }) {
+    const rawDate = String(route.routeDate || '').trim();
+    if (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      const parsed = new Date(`${rawDate}T00:00:00`);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+
+    return route.createdAt;
+  }
+
+  private toTopBreakdownEntries(counts: Map<string, number>, limit = 8) {
+    return Array.from(counts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
+      .slice(0, limit);
+  }
+
+  private async clearCacheByPrefix(prefix: string) {
+    const keys = await this.redisService.client().keys(`${prefix}:*`);
+    if (keys.length) {
+      await this.redisService.client().del(...keys);
+    }
+  }
+
+  private async invalidateExecutiveDashboardCache() {
+    await this.clearCacheByPrefix(this.DASHBOARD_EXECUTIVE_CACHE_PREFIX);
+  }
+
+  private async invalidateNoShowDashboardCache() {
+    await this.clearCacheByPrefix(this.DASHBOARD_NOSHOW_CACHE_PREFIX);
+  }
+
+  private async invalidateDriversCaches() {
+    await Promise.all([
+      this.clearCacheByPrefix(this.DRIVERS_LIST_CACHE_PREFIX),
+      this.clearCacheByPrefix(this.DRIVERS_ANALYTICS_CACHE_PREFIX),
+    ]);
+  }
+
+  private async getPlanningClusterMap(): Promise<Map<string, string>> {
+    try {
+      const relatorioRows = await this.sheets.getRows("'Relatorio de Expedição'!A:AC");
+      const clusterMap = new Map<string, string>();
+
+      for (const row of relatorioRows.slice(1)) {
+        const atId = String(row[1] || '').trim();
+        const rawClusters = row[28];
+        if (!atId || !rawClusters) continue;
+
+        const clusters = this.extractPlanningClusters(rawClusters);
+        if (clusters.length) {
+          clusterMap.set(atId, clusters[0]);
+        }
+      }
+
+      return clusterMap;
+    } catch {
+      return new Map<string, string>();
+    }
+  }
+
+  private async getExecutiveDashboardSection() {
+    const cacheKey = `${this.DASHBOARD_EXECUTIVE_CACHE_PREFIX}:v1`;
+    const cached = await this.redisService.get<any>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const [
       totalDrivers,
       routesAvailable,
@@ -139,7 +236,7 @@ export class AppService {
       date.setDate(date.getDate() - offset);
       const key = date.toISOString().slice(0, 10);
       historyMap.set(key, {
-        date: `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`,
+        date: this.formatDayLabel(date),
         atribuidas: 0,
         disponiveis: 0,
         bloqueadas: 0,
@@ -155,13 +252,7 @@ export class AppService {
       if (route.status === RouteStatus.BLOQUEADA) bucket.bloqueadas += 1;
     });
 
-    const topDrivers = topDriversRaw.map((driver) => ({
-      name: driver.name?.split(' ')[0] || driver.id,
-      score: driver.priorityScore,
-      routes: driver._count.routes,
-    }));
-
-    return {
+    const payload = {
       stats: {
         totalDrivers,
         routesAvailable,
@@ -184,7 +275,214 @@ export class AppService {
         { status: 'Atribuidas', count: routesAssigned, fill: 'var(--color-chart-1)' },
         { status: 'Bloqueadas', count: routesBlocked, fill: 'var(--color-chart-3)' },
       ],
-      topDrivers,
+      topDrivers: topDriversRaw.map((driver) => ({
+        name: driver.name?.split(' ')[0] || driver.id,
+        score: driver.priorityScore,
+        routes: driver._count.routes,
+      })),
+    };
+
+    await this.redisService.set(
+      cacheKey,
+      payload,
+      this.DASHBOARD_EXECUTIVE_CACHE_TTL_SECONDS,
+    );
+
+    return payload;
+  }
+
+  private async getNoShowDashboardSection() {
+    const cacheKey = `${this.DASHBOARD_NOSHOW_CACHE_PREFIX}:v1`;
+    const cached = await this.redisService.get<any>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const noShowWindowStart = new Date();
+    noShowWindowStart.setHours(0, 0, 0, 0);
+    noShowWindowStart.setDate(noShowWindowStart.getDate() - 29);
+
+    const noShowTodayStart = new Date();
+    noShowTodayStart.setHours(0, 0, 0, 0);
+
+    const [totalRoutesAll, totalNoShowAll, noShowRoutesWindow, noShowRoutesRecent, clusterMap] =
+      await Promise.all([
+        this.prisma.route.count(),
+        this.prisma.route.count({ where: { noShow: true } }),
+        this.prisma.route.findMany({
+          where: {
+            noShow: true,
+            createdAt: {
+              gte: noShowWindowStart,
+            },
+          },
+          select: {
+            id: true,
+            atId: true,
+            routeDate: true,
+            shift: true,
+            cidade: true,
+            bairro: true,
+            driverId: true,
+            driverName: true,
+            driverVehicleType: true,
+            assignmentSource: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.route.findMany({
+          where: { noShow: true },
+          select: {
+            id: true,
+            atId: true,
+            routeDate: true,
+            shift: true,
+            cidade: true,
+            bairro: true,
+            driverId: true,
+            driverName: true,
+            driverVehicleType: true,
+            assignmentSource: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 12,
+        }),
+        this.getPlanningClusterMap(),
+      ]);
+
+    const noShowByDayMap = new Map<string, { date: string; count: number }>();
+    const noShowByShiftMap = new Map<string, number>();
+    const noShowByCityMap = new Map<string, number>();
+    const noShowByVehicleMap = new Map<string, number>();
+    const noShowByAssignmentSourceMap = new Map<string, number>();
+    const noShowByWeekdayMap = new Map<string, number>();
+    const noShowByClusterMap = new Map<string, number>();
+    const noShowByClusterTrendMap = new Map<string, Map<string, number>>();
+
+    for (let offset = 29; offset >= 0; offset -= 1) {
+      const date = new Date();
+      date.setHours(0, 0, 0, 0);
+      date.setDate(date.getDate() - offset);
+      const key = date.toISOString().slice(0, 10);
+      noShowByDayMap.set(key, {
+        date: this.formatDayLabel(date),
+        count: 0,
+      });
+    }
+
+    let noShowToday = 0;
+
+    for (const route of noShowRoutesWindow) {
+      const referenceDate = this.resolveRouteReferenceDate(route);
+      const dayKey = referenceDate.toISOString().slice(0, 10);
+      const dayBucket = noShowByDayMap.get(dayKey);
+      if (dayBucket) {
+        dayBucket.count += 1;
+      }
+
+      if (referenceDate >= noShowTodayStart) {
+        noShowToday += 1;
+      }
+
+      const shiftLabel = String(route.shift || 'Sem turno').trim() || 'Sem turno';
+      noShowByShiftMap.set(shiftLabel, (noShowByShiftMap.get(shiftLabel) || 0) + 1);
+
+      const cityLabel = String(route.cidade || 'Sem cidade').trim() || 'Sem cidade';
+      noShowByCityMap.set(cityLabel, (noShowByCityMap.get(cityLabel) || 0) + 1);
+
+      const vehicleLabel = String(route.driverVehicleType || 'Sem veiculo').trim() || 'Sem veiculo';
+      noShowByVehicleMap.set(vehicleLabel, (noShowByVehicleMap.get(vehicleLabel) || 0) + 1);
+
+      const sourceLabel = String(route.assignmentSource || 'SYNC').trim() || 'SYNC';
+      noShowByAssignmentSourceMap.set(
+        sourceLabel,
+        (noShowByAssignmentSourceMap.get(sourceLabel) || 0) + 1,
+      );
+
+      const weekdayLabel = referenceDate.toLocaleDateString('pt-BR', { weekday: 'short' });
+      noShowByWeekdayMap.set(weekdayLabel, (noShowByWeekdayMap.get(weekdayLabel) || 0) + 1);
+
+      const clusterLabel = clusterMap.get(route.atId) || 'Sem cluster';
+      noShowByClusterMap.set(clusterLabel, (noShowByClusterMap.get(clusterLabel) || 0) + 1);
+      const clusterTrendBucket = noShowByClusterTrendMap.get(dayKey) || new Map<string, number>();
+      clusterTrendBucket.set(clusterLabel, (clusterTrendBucket.get(clusterLabel) || 0) + 1);
+      noShowByClusterTrendMap.set(dayKey, clusterTrendBucket);
+    }
+
+    const noShowRate = totalRoutesAll ? Math.round((totalNoShowAll / totalRoutesAll) * 1000) / 10 : 0;
+    const topShift = this.toTopBreakdownEntries(noShowByShiftMap, 1)[0] || null;
+    const topCity = this.toTopBreakdownEntries(noShowByCityMap, 1)[0] || null;
+    const topCluster = this.toTopBreakdownEntries(noShowByClusterMap, 1)[0] || null;
+
+    const payload = {
+      noShow: {
+        summary: {
+          total: totalNoShowAll,
+          last30Days: noShowRoutesWindow.length,
+          today: noShowToday,
+          rate: noShowRate,
+          affectedCities: noShowByCityMap.size,
+          affectedClusters: Array.from(noShowByClusterMap.keys()).filter((value) => value !== 'Sem cluster').length,
+          topShift: topShift?.label || null,
+          topCity: topCity?.label || null,
+          topCluster: topCluster?.label || null,
+        },
+        byDay: Array.from(noShowByDayMap.values()),
+        byShift: this.toTopBreakdownEntries(noShowByShiftMap),
+        byCity: this.toTopBreakdownEntries(noShowByCityMap),
+        byCluster: this.toTopBreakdownEntries(noShowByClusterMap),
+        byClusterTrend: Array.from(noShowByDayMap.entries()).map(([dayKey, item]) => {
+          const trendBucket = noShowByClusterTrendMap.get(dayKey) || new Map<string, number>();
+          return {
+            date: item.date,
+            values: Array.from(trendBucket.entries())
+              .map(([label, count]) => ({ label, count }))
+              .sort((left, right) => left.label.localeCompare(right.label)),
+          };
+        }),
+        byVehicle: this.toTopBreakdownEntries(noShowByVehicleMap),
+        byAssignmentSource: this.toTopBreakdownEntries(noShowByAssignmentSourceMap),
+        byWeekday: this.toTopBreakdownEntries(noShowByWeekdayMap, 7),
+        recentRoutes: noShowRoutesRecent.map((route) => ({
+          id: route.id,
+          atId: route.atId,
+          routeDate: route.routeDate,
+          shift: route.shift,
+          cidade: route.cidade,
+          bairro: route.bairro,
+          driverId: route.driverId,
+          driverName: route.driverName,
+          driverVehicleType: route.driverVehicleType,
+          assignmentSource: route.assignmentSource,
+          cluster: clusterMap.get(route.atId) || null,
+          createdAt: this.toIsoString(route.createdAt),
+          updatedAt: this.toIsoString(route.updatedAt),
+        })),
+      },
+    };
+
+    await this.redisService.set(
+      cacheKey,
+      payload,
+      this.DASHBOARD_NOSHOW_CACHE_TTL_SECONDS,
+    );
+
+    return payload;
+  }
+
+  async getDashboardData() {
+    const [executive, noShow] = await Promise.all([
+      this.getExecutiveDashboardSection(),
+      this.getNoShowDashboardSection(),
+    ]);
+
+    return {
+      ...executive,
+      ...noShow,
     };
   }
 
@@ -204,6 +502,19 @@ export class AppService {
     const ds = String(params?.ds || '').trim();
     const sortBy = params?.sortBy || 'priorityScore';
     const sortDir = params?.sortDir === 'asc' ? 'asc' : 'desc';
+    const driversCacheKey = `${this.DRIVERS_LIST_CACHE_PREFIX}:${JSON.stringify({
+      page,
+      pageSize,
+      search,
+      vehicleType,
+      ds,
+      sortBy,
+      sortDir,
+    })}`;
+    const cachedDrivers = await this.redisService.get<any>(driversCacheKey);
+    if (cachedDrivers) {
+      return cachedDrivers;
+    }
 
     const where = {
       ...(search
@@ -243,13 +554,315 @@ export class AppService {
       this.prisma.driver.count({ where }),
     ]);
 
-    return {
+    const payload = {
       data,
       total,
       page,
       pageSize,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
     };
+
+    await this.redisService.set(
+      driversCacheKey,
+      payload,
+      this.DRIVERS_LIST_CACHE_TTL_SECONDS,
+    );
+
+    return payload;
+  }
+
+  async getDriversAnalytics() {
+    const cacheKey = `${this.DRIVERS_ANALYTICS_CACHE_PREFIX}:v1`;
+    const cached = await this.redisService.get<any>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const activeDriversSql = Prisma.sql`
+      WITH active_drivers AS (
+        SELECT d.*
+        FROM "Driver" d
+        LEFT JOIN "DriverBlocklist" db
+          ON db."driverId" = d."id"
+         AND db."status" = 'ACTIVE'
+        WHERE db."driverId" IS NULL
+      )
+    `;
+
+    const dsSanitizedSql = Prisma.sql`
+      NULLIF(
+        REGEXP_REPLACE(COALESCE(ad."ds", ''), '[^0-9,.-]', '', 'g'),
+        ''
+      )
+    `;
+
+    const dsNumericSql = Prisma.sql`
+      CASE
+        WHEN ${dsSanitizedSql} IS NOT NULL
+          THEN REPLACE(${dsSanitizedSql}, ',', '.')::double precision
+        ELSE NULL
+      END
+    `;
+
+    const dsPercentSql = Prisma.sql`
+      CASE
+        WHEN ${dsNumericSql} IS NULL THEN NULL
+        WHEN ${dsNumericSql} <= 1 THEN ${dsNumericSql} * 100
+        ELSE ${dsNumericSql}
+      END
+    `;
+
+    const [summaryRows, blockedRows, byVehicleRows, topScoreRows, topRiskRows, filterRows, dsSummaryRows, dsByVehicleRows, topDsRows, lowDsRows] =
+      await Promise.all([
+        this.prisma.$queryRaw<Array<{
+          totalactivedrivers: bigint | number;
+          highriskcount: bigint | number;
+          totalnoshow: bigint | number;
+          avgscore: number | null;
+          avgds: number | null;
+        }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            COUNT(*) AS "totalactivedrivers",
+            COUNT(*) FILTER (WHERE (ad."noShowCount" * 10) + (ad."declineRate" * 100) > 60) AS "highriskcount",
+            COALESCE(SUM(ad."noShowCount"), 0) AS "totalnoshow",
+            COALESCE(ROUND(AVG(ad."priorityScore")::numeric, 1), 0) AS "avgscore",
+            COALESCE(ROUND(AVG(${dsPercentSql})::numeric, 1), 0) AS "avgds"
+          FROM active_drivers ad
+        `),
+        this.prisma.$queryRaw<Array<{ blockedcount: bigint | number }>>(Prisma.sql`
+          SELECT COUNT(*) AS "blockedcount"
+          FROM "DriverBlocklist"
+          WHERE "status" = 'ACTIVE'
+        `),
+        this.prisma.$queryRaw<Array<{ label: string; count: bigint | number }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            COALESCE(NULLIF(TRIM(ad."vehicleType"), ''), 'Sem veiculo') AS "label",
+            COUNT(*) AS "count"
+          FROM active_drivers ad
+          GROUP BY 1
+          ORDER BY COUNT(*) DESC, 1 ASC
+          LIMIT 5
+        `),
+        this.prisma.$queryRaw<Array<{
+          id: string;
+          name: string | null;
+          vehicletype: string | null;
+          ds: string | null;
+          noshowcount: number;
+          declinerate: number;
+          priorityscore: number;
+        }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            ad."id",
+            ad."name",
+            ad."vehicleType" AS "vehicletype",
+            ad."ds",
+            ad."noShowCount" AS "noshowcount",
+            ad."declineRate" AS "declinerate",
+            ad."priorityScore" AS "priorityscore"
+          FROM active_drivers ad
+          ORDER BY ad."priorityScore" DESC, ad."updatedAt" DESC
+          LIMIT 5
+        `),
+        this.prisma.$queryRaw<Array<{
+          id: string;
+          name: string | null;
+          vehicletype: string | null;
+          ds: string | null;
+          noshowcount: number;
+          declinerate: number;
+          priorityscore: number;
+        }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            ad."id",
+            ad."name",
+            ad."vehicleType" AS "vehicletype",
+            ad."ds",
+            ad."noShowCount" AS "noshowcount",
+            ad."declineRate" AS "declinerate",
+            ad."priorityScore" AS "priorityscore"
+          FROM active_drivers ad
+          ORDER BY ((ad."noShowCount" * 10) + (ad."declineRate" * 100)) DESC, ad."updatedAt" DESC
+          LIMIT 5
+        `),
+        this.prisma.$queryRaw<Array<{ vehicletype: string | null; ds: string | null }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT DISTINCT
+            ad."vehicleType" AS "vehicletype",
+            ad."ds"
+          FROM active_drivers ad
+        `),
+        this.prisma.$queryRaw<Array<{
+          dsabove90count: bigint | number;
+          dsbetween80and90count: bigint | number;
+          dsbelow80count: bigint | number;
+          maxds: number | null;
+          minds: number | null;
+        }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            COUNT(*) FILTER (WHERE ${dsPercentSql} >= 90) AS "dsabove90count",
+            COUNT(*) FILTER (WHERE ${dsPercentSql} >= 80 AND ${dsPercentSql} < 90) AS "dsbetween80and90count",
+            COUNT(*) FILTER (WHERE ${dsPercentSql} < 80) AS "dsbelow80count",
+            COALESCE(MAX(${dsPercentSql}), 0) AS "maxds",
+            COALESCE(MIN(${dsPercentSql}), 0) AS "minds"
+          FROM active_drivers ad
+          WHERE ${dsPercentSql} IS NOT NULL
+        `),
+        this.prisma.$queryRaw<Array<{
+          label: string;
+          avgds: number | null;
+          count: bigint | number;
+        }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            COALESCE(NULLIF(TRIM(ad."vehicleType"), ''), 'Sem veiculo') AS "label",
+            COALESCE(ROUND(AVG(${dsPercentSql})::numeric, 1), 0) AS "avgds",
+            COUNT(*) AS "count"
+          FROM active_drivers ad
+          WHERE ${dsPercentSql} IS NOT NULL
+          GROUP BY 1
+          ORDER BY "avgds" DESC, "count" DESC, 1 ASC
+          LIMIT 5
+        `),
+        this.prisma.$queryRaw<Array<{
+          id: string;
+          name: string | null;
+          vehicletype: string | null;
+          dspercent: number;
+        }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            ad."id",
+            ad."name",
+            ad."vehicleType" AS "vehicletype",
+            ${dsPercentSql} AS "dspercent"
+          FROM active_drivers ad
+          WHERE ${dsPercentSql} IS NOT NULL
+          ORDER BY ${dsPercentSql} DESC, ad."updatedAt" DESC
+          LIMIT 5
+        `),
+        this.prisma.$queryRaw<Array<{
+          id: string;
+          name: string | null;
+          vehicletype: string | null;
+          dspercent: number;
+        }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            ad."id",
+            ad."name",
+            ad."vehicleType" AS "vehicletype",
+            ${dsPercentSql} AS "dspercent"
+          FROM active_drivers ad
+          WHERE ${dsPercentSql} IS NOT NULL
+          ORDER BY ${dsPercentSql} ASC, ad."updatedAt" DESC
+          LIMIT 5
+        `),
+      ]);
+
+    const summary = summaryRows[0] || {
+      totalactivedrivers: 0,
+      highriskcount: 0,
+      totalnoshow: 0,
+      avgscore: 0,
+      avgds: 0,
+    };
+    const blocked = blockedRows[0] || { blockedcount: 0 };
+    const dsSummary = dsSummaryRows[0] || {
+      dsabove90count: 0,
+      dsbetween80and90count: 0,
+      dsbelow80count: 0,
+      maxds: 0,
+      minds: 0,
+    };
+
+    const normalizeDriverRow = (row: {
+      id: string;
+      name: string | null;
+      vehicletype: string | null;
+      ds: string | null;
+      noshowcount: number;
+      declinerate: number;
+      priorityscore: number;
+    }) => ({
+      id: row.id,
+      name: row.name,
+      vehicleType: row.vehicletype,
+      ds: row.ds,
+      noShowCount: Number(row.noshowcount || 0),
+      declineRate: Number(row.declinerate || 0),
+      priorityScore: Number(row.priorityscore || 0),
+    });
+
+    const payload = {
+      summary: {
+        totalActiveDrivers: Number(summary.totalactivedrivers || 0),
+        blockedCount: Number(blocked.blockedcount || 0),
+        highRiskCount: Number(summary.highriskcount || 0),
+        totalNoShow: Number(summary.totalnoshow || 0),
+        avgScore: Number(summary.avgscore || 0),
+        avgDs: Number(summary.avgds || 0),
+      },
+      dsAnalysis: {
+        above90Count: Number(dsSummary.dsabove90count || 0),
+        between80And90Count: Number(dsSummary.dsbetween80and90count || 0),
+        below80Count: Number(dsSummary.dsbelow80count || 0),
+        maxDs: Number(dsSummary.maxds || 0),
+        minDs: Number(dsSummary.minds || 0),
+        byVehicle: dsByVehicleRows.map((row) => ({
+          label: row.label,
+          avgDs: Number(row.avgds || 0),
+          count: Number(row.count || 0),
+        })),
+        topDs: topDsRows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          vehicleType: row.vehicletype,
+          ds: Number(row.dspercent || 0),
+        })),
+        lowDs: lowDsRows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          vehicleType: row.vehicletype,
+          ds: Number(row.dspercent || 0),
+        })),
+      },
+      byVehicle: byVehicleRows.map((row) => ({
+        label: row.label,
+        count: Number(row.count || 0),
+      })),
+      topScore: topScoreRows.map(normalizeDriverRow),
+      topRisk: topRiskRows.map(normalizeDriverRow),
+      filterOptions: {
+        vehicleTypes: Array.from(
+          new Set(
+            filterRows
+              .map((row) => String(row.vehicletype || '').trim())
+              .filter(Boolean),
+          ),
+        ).sort((left, right) => left.localeCompare(right)),
+        dsValues: Array.from(
+          new Set(
+            filterRows
+              .map((row) => String(row.ds || '').trim())
+              .filter(Boolean),
+          ),
+        ).sort((left, right) => left.localeCompare(right)),
+      },
+    };
+
+    await this.redisService.set(
+      cacheKey,
+      payload,
+      this.DRIVERS_ANALYTICS_CACHE_TTL_SECONDS,
+    );
+
+    return payload;
   }
 
   async updateDriverPriorityScore(driverId: string, priorityScoreRaw: number) {
@@ -276,6 +889,11 @@ export class AppService {
       after: { priorityScore },
     });
 
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateDriversCaches(),
+    ]);
+
     return { ok: true, message: 'Priority score atualizado com sucesso.' };
   }
 
@@ -297,6 +915,8 @@ export class AppService {
       before: before ? { noShowCount: before.noShowCount } : null,
       after: { noShowCount: 0 },
     });
+
+    await this.invalidateDriversCaches();
 
     return { ok: true, message: 'No-show resetado com sucesso.' };
   }
@@ -356,12 +976,47 @@ export class AppService {
       }),
     ]);
 
+    const planningDriverIds = planning.drivers
+      .map((driver) => String(driver.id || '').trim())
+      .filter(Boolean);
+
+    const planningDriverMetadata: Array<{
+      id: string;
+      name: string | null;
+      vehicleType: string | null;
+      ds: string | null;
+    }> = planningDriverIds.length
+      ? await (this.prisma as any).driver.findMany({
+          where: {
+            id: {
+              in: planningDriverIds,
+            },
+          },
+          select: {
+            id: true,
+            name: true,
+            vehicleType: true,
+            ds: true,
+          },
+        })
+      : [];
+
+    const planningDriverMetadataById = new Map<string, (typeof planningDriverMetadata)[number]>(
+      planningDriverMetadata.map((driver) => [driver.id, driver]),
+    );
+
     const assignmentByAt = new Map(
       planning.assignments.map((assignment) => [assignment.atId, assignment]),
+    );
+    const planningDriverById = new Map(
+      planning.drivers.map((driver) => [driver.id, driver]),
     );
 
     const data = routes.map((route: any) => {
       const assignment = assignmentByAt.get(route.atId);
+      const suggestedDriver = assignment
+        ? planningDriverById.get(assignment.suggestedDriverId)
+        : null;
 
       return {
         ...route,
@@ -370,6 +1025,7 @@ export class AppService {
         hasTelegramRequest: route.assignmentSource === ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
         hasManualRequest: route.assignmentSource === ROUTE_ASSIGNMENT_SOURCE.MANUAL,
         suggestedDriverId: assignment?.suggestedDriverId || null,
+        suggestedDriverName: suggestedDriver?.name || null,
         suggestedPhase: assignment?.phase || null,
         suggestedObservation: assignment?.obs || null,
         suggestedDriverVehicle: assignment?.suggestedDriverVehicle || null,
@@ -391,15 +1047,77 @@ export class AppService {
         pendingRequest: data.filter((route: any) => !route.requestedDriverId).length,
         suggestions: data.filter((route: any) => !!route.suggestedDriverId).length,
       },
-      drivers: planning.drivers.map((driver) => ({
-        id: driver.id,
-        vehicleType: driver.veiculo,
-        available: driver.disponivel,
-        ds: Number(driver.ds.toFixed(2)),
-        profile: driver.perfil,
-        clusters: driver.clusters,
-      })),
+      drivers: planning.drivers.map((driver) => {
+        const metadata = planningDriverMetadataById.get(driver.id);
+        const fallbackDs = this.normalizePlanningDs(metadata?.ds);
+        const normalizedDs = Number.isFinite(driver.ds) ? driver.ds : fallbackDs;
+
+        return {
+          id: driver.id,
+          name: String(driver.name || metadata?.name || driver.id),
+          vehicleType: String(driver.veiculo || metadata?.vehicleType || ''),
+          available: driver.disponivel,
+          ds: Number(normalizedDs.toFixed(2)),
+          profile: driver.perfil,
+          clusters: driver.clusters,
+        };
+      }),
+      preferredAssignments: planning.preferredAssignments,
       data,
+    };
+  }
+
+  async updateRoutePlanningPreferences(preferences: Array<Record<string, unknown>>) {
+    const normalized = this.normalizeRoutePlanningPreferences(preferences);
+    const existingDrivers = await (this.prisma as any).driver.findMany({
+      where: {
+        id: {
+          in: normalized.map((entry) => entry.driverId),
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    const validDriverIds = new Set(existingDrivers.map((driver: any) => String(driver.id)));
+    const filtered = normalized.filter((entry) => validDriverIds.has(entry.driverId));
+    await (this.prisma as any).systemConfig.upsert({
+      where: { key: this.ROUTE_PLANNING_PREFERENCES_KEY },
+      create: { key: this.ROUTE_PLANNING_PREFERENCES_KEY, value: filtered as any },
+      update: { value: filtered as any },
+    });
+
+    const allDrivers: Array<{
+      id: string;
+      name: string | null;
+      vehicleType: string | null;
+    }> = await (this.prisma as any).driver.findMany({
+      select: {
+        id: true,
+        name: true,
+        vehicleType: true,
+      },
+    });
+    const driverMap = new Map<string, (typeof allDrivers)[number]>(
+      allDrivers.map((driver) => [String(driver.id), driver]),
+    );
+    const clusterLabelByCode = await this.getPlanningClusterLabelMap();
+
+    return {
+      ok: true,
+      message: 'Preferencias de cluster atualizadas com sucesso.',
+      preferences: filtered.map((entry) => {
+        const driver = driverMap.get(entry.driverId);
+        return {
+          cluster: entry.cluster,
+          clusterName: clusterLabelByCode.get(entry.cluster) || null,
+          driverId: entry.driverId,
+          driverName: driver?.name || null,
+          vehicleType: driver?.vehicleType || null,
+          available: false,
+        };
+      }),
     };
   }
 
@@ -747,6 +1465,7 @@ export class AppService {
       return {
         assignments: [],
         drivers: [],
+        preferredAssignments: [],
         outputK: Array.from({ length: Math.max(0, driversRows.length - 1) }, () => ['']),
         logRows: [
           [
@@ -789,6 +1508,7 @@ export class AppService {
 
       const driver: PlanningDriver = {
         id,
+        name: String(row[1] || '').trim(),
         veiculo: this.normalizePlanningVehicle(row[2]),
         disponivel: this.normalizePlanningAvailable(row[3]),
         ds: this.normalizePlanningDs(row[6]),
@@ -800,6 +1520,13 @@ export class AppService {
       mapaDrivers.set(id, driver);
       rowById.set(id, index);
     }
+
+    const clusterLabelByCode = this.buildPlanningClusterLabelMap([
+      ...relatorioRows.slice(1).map((row) => row?.[28]),
+      ...driversRows.slice(1).map((row) => row?.[7]),
+    ]);
+
+    const savedPreferences = await this.getRoutePlanningPreferences();
 
     const outputK = Array.from({ length: Math.max(0, driversRows.length - 1) }, () => ['']);
     const atsUsadas = new Set<string>();
@@ -833,6 +1560,19 @@ export class AppService {
       }))
       .filter((row) => row.atId && mapaATClusters.has(row.atId))
       .sort((a, b) => b.volume - a.volume);
+
+    this.preAllocateManualClusterPreferences({
+      preferences: savedPreferences,
+      routes: rotasOrdenadasBase,
+      routeClusters: mapaATClusters,
+      drivers: Array.from(mapaDrivers.values()),
+      usedRouteIds: atsUsadas,
+      usedDriverIds: motoristasUsados,
+      rowById,
+      outputK,
+      assignments,
+      logRows,
+    });
 
     this.preAllocatePreferredVehicles({
       focus,
@@ -965,6 +1705,17 @@ export class AppService {
     return {
       assignments,
       drivers: Array.from(mapaDrivers.values()),
+      preferredAssignments: savedPreferences.map((entry) => {
+        const driver = mapaDrivers.get(entry.driverId);
+        return {
+          cluster: entry.cluster,
+          clusterName: clusterLabelByCode.get(entry.cluster) || null,
+          driverId: entry.driverId,
+          driverName: driver?.name || null,
+          vehicleType: driver?.veiculo || null,
+          available: !!driver?.disponivel,
+        };
+      }),
       outputK,
       logRows,
     };
@@ -1110,6 +1861,131 @@ export class AppService {
     }
   }
 
+  private preAllocateManualClusterPreferences(params: {
+    preferences: RoutePlanningPreferenceEntry[];
+    routes: Array<{ atId: string; tipoProgRaw: string; volume: number }>;
+    routeClusters: Map<string, string[]>;
+    drivers: PlanningDriver[];
+    usedRouteIds: Set<string>;
+    usedDriverIds: Set<string>;
+    rowById: Map<string, number>;
+    outputK: string[][];
+    assignments: PlanningAssignment[];
+    logRows: string[][];
+  }) {
+    const driversById = new Map(params.drivers.map((driver) => [driver.id, driver]));
+
+    const orderedPreferences = params.preferences
+      .map((entry) => ({
+        ...entry,
+        driver: driversById.get(entry.driverId) || null,
+      }))
+      .filter((entry): entry is RoutePlanningPreferenceEntry & { driver: PlanningDriver } => !!entry.driver)
+      .sort((left, right) => right.driver.ds - left.driver.ds);
+
+    for (const preference of orderedPreferences) {
+      if (params.usedDriverIds.has(preference.driverId)) continue;
+      if (!preference.driver.disponivel) continue;
+
+      const route = params.routes.find((candidateRoute) => {
+        if (params.usedRouteIds.has(candidateRoute.atId)) return false;
+
+        const isMotoRoute = candidateRoute.tipoProgRaw.includes('MOTO');
+        if (isMotoRoute) return preference.driver.veiculo === 'MOTO';
+        if (preference.driver.veiculo === 'MOTO') return false;
+        if (candidateRoute.volume >= 600 && !['FIORINO', 'VAN'].includes(preference.driver.veiculo)) return false;
+
+        const primaryRouteCluster = (params.routeClusters.get(candidateRoute.atId) || [])[0];
+        if (!primaryRouteCluster) return false;
+        return primaryRouteCluster === preference.cluster;
+      });
+
+      if (!route) continue;
+
+      params.usedRouteIds.add(route.atId);
+      params.usedDriverIds.add(preference.driverId);
+
+      const rowIndex = params.rowById.get(preference.driverId);
+      if (typeof rowIndex === 'number' && params.outputK[rowIndex - 1]) {
+        params.outputK[rowIndex - 1][0] = route.atId;
+      }
+
+      const assignment = this.buildPlanningAssignment({
+        atId: route.atId,
+        tipoProgRaw: route.tipoProgRaw,
+        currentDriverId: '',
+        currentDriver: null,
+        suggestedDriver: preference.driver,
+        clusterRoute: preference.cluster,
+        phase: 'FASE A',
+        obs: `Volume: ${route.volume} | Preferencia manual de cluster`,
+      });
+
+      params.assignments.push(assignment);
+      params.logRows.push(this.planningAssignmentToLogRow(assignment));
+    }
+  }
+
+  private normalizeRoutePlanningPreferences(
+    preferences: Array<Record<string, unknown>>,
+  ): RoutePlanningPreferenceEntry[] {
+    const normalized = preferences
+      .map((entry) => ({
+        cluster: String(entry.cluster || '')
+          .trim()
+          .padStart(2, '0')
+          .slice(0, 2),
+        driverId: String(entry.driverId || '').trim(),
+      }))
+      .filter((entry) => /^\d{2}$/.test(entry.cluster) && !!entry.driverId);
+
+    const unique = new Map<string, RoutePlanningPreferenceEntry>();
+    for (const entry of normalized) {
+      unique.set(`${entry.cluster}:${entry.driverId}`, entry);
+    }
+
+    return Array.from(unique.values());
+  }
+
+  private async getRoutePlanningPreferences(): Promise<RoutePlanningPreferenceEntry[]> {
+    const row = await (this.prisma as any).systemConfig.findUnique({
+      where: { key: this.ROUTE_PLANNING_PREFERENCES_KEY },
+    });
+
+    const raw = Array.isArray(row?.value) ? (row.value as Array<Record<string, unknown>>) : [];
+    return this.normalizeRoutePlanningPreferences(raw);
+  }
+
+  private async getPlanningClusterLabelMap(): Promise<Map<string, string>> {
+    try {
+      const [driverClusterRows, relatorioClusterRows] = await Promise.all([
+        this.sheets.getRows("'Drivers Disponiveis'!H:H"),
+        this.sheets.getRows("'Relatorio de Expedição'!AC:AC"),
+      ]);
+
+      return this.buildPlanningClusterLabelMap([
+        ...driverClusterRows.slice(1).map((row) => row?.[0]),
+        ...relatorioClusterRows.slice(1).map((row) => row?.[0]),
+      ]);
+    } catch {
+      return new Map<string, string>();
+    }
+  }
+
+  private buildPlanningClusterLabelMap(values: unknown[]) {
+    const labels = new Map<string, string>();
+
+    for (const value of values) {
+      for (const entry of this.extractPlanningClusterEntries(value)) {
+        if (!labels.has(entry.code) && entry.name) {
+          labels.set(entry.code, entry.name);
+        }
+      }
+    }
+
+    return labels;
+  }
+
   private buildPlanningAssignment(params: {
     atId: string;
     tipoProgRaw: string;
@@ -1194,24 +2070,49 @@ export class AppService {
   }
 
   private normalizePlanningDs(value: unknown) {
-    const numeric = Number(value);
+    const raw = String(value ?? '').trim();
+    if (!raw) return 0;
+
+    const compact = raw.replace(/\s+/g, '').replace(/%/g, '');
+    const sanitized = compact.includes(',')
+      ? compact.replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '')
+      : compact.replace(/[^\d.-]/g, '');
+
+    const numeric = Number(sanitized);
     if (!Number.isFinite(numeric)) return 0;
     return numeric > 1 ? numeric / 100 : numeric;
   }
 
   private extractPlanningClusters(value: unknown) {
-    const text = String(value || '').toUpperCase();
-    if (!text) return [];
+    return this.extractPlanningClusterEntries(value).map((entry) => entry.code);
+  }
 
-    const clusters = new Set<string>();
+  private extractPlanningClusterEntries(value: unknown) {
+    const text = String(value || '');
+    if (!text.trim()) return [];
+
+    const clusters = new Map<string, { code: string; name: string | null }>();
     text.split(/[;,]/).forEach((chunk) => {
-      const match = chunk.trim().match(/^(\d{1,2})/);
-      if (match) {
-        clusters.add(match[1].padStart(2, '0'));
+      const normalizedChunk = String(chunk || '').trim();
+      if (!normalizedChunk) return;
+
+      const match = normalizedChunk.match(/^(\d{1,2})(.*)$/);
+      if (!match) return;
+
+      const code = match[1].padStart(2, '0');
+      const suffix = String(match[2] || '')
+        .replace(/^[\s\-–—:|]+/, '')
+        .trim();
+
+      if (!clusters.has(code)) {
+        clusters.set(code, {
+          code,
+          name: suffix || null,
+        });
       }
     });
 
-    return Array.from(clusters);
+    return Array.from(clusters.values());
   }
 
   private hasPlanningClusterIntersection(driverClusters: string[], routeClusters: string[]) {
@@ -1321,6 +2222,12 @@ export class AppService {
       after: { driverId: driver.id, status: RouteStatus.ATRIBUIDA },
     });
 
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateNoShowDashboardCache(),
+      this.invalidateDriversCaches(),
+    ]);
+
     return { ok: true, message: 'Rota atribuida com sucesso.' };
   }
 
@@ -1352,6 +2259,12 @@ export class AppService {
       userName: 'System',
       after: { driverId: null, status: RouteStatus.DISPONIVEL, noShow: markNoShow },
     });
+
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateNoShowDashboardCache(),
+      this.invalidateDriversCaches(),
+    ]);
 
     return {
       ok: true,
@@ -1385,6 +2298,12 @@ export class AppService {
       userName: 'System',
       after: { status: RouteStatus.BLOQUEADA },
     });
+
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateNoShowDashboardCache(),
+      this.invalidateDriversCaches(),
+    ]);
 
     return { ok: true, message: 'Rota bloqueada com sucesso.' };
   }
@@ -1427,6 +2346,12 @@ export class AppService {
       after: { noShow: true, makeAvailable },
     });
 
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateNoShowDashboardCache(),
+      this.invalidateDriversCaches(),
+    ]);
+
     return {
       ok: true,
       message: makeAvailable
@@ -1435,10 +2360,54 @@ export class AppService {
     };
   }
 
+  async clearRouteNoShow(routeIdRaw: string) {
+    const routeId = String(routeIdRaw || '').trim();
+    if (!routeId) return { ok: false, message: 'Rota invalida.' };
+
+    await (this.prisma as any).route.update({
+      where: { id: routeId },
+      data: {
+        noShow: false,
+      },
+    });
+
+    await this.recordAudit({
+      entityType: 'Route',
+      entityId: routeId,
+      action: 'CLEAR_NOSHOW',
+      userId: 'system',
+      userName: 'System',
+      after: { noShow: false },
+    });
+
+    await this.invalidateNoShowDashboardCache();
+
+    return {
+      ok: true,
+      message: 'Marcacao de no-show removida com sucesso.',
+    };
+  }
+
   async getBlocklist() {
-    return this.prisma.driverBlocklist.findMany({
+    const entries = await this.prisma.driverBlocklist.findMany({
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
     });
+    const driverIds = entries.map((entry) => entry.driverId);
+    const drivers = driverIds.length
+      ? await this.prisma.driver.findMany({
+          where: { id: { in: driverIds } },
+          select: {
+            id: true,
+            name: true,
+          },
+        })
+      : [];
+    const driverNameById = new Map(drivers.map((driver) => [driver.id, driver.name || null]));
+
+    return entries.map((entry) => ({
+      ...entry,
+      driverName: driverNameById.get(entry.driverId) || null,
+    }));
   }
 
   async getFaqItems() {
@@ -1775,37 +2744,304 @@ export class AppService {
     return { accessToken, user };
   }
 
-  async getOverviewData() {
-    const [overviews, routes] = await Promise.all([
-      this.prisma.assignmentOverview.findMany({ orderBy: { rowNumber: 'asc' } }),
-      this.prisma.route.findMany({ select: { id: true, status: true, driverId: true } }),
+  private serializeManagedUser(analyst: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    hubId: string | null;
+    isActive: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+    hub?: { name: string } | null;
+  }) {
+    return {
+      id: analyst.id,
+      name: analyst.name,
+      email: analyst.email,
+      role: analyst.role,
+      hubId: analyst.hubId,
+      hubName: analyst.hub?.name || null,
+      isActive: analyst.isActive,
+      createdAt: this.toIsoString(analyst.createdAt),
+      updatedAt: this.toIsoString(analyst.updatedAt),
+    };
+  }
+
+  async getManagedUsers() {
+    await this.ensureSupportSeedData();
+    const prisma = this.prisma as any;
+
+    const [users, hubs] = await Promise.all([
+      prisma.analyst.findMany({
+        include: { hub: true },
+        orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+      }),
+      prisma.hub.findMany({
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true },
+      }),
     ]);
-    const routeMap = new Map(routes.map((route) => [route.id, route]));
 
-    const data = overviews.map((overview) => {
-      const payload = overview.payload as Record<string, unknown>;
-      const routeId = String(payload.routeId || '');
-      const route = routeMap.get(routeId);
-      let inconsistency: string | null = null;
-      if (!route) inconsistency = 'Rota nao encontrada';
-      else if (route.status !== payload.status) {
-        inconsistency = `Status divergente (overview: ${String(payload.status)}, real: ${route.status})`;
-      } else if ((route.driverId || null) !== (overview.driverId || null)) {
-        inconsistency = 'Motorista divergente';
+    return {
+      users: users.map((analyst) => this.serializeManagedUser(analyst)),
+      hubs,
+    };
+  }
+
+  async createManagedUser(payload: {
+    name?: string;
+    email?: string;
+    password?: string;
+    role?: string;
+    hubId?: string | null;
+  }) {
+    await this.ensureSupportSeedData();
+    const prisma = this.prisma as any;
+    const name = String(payload?.name || '').trim();
+    const email = String(payload?.email || '').trim().toLowerCase();
+    const password = String(payload?.password || '').trim();
+    const role = String(payload?.role || 'ANALISTA').trim().toUpperCase();
+    const hubIdRaw = payload?.hubId == null ? 'hub-sp' : String(payload.hubId).trim();
+    const hubId = hubIdRaw || null;
+
+    if (!name || name.length < 3) {
+      throw new BadRequestException('Nome invalido');
+    }
+    if (!email || !email.includes('@')) {
+      throw new BadRequestException('E-mail invalido');
+    }
+    if (!password || password.length < 4) {
+      throw new BadRequestException('Senha invalida');
+    }
+    if (!['ADMIN', 'ANALISTA', 'SUPERVISOR'].includes(role)) {
+      throw new BadRequestException('Papel invalido');
+    }
+
+    if (hubId) {
+      const hubExists = await prisma.hub.findUnique({
+        where: { id: hubId },
+        select: { id: true },
+      });
+      if (!hubExists) {
+        throw new BadRequestException('Hub invalido');
       }
+    }
 
-      return {
-        ...overview,
-        updatedAt: this.toIsoString(overview.updatedAt),
-        createdAt: this.toIsoString(overview.createdAt),
-        inconsistency,
-      };
+    const existing = await prisma.analyst.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new BadRequestException('E-mail ja cadastrado');
+    }
+
+    const baseId = email
+      .split('@')[0]
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24) || 'user';
+    const analystId = `${baseId}-${Date.now()}`;
+
+    const created = await prisma.analyst.create({
+      data: {
+        id: analystId,
+        name,
+        email,
+        password,
+        role,
+        hubId,
+        isActive: true,
+      },
+      include: { hub: true },
     });
 
     return {
-      inconsistentCount: data.filter((item) => item.inconsistency).length,
-      data,
+      ok: true,
+      message: 'Usuario criado com sucesso',
+      user: this.serializeManagedUser(created),
     };
+  }
+
+  async updateManagedUser(
+    userId: string,
+    payload: {
+      role?: string;
+      hubId?: string | null;
+      isActive?: boolean;
+    },
+  ) {
+    await this.ensureSupportSeedData();
+    const prisma = this.prisma as any;
+    const role = payload?.role ? String(payload.role).trim().toUpperCase() : undefined;
+    const hubId =
+      payload && Object.prototype.hasOwnProperty.call(payload, 'hubId')
+        ? payload.hubId == null
+          ? null
+          : String(payload.hubId).trim() || null
+        : undefined;
+    const isActive =
+      typeof payload?.isActive === 'boolean' ? payload.isActive : undefined;
+
+    if (role && !['ADMIN', 'ANALISTA', 'SUPERVISOR'].includes(role)) {
+      throw new BadRequestException('Papel invalido');
+    }
+
+    if (hubId !== undefined && hubId) {
+      const hubExists = await prisma.hub.findUnique({
+        where: { id: hubId },
+        select: { id: true },
+      });
+      if (!hubExists) {
+        throw new BadRequestException('Hub invalido');
+      }
+    }
+
+    const existing = await prisma.analyst.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new BadRequestException('Usuario nao encontrado');
+    }
+
+    const updated = await prisma.analyst.update({
+      where: { id: userId },
+      data: {
+        ...(role ? { role } : {}),
+        ...(hubId !== undefined ? { hubId } : {}),
+        ...(isActive !== undefined ? { isActive } : {}),
+      },
+      include: { hub: true },
+    });
+
+    return {
+      ok: true,
+      message: 'Usuario atualizado com sucesso',
+      user: this.serializeManagedUser(updated),
+    };
+  }
+
+  async getOverviewData() {
+    return {
+      routeRequests: await this.getTodayRouteRequestOverview(),
+    };
+  }
+
+  private async getTodayRouteRequestOverview() {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const logs = await this.prisma.auditLog.findMany({
+      where: {
+        entityType: 'ROUTE_REQUEST',
+        createdAt: {
+          gte: startOfDay,
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+    const requestMap = new Map<
+      string,
+      {
+        driverId: string;
+        driverName: string | null;
+        vehicleType: string | null;
+        displayedRoutes: string[];
+        displayedAt: string | null;
+        requestedAt: string | null;
+        chosenRoute: string | null;
+        chosenAt: string | null;
+      }
+    >();
+
+    for (const log of logs) {
+      const fields = (log.after || {}) as Record<string, unknown>;
+      const action = log.action;
+      const driverId = String(fields.driverId || log.userId || '');
+      if (!action || !driverId) continue;
+      const happenedAtRaw = fields.happenedAt;
+      const happenedAt =
+        happenedAtRaw instanceof Date
+          ? happenedAtRaw.toISOString()
+          : typeof happenedAtRaw === 'string'
+            ? happenedAtRaw
+            : log.createdAt.toISOString();
+      const time = happenedAt.slice(11, 19) || this.toIsoString(log.createdAt).slice(11, 19);
+
+      const current =
+        requestMap.get(driverId) || {
+          driverId,
+          driverName: typeof fields.driverName === 'string' ? fields.driverName : log.userName || null,
+          vehicleType: typeof fields.vehicleType === 'string' ? fields.vehicleType : null,
+          displayedRoutes: [],
+          displayedAt: null,
+          requestedAt: null,
+          chosenRoute: null,
+          chosenAt: null,
+        };
+
+      if (!current.driverName && typeof fields.driverName === 'string') {
+        current.driverName = fields.driverName;
+      }
+
+      if (!current.vehicleType && typeof fields.vehicleType === 'string') {
+        current.vehicleType = fields.vehicleType;
+      }
+
+      if (action === 'rotas_exibidas') {
+        current.displayedRoutes = String(fields.rotas || '')
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean);
+        current.displayedAt = time;
+      }
+
+      if (action === 'solicitou_rotas') {
+        current.requestedAt = time;
+      }
+
+      if (action === 'rota_solicitada' || action === 'rota_atribuida') {
+        if (typeof fields.rota === 'string' && fields.rota.trim()) {
+          current.chosenRoute = fields.rota;
+        }
+        current.chosenAt = time;
+      }
+
+      requestMap.set(driverId, current);
+    }
+
+    const driverIds = Array.from(requestMap.keys());
+    const drivers = driverIds.length
+      ? await this.prisma.driver.findMany({
+          where: { id: { in: driverIds } },
+          select: {
+            id: true,
+            name: true,
+          },
+        })
+      : [];
+    const driverNameById = new Map(drivers.map((driver) => [driver.id, driver.name || null]));
+
+    return Array.from(requestMap.values())
+      .map((item) => ({
+        driverId: item.driverId,
+        driverName: item.driverName || driverNameById.get(item.driverId) || null,
+        vehicleType: item.vehicleType,
+        displayedRoutes: item.displayedRoutes,
+        displayedAt: item.displayedAt,
+        requestedAt: item.requestedAt,
+        choseRoute: !!item.chosenRoute,
+        chosenRoute: item.chosenRoute,
+        chosenAt: item.chosenAt,
+      }))
+      .sort((left, right) =>
+        String(right.chosenAt || right.displayedAt || '').localeCompare(
+          String(left.chosenAt || left.displayedAt || ''),
+        ),
+      );
   }
 
   async getSyncLogs() {
@@ -2487,6 +3723,10 @@ export class AppService {
         },
       });
       await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
+      await Promise.all([
+        this.invalidateExecutiveDashboardCache(),
+        this.invalidateDriversCaches(),
+      ]);
       return { ok: true, message: `Motorista ${driverId} adicionado na lista de bloqueio (ativo).` };
     }
 
@@ -2504,6 +3744,10 @@ export class AppService {
       },
     });
     await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateDriversCaches(),
+    ]);
     return { ok: true, message: `Motorista ${driverId} reativado na lista de bloqueio.` };
   }
 
@@ -2533,6 +3777,10 @@ export class AppService {
       },
     });
     await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateDriversCaches(),
+    ]);
     return { ok: true, message: `Motorista ${driverId} marcado como inativo na lista de bloqueio.` };
   }
 
@@ -2905,12 +4153,19 @@ export class AppService {
       };
     }
 
-    const logs = await redis.lrange(this.logKey(), 0, -1);
-    const requestedToday = logs.filter(
-      (line) =>
-        line.includes('acao=rota_solicitada') ||
-        line.includes('acao=rota_atribuida'),
-    ).length;
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const requestedToday = await this.prisma.auditLog.count({
+      where: {
+        entityType: 'ROUTE_REQUEST',
+        action: {
+          in: ['rota_solicitada', 'rota_atribuida'],
+        },
+        createdAt: {
+          gte: startOfDay,
+        },
+      },
+    });
     const routesNote = (await this.redisService.get<string>(this.ROUTES_NOTE_KEY)) || '';
     const routesNoteEscaped = this.escapeHtml(routesNote);
     const blocklistEntries = await this.prisma.driverBlocklist.findMany({

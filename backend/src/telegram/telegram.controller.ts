@@ -190,6 +190,29 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    if (
+      state?.driverId &&
+      ['solicitou_rotas', 'rotas_exibidas', 'rota_solicitada', 'rota_atribuida'].includes(action)
+    ) {
+      await this.prisma.auditLog.create({
+        data: {
+          entityType: 'ROUTE_REQUEST',
+          entityId: `${state.driverId}:${now.getTime()}:${action}`,
+          action,
+          userId: state.driverId,
+          userName: state.driverName || state.driverId,
+          after: {
+            driverId: state.driverId,
+            driverName: state.driverName || null,
+            vehicleType: state.vehicleType || null,
+            happenedAt: now.toISOString(),
+            ...(details || {}),
+          },
+        },
+      });
+      return;
+    }
+
     const line = parts.join(' ');
     const key = this.logKey(now);
     const client = this.redis.client();
@@ -860,6 +883,10 @@ Para encerrar, digite: encerrar
     pushCityGroups('Rotas de moto', moto);
 
     await this.telegram.sendMessage(Number(chatId), msg);
+    await this.logEvent('rotas_exibidas', state, {
+      qtd: String(ordered.length),
+      rotas: ordered.map((route) => route.atId).join(','),
+    });
     const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
     await this.refreshActiveMeta(chatId, group);
     await this.setRouteTimeout(chatId, state.vehicleType, group);

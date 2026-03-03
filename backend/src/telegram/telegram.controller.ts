@@ -39,7 +39,6 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   private readonly CHAT_DRIVER_PREFIX = 'telegram:chat:driver';
   private readonly OVERVIEW_ROUTE_REQUESTS_CACHE_KEY =
     'cache:overview:route-requests:v1';
-  private readonly ANALYST_TELEGRAM_CHATS_KEY = 'analystTelegramChats';
   private readonly BLOCKLIST_WAIT_SECONDS = 120;
 
   private timeoutWatcher?: NodeJS.Timeout;
@@ -822,14 +821,10 @@ Peça ao analista para cadastrar em /acess/duvidas.
 
   private async getAnalystNotificationTargets(driverId: string) {
     const prisma = this.prisma as any;
-    const [driver, config, analysts] = await Promise.all([
+    const [driver, analysts] = await Promise.all([
       prisma.driver.findUnique({
         where: { id: driverId },
         select: { hubId: true },
-      }),
-      prisma.systemConfig.findUnique({
-        where: { key: this.ANALYST_TELEGRAM_CHATS_KEY },
-        select: { value: true },
       }),
       prisma.analyst.findMany({
         where: { isActive: true },
@@ -838,19 +833,15 @@ Peça ao analista para cadastrar em /acess/duvidas.
           name: true,
           role: true,
           hubId: true,
+          telegramChatId: true,
         },
       }),
     ]);
 
-    const rawMap =
-      config?.value && typeof config.value === 'object' && !Array.isArray(config.value)
-        ? (config.value as Record<string, unknown>)
-        : {};
-
     const withChat = analysts
       .map((analyst) => ({
         ...analyst,
-        telegramChatId: this.normalizeTelegramChatId(rawMap[analyst.id]),
+        telegramChatId: this.normalizeTelegramChatId(analyst.telegramChatId),
       }))
       .filter(
         (

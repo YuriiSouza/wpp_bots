@@ -117,6 +117,7 @@ export interface User {
   role: UserRole
   hubId?: string | null
   hubName?: string | null
+  telegramChatId?: string | null
 }
 
 export interface ManagedUser extends User {

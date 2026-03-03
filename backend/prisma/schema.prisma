@@ -119,6 +119,7 @@ model Analyst {
   name          String
   email         String       @unique
   password      String
+  telegramChatId String?
   role          AnalystRole
   hubId         String?
   isActive      Boolean      @default(true)

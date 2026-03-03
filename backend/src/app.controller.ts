@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Header, Headers, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { AppService } from './app.service';
 
@@ -160,12 +160,8 @@ export class AppController {
   }
 
   @Post('auth/google')
-  async loginWithGoogle(
-    @Body('credential') credential: string,
-    @Body('hubId') hubId?: string,
-    @Body('telegramChatId') telegramChatId?: string,
-  ) {
-    return this.appService.loginWithGoogle(credential, hubId, telegramChatId);
+  async loginWithGoogle(@Body('credential') credential: string, @Body('hubId') hubId?: string) {
+    return this.appService.loginWithGoogle(credential, hubId);
   }
 
   @Post('auth/register')
@@ -202,6 +198,15 @@ export class AppController {
   @Get('api/users')
   async getManagedUsers() {
     return this.appService.getManagedUsers();
+  }
+
+  @Patch('api/auth/onboarding')
+  async completeAuthOnboarding(
+    @Headers('authorization') authorization?: string,
+    @Body('hubId') hubId?: string,
+    @Body('telegramChatId') telegramChatId?: string,
+  ) {
+    return this.appService.completeAuthOnboarding(authorization, hubId, telegramChatId);
   }
 
   @Post('api/users')

@@ -11,6 +11,7 @@ interface JwtPayload {
   role?: UserRole
   hubId?: string | null
   hubName?: string | null
+  telegramChatId?: string | null
 }
 
 function decodeBase64Url(value: string) {
@@ -36,6 +37,7 @@ function parseUserFromToken(token: string): User | null {
       role: payload.role,
       hubId: payload.hubId ?? null,
       hubName: payload.hubName ?? null,
+      telegramChatId: payload.telegramChatId ?? null,
     }
   } catch {
     return null
@@ -61,8 +63,14 @@ export function useAuth() {
     setIsLoading(false)
   }, [])
 
+  const persistAuthenticatedUser = useCallback((token: string, resolvedUser: User) => {
+    localStorage.setItem("auth_token", token)
+    localStorage.setItem("auth_user", JSON.stringify(resolvedUser))
+    setUser(resolvedUser)
+  }, [])
+
   const googleLogin = useCallback(
-    async (credential: string, hubId?: string | null, telegramChatId?: string | null) => {
+    async (credential: string) => {
       const response = await api.post<{
         accessToken?: string
         user?: User
@@ -70,8 +78,6 @@ export function useAuth() {
         message?: string
       }>("/auth/google", {
         credential,
-        hubId: hubId || null,
-        telegramChatId: telegramChatId || null,
       })
       if (response.data.requiresApproval) {
         throw new Error(response.data.message || "Seu acesso ainda nao foi aprovado")
@@ -84,12 +90,29 @@ export function useAuth() {
         throw new Error("Resposta de autenticacao invalida")
       }
 
-      localStorage.setItem("auth_token", token)
-      localStorage.setItem("auth_user", JSON.stringify(resolvedUser))
-      setUser(resolvedUser)
+      persistAuthenticatedUser(token, resolvedUser)
       return resolvedUser
     },
-    []
+    [persistAuthenticatedUser]
+  )
+
+  const completeOnboarding = useCallback(
+    async (hubId: string, telegramChatId: string) => {
+      const response = await api.patch<{ accessToken?: string; user?: User }>("/api/auth/onboarding", {
+        hubId,
+        telegramChatId,
+      })
+      const token = response.data.accessToken
+      const resolvedUser = response.data.user || (token ? parseUserFromToken(token) : null)
+
+      if (!token || !resolvedUser) {
+        throw new Error("Resposta de onboarding invalida")
+      }
+
+      persistAuthenticatedUser(token, resolvedUser)
+      return resolvedUser
+    },
+    [persistAuthenticatedUser]
   )
 
   const logout = useCallback(() => {
@@ -111,6 +134,7 @@ export function useAuth() {
     isLoading,
     isAuthenticated: !!user,
     googleLogin,
+    completeOnboarding,
     logout,
     hasRole,
   }

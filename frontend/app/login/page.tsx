@@ -5,12 +5,7 @@ import Script from "next/script"
 import { useRouter } from "next/navigation"
 import { Headset } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { useAuth } from "@/hooks/use-auth"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { fetchHubs } from "@/lib/admin-api"
-import type { HubOption } from "@/lib/types"
 
 declare global {
   interface Window {
@@ -35,35 +30,10 @@ export default function LoginPage() {
   const router = useRouter()
   const { googleLogin } = useAuth()
   const googleButtonRef = useRef<HTMLDivElement | null>(null)
-  const hubIdRef = useRef("")
-  const telegramChatIdRef = useRef("")
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || ""
-  const [hubId, setHubId] = useState("")
-  const [telegramChatId, setTelegramChatId] = useState("")
-  const [hubs, setHubs] = useState<HubOption[]>([])
   const [isGoogleScriptReady, setIsGoogleScriptReady] = useState(false)
   const [error, setError] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const response = await fetchHubs()
-        setHubs(response)
-        setHubId((current) => current || response[0]?.id || "")
-      } catch {
-        setHubs([])
-      }
-    })()
-  }, [])
-
-  useEffect(() => {
-    hubIdRef.current = hubId
-  }, [hubId])
-
-  useEffect(() => {
-    telegramChatIdRef.current = telegramChatId
-  }, [telegramChatId])
 
   useEffect(() => {
     if (!isGoogleScriptReady || !googleClientId || !googleButtonRef.current || !window.google) {
@@ -80,7 +50,7 @@ export default function LoginPage() {
 
         setError("")
         setIsLoading(true)
-        void googleLogin(credential, hubIdRef.current || null, telegramChatIdRef.current || null)
+        void googleLogin(credential)
           .then(() => {
             router.push("/dashboard")
           })
@@ -135,34 +105,9 @@ export default function LoginPage() {
                 </div>
               )}
               <div className="flex flex-col gap-2">
-                <Label>Hub</Label>
-                <Select value={hubId || "none"} onValueChange={(value) => setHubId(value === "none" ? "" : value)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione um hub" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {hubs.length ? (
-                      hubs.map((hub) => (
-                        <SelectItem key={hub.id} value={hub.id}>{hub.name}</SelectItem>
-                      ))
-                    ) : (
-                      <SelectItem value="none">Sem hubs cadastrados</SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="telegram-chat-id">Telegram Chat ID (Opcional)</Label>
-                <Input
-                  id="telegram-chat-id"
-                  type="text"
-                  placeholder="Ex.: 123456789"
-                  value={telegramChatId}
-                  onChange={(e) => setTelegramChatId(e.target.value)}
-                />
-              </div>
-              <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
-                No primeiro acesso, seu cadastro e criado como pendente. Um admin precisa aprovar antes da entrada.
+                <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
+                  No primeiro acesso, seu cadastro fica pendente ate um admin aprovar. Depois da aprovacao, voce define hub e Telegram Chat ID dentro do app.
+                </div>
               </div>
               {!googleClientId ? (
                 <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">

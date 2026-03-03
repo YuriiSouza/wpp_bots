@@ -94,7 +94,6 @@ export class AppService {
   private readonly ROUTES_NOTE_KEY = 'telegram:routes:note';
   private readonly BLOCKLIST_CACHE_PREFIX = 'telegram:blocklist:cache:driver';
   private readonly ROUTE_PLANNING_PREFERENCES_KEY = 'routePlanningPreferences';
-  private readonly ANALYST_TELEGRAM_CHATS_KEY = 'analystTelegramChats';
 
   constructor(
     private readonly redisService: RedisService,
@@ -195,42 +194,34 @@ export class AppService {
     return normalized;
   }
 
-  private async getAnalystTelegramChatMap() {
-    const prisma = this.prisma as any;
-    const config = await prisma.systemConfig.findUnique({
-      where: { key: this.ANALYST_TELEGRAM_CHATS_KEY },
-      select: { value: true },
-    });
-    const rawValue = config?.value;
-    if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
-      return {} as Record<string, string>;
-    }
-
-    const entries = Object.entries(rawValue as Record<string, unknown>)
-      .map(([analystId, chatId]) => {
-        try {
-          return [analystId, this.normalizeTelegramChatIdInput(chatId)] as const;
-        } catch {
-          return [analystId, null] as const;
-        }
-      })
-      .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
-
-    return Object.fromEntries(entries);
+  private decodeBase64Url(input: string) {
+    const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    return Buffer.from(padded, 'base64').toString('utf-8');
   }
 
-  private async saveAnalystTelegramChatMap(map: Record<string, string>) {
-    const prisma = this.prisma as any;
-    await prisma.systemConfig.upsert({
-      where: { key: this.ANALYST_TELEGRAM_CHATS_KEY },
-      create: {
-        key: this.ANALYST_TELEGRAM_CHATS_KEY,
-        value: map,
-      },
-      update: {
-        value: map,
-      },
-    });
+  private resolveAuthenticatedUserId(authorization?: string | null) {
+    const raw = String(authorization || '').trim();
+    if (!raw.toLowerCase().startsWith('bearer ')) {
+      throw new UnauthorizedException('Sessao invalida');
+    }
+
+    const token = raw.slice(7).trim();
+    const parts = token.split('.');
+    if (parts.length < 2) {
+      throw new UnauthorizedException('Sessao invalida');
+    }
+
+    try {
+      const payload = JSON.parse(this.decodeBase64Url(parts[1])) as { sub?: string };
+      const userId = String(payload?.sub || '').trim();
+      if (!userId) {
+        throw new Error('missing-sub');
+      }
+      return userId;
+    } catch {
+      throw new UnauthorizedException('Sessao invalida');
+    }
   }
 
   private resolveRouteReferenceDate(route: { routeDate?: string | null; createdAt: Date }) {
@@ -2907,7 +2898,6 @@ export class AppService {
   async loginWithGoogle(
     credentialRaw: string,
     hubIdRaw?: string | null,
-    telegramChatIdRaw?: string | null,
   ): Promise<{
     accessToken?: string;
     user?: Record<string, unknown>;
@@ -2917,9 +2907,7 @@ export class AppService {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
     const credential = String(credentialRaw || '').trim();
-    const telegramChatId = this.normalizeTelegramChatIdInput(telegramChatIdRaw);
-    const requestedHubId =
-      hubIdRaw == null ? 'hub-sp' : String(hubIdRaw).trim() || 'hub-sp';
+    void hubIdRaw;
 
     if (!credential) {
       throw new BadRequestException('Token do Google invalido');
@@ -2965,14 +2953,6 @@ export class AppService {
     });
 
     if (!analyst) {
-      const hub = await prisma.hub.findUnique({
-        where: { id: requestedHubId },
-        select: { id: true },
-      });
-      if (!hub) {
-        throw new BadRequestException('Hub invalido');
-      }
-
       const baseId = email
         .split('@')[0]
         .toLowerCase()
@@ -2987,18 +2967,13 @@ export class AppService {
           name: name || email.split('@')[0],
           email,
           password: 'GOOGLE_AUTH_ONLY',
+          telegramChatId: null,
           role: 'ANALISTA',
-          hubId: requestedHubId,
+          hubId: null,
           isActive: false,
         },
         include: { hub: true },
       });
-
-      if (telegramChatId) {
-        const chatMap = await this.getAnalystTelegramChatMap();
-        chatMap[analyst.id] = telegramChatId;
-        await this.saveAnalystTelegramChatMap(chatMap);
-      }
 
       await this.recordAudit({
         entityType: 'ANALYST',
@@ -3010,6 +2985,7 @@ export class AppService {
           email: analyst.email,
           role: analyst.role,
           hubId: analyst.hubId,
+          telegramChatId: analyst.telegramChatId,
           provider: 'GOOGLE',
         },
       });
@@ -3034,6 +3010,7 @@ export class AppService {
       role: analyst.role,
       hubId: analyst.hubId,
       hubName: analyst.hub?.name || null,
+      telegramChatId: analyst.telegramChatId || null,
     };
 
     const accessToken = this.createJwtToken({
@@ -3043,6 +3020,7 @@ export class AppService {
       role: analyst.role,
       hubId: analyst.hubId,
       hubName: analyst.hub?.name || null,
+      telegramChatId: analyst.telegramChatId || null,
       exp: Math.floor(Date.now() / 1000) + 8 * 3600,
     });
 
@@ -3131,13 +3109,14 @@ export class AppService {
     id: string;
     name: string;
     email: string;
+    telegramChatId: string | null;
     role: string;
     hubId: string | null;
     isActive: boolean;
     createdAt: Date;
     updatedAt: Date;
     hub?: { name: string } | null;
-  }, telegramChatId?: string | null) {
+  }) {
     return {
       id: analyst.id,
       name: analyst.name,
@@ -3146,7 +3125,7 @@ export class AppService {
       hubId: analyst.hubId,
       hubName: analyst.hub?.name || null,
       isActive: analyst.isActive,
-      telegramChatId: telegramChatId || null,
+      telegramChatId: analyst.telegramChatId || null,
       createdAt: this.toIsoString(analyst.createdAt),
       updatedAt: this.toIsoString(analyst.updatedAt),
     };
@@ -3155,7 +3134,6 @@ export class AppService {
   async getManagedUsers() {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
-    const chatMap = await this.getAnalystTelegramChatMap();
 
     const [users, hubs] = await Promise.all([
       prisma.analyst.findMany({
@@ -3169,7 +3147,7 @@ export class AppService {
     ]);
 
     return {
-      users: users.map((analyst) => this.serializeManagedUser(analyst, chatMap[analyst.id] || null)),
+      users: users.map((analyst) => this.serializeManagedUser(analyst)),
       hubs,
     };
   }
@@ -3232,6 +3210,7 @@ export class AppService {
         name,
         email,
         password: 'GOOGLE_AUTH_ONLY',
+        telegramChatId,
         role,
         hubId,
         isActive: true,
@@ -3239,16 +3218,10 @@ export class AppService {
       include: { hub: true },
     });
 
-    if (telegramChatId) {
-      const chatMap = await this.getAnalystTelegramChatMap();
-      chatMap[created.id] = telegramChatId;
-      await this.saveAnalystTelegramChatMap(chatMap);
-    }
-
     return {
       ok: true,
       message: 'Usuario criado com sucesso',
-      user: this.serializeManagedUser(created, telegramChatId),
+      user: this.serializeManagedUser(created),
     };
   }
 
@@ -3306,30 +3279,75 @@ export class AppService {
         ...(role ? { role } : {}),
         ...(hubId !== undefined ? { hubId } : {}),
         ...(isActive !== undefined ? { isActive } : {}),
+        ...(hasTelegramChatId ? { telegramChatId } : {}),
       },
       include: { hub: true },
     });
 
-    let resolvedTelegramChatId: string | null = null;
-    if (hasTelegramChatId) {
-      const chatMap = await this.getAnalystTelegramChatMap();
-      if (telegramChatId) {
-        chatMap[userId] = telegramChatId;
-        resolvedTelegramChatId = telegramChatId;
-      } else {
-        delete chatMap[userId];
-      }
-      await this.saveAnalystTelegramChatMap(chatMap);
-    } else {
-      const chatMap = await this.getAnalystTelegramChatMap();
-      resolvedTelegramChatId = chatMap[userId] || null;
-    }
-
     return {
       ok: true,
       message: 'Usuario atualizado com sucesso',
-      user: this.serializeManagedUser(updated, resolvedTelegramChatId),
+      user: this.serializeManagedUser(updated),
     };
+  }
+
+  async completeAuthOnboarding(
+    authorization: string | undefined,
+    hubIdRaw?: string | null,
+    telegramChatIdRaw?: string | null,
+  ): Promise<{ accessToken: string; user: Record<string, unknown> }> {
+    await this.ensureSupportSeedData();
+    const prisma = this.prisma as any;
+    const userId = this.resolveAuthenticatedUserId(authorization);
+    const hubId = String(hubIdRaw || '').trim();
+    const telegramChatId = this.normalizeTelegramChatIdInput(telegramChatIdRaw);
+
+    if (!hubId) {
+      throw new BadRequestException('Hub invalido');
+    }
+    if (!telegramChatId) {
+      throw new BadRequestException('Telegram Chat ID invalido');
+    }
+
+    const hub = await prisma.hub.findUnique({
+      where: { id: hubId },
+      select: { id: true, name: true },
+    });
+    if (!hub) {
+      throw new BadRequestException('Hub invalido');
+    }
+
+    const analyst = await prisma.analyst.update({
+      where: { id: userId },
+      data: {
+        hubId,
+        telegramChatId,
+      },
+      include: { hub: true },
+    });
+
+    const user = {
+      id: analyst.id,
+      name: analyst.name,
+      email: analyst.email,
+      role: analyst.role,
+      hubId: analyst.hubId,
+      hubName: analyst.hub?.name || null,
+      telegramChatId: analyst.telegramChatId || null,
+    };
+
+    const accessToken = this.createJwtToken({
+      sub: analyst.id,
+      name: analyst.name,
+      email: analyst.email,
+      role: analyst.role,
+      hubId: analyst.hubId,
+      hubName: analyst.hub?.name || null,
+      telegramChatId: analyst.telegramChatId || null,
+      exp: Math.floor(Date.now() / 1000) + 8 * 3600,
+    });
+
+    return { accessToken, user };
   }
 
   async getOverviewData() {

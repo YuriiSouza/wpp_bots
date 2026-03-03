@@ -1,28 +1,47 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import Script from "next/script"
 import { useRouter } from "next/navigation"
-import { Headset, Eye, EyeOff } from "lucide-react"
+import { Headset } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/hooks/use-auth"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { fetchHubs } from "@/lib/admin-api"
 import type { HubOption } from "@/lib/types"
 
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (options: {
+            client_id: string
+            callback: (response: { credential?: string }) => void
+          }) => void
+          renderButton: (
+            element: HTMLElement,
+            options: Record<string, string | number | boolean>
+          ) => void
+        }
+      }
+    }
+  }
+}
+
 export default function LoginPage() {
   const router = useRouter()
-  const { login, register } = useAuth()
-  const [mode, setMode] = useState<"login" | "register">("login")
-  const [name, setName] = useState("")
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
+  const { googleLogin } = useAuth()
+  const googleButtonRef = useRef<HTMLDivElement | null>(null)
+  const hubIdRef = useRef("")
+  const telegramChatIdRef = useRef("")
+  const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || ""
   const [hubId, setHubId] = useState("")
   const [telegramChatId, setTelegramChatId] = useState("")
   const [hubs, setHubs] = useState<HubOption[]>([])
-  const [showPassword, setShowPassword] = useState(false)
+  const [isGoogleScriptReady, setIsGoogleScriptReady] = useState(false)
   const [error, setError] = useState("")
   const [isLoading, setIsLoading] = useState(false)
 
@@ -38,26 +57,59 @@ export default function LoginPage() {
     })()
   }, [])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
-    setIsLoading(true)
-    try {
-      if (mode === "register") {
-        await register(name, email, password, hubId || null, telegramChatId || null)
-      } else {
-        await login(email, password)
-      }
-      router.push("/dashboard")
-    } catch {
-      setError(mode === "register" ? "Nao foi possivel criar a conta" : "E-mail ou senha invalidos")
-    } finally {
-      setIsLoading(false)
+  useEffect(() => {
+    hubIdRef.current = hubId
+  }, [hubId])
+
+  useEffect(() => {
+    telegramChatIdRef.current = telegramChatId
+  }, [telegramChatId])
+
+  useEffect(() => {
+    if (!isGoogleScriptReady || !googleClientId || !googleButtonRef.current || !window.google) {
+      return
     }
-  }
+
+    window.google.accounts.id.initialize({
+      client_id: googleClientId,
+      callback: ({ credential }) => {
+        if (!credential) {
+          setError("Nao foi possivel concluir o login com Google")
+          return
+        }
+
+        setError("")
+        setIsLoading(true)
+        void googleLogin(credential, hubIdRef.current || null, telegramChatIdRef.current || null)
+          .then(() => {
+            router.push("/dashboard")
+          })
+          .catch((responseError: unknown) => {
+            const message =
+              responseError instanceof Error
+                ? responseError.message
+                : "Nao foi possivel validar seu acesso com Google"
+            setError(message)
+          })
+          .finally(() => {
+            setIsLoading(false)
+          })
+      },
+    })
+
+    googleButtonRef.current.innerHTML = ""
+    window.google.accounts.id.renderButton(googleButtonRef.current, {
+      theme: "outline",
+      size: "large",
+      shape: "pill",
+      text: "continue_with",
+      width: 320,
+    })
+  }, [googleClientId, googleLogin, isGoogleScriptReady, router])
 
   return (
     <div className="flex min-h-svh items-center justify-center bg-background p-4">
+      <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" onLoad={() => setIsGoogleScriptReady(true)} />
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary">
@@ -70,118 +122,57 @@ export default function LoginPage() {
         </div>
         <Card>
           <CardHeader className="pb-4">
-            <CardTitle className="text-lg">{mode === "register" ? "Criar conta" : "Entrar"}</CardTitle>
+            <CardTitle className="text-lg">Entrar com Google</CardTitle>
             <CardDescription>
-              {mode === "register"
-                ? "Cadastre nome, e-mail e senha para acessar o painel"
-                : "Acesse sua conta para operar o painel e atender tickets em tempo real"}
+              Use sua conta Google. O primeiro acesso fica pendente ate um admin aprovar.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-4">
               {error && (
                 <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
                   {error}
                 </div>
               )}
-              {mode === "register" ? (
-                <>
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="name">Nome</Label>
-                    <Input
-                      id="name"
-                      type="text"
-                      placeholder="Seu nome"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Label>Hub</Label>
-                    <Select value={hubId || "none"} onValueChange={(value) => setHubId(value === "none" ? "" : value)}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecione um hub" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {hubs.length ? (
-                          hubs.map((hub) => (
-                            <SelectItem key={hub.id} value={hub.id}>{hub.name}</SelectItem>
-                          ))
-                        ) : (
-                          <SelectItem value="none">Sem hubs cadastrados</SelectItem>
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="telegram-chat-id">Telegram Chat ID (Opcional)</Label>
-                    <Input
-                      id="telegram-chat-id"
-                      type="text"
-                      placeholder="Ex.: 123456789"
-                      value={telegramChatId}
-                      onChange={(e) => setTelegramChatId(e.target.value)}
-                    />
-                  </div>
-                </>
-              ) : null}
               <div className="flex flex-col gap-2">
-                <Label htmlFor="email">E-mail</Label>
+                <Label>Hub</Label>
+                <Select value={hubId || "none"} onValueChange={(value) => setHubId(value === "none" ? "" : value)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione um hub" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {hubs.length ? (
+                      hubs.map((hub) => (
+                        <SelectItem key={hub.id} value={hub.id}>{hub.name}</SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value="none">Sem hubs cadastrados</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="telegram-chat-id">Telegram Chat ID (Opcional)</Label>
                 <Input
-                  id="email"
-                  type="email"
-                  placeholder="admin@rotabot.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
+                  id="telegram-chat-id"
+                  type="text"
+                  placeholder="Ex.: 123456789"
+                  value={telegramChatId}
+                  onChange={(e) => setTelegramChatId(e.target.value)}
                 />
               </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="password">Senha</Label>
-                <div className="relative">
-                  <Input
-                    id="password"
-                    type={showPassword ? "text" : "password"}
-                    placeholder="********"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    className="pr-10"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-0 top-0 h-full w-10 hover:bg-transparent"
-                    onClick={() => setShowPassword(!showPassword)}
-                    aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4 text-muted-foreground" /> : <Eye className="h-4 w-4 text-muted-foreground" />}
-                  </Button>
-                </div>
-              </div>
-              <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? (mode === "register" ? "Criando conta..." : "Entrando...") : mode === "register" ? "Criar conta" : "Entrar"}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="w-full"
-                onClick={() => {
-                  setMode((current) => (current === "login" ? "register" : "login"))
-                  setError("")
-                }}
-              >
-                {mode === "register" ? "Ja tenho conta" : "Criar nova conta"}
-              </Button>
               <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
-                <p className="font-medium mb-1">Contas de teste:</p>
-                <p>admin@rotabot.com / admin123 (ADMIN)</p>
-                <p>analista@rotabot.com / analista123 (ANALISTA - Hub SP)</p>
-                <p>supervisor@rotabot.com / super123 (SUPERVISOR)</p>
+                No primeiro acesso, seu cadastro e criado como pendente. Um admin precisa aprovar antes da entrada.
               </div>
-            </form>
+              {!googleClientId ? (
+                <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                  Defina `NEXT_PUBLIC_GOOGLE_CLIENT_ID` para habilitar o login com Google.
+                </div>
+              ) : null}
+              <div className={isLoading ? "pointer-events-none opacity-60" : ""}>
+                <div ref={googleButtonRef} className="flex justify-center" />
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>

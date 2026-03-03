@@ -40,7 +40,6 @@ export default function SettingsPage() {
   const [newUser, setNewUser] = useState({
     name: "",
     email: "",
-    password: "",
     role: "ANALISTA" as "ADMIN" | "ANALISTA" | "SUPERVISOR",
     hubId: "hub-sp",
     telegramChatId: "",
@@ -134,8 +133,8 @@ export default function SettingsPage() {
   }
 
   const handleCreateUser = async () => {
-    if (!newUser.name || !newUser.email || !newUser.password) {
-      toast.error("Preencha nome, e-mail e senha")
+    if (!newUser.name || !newUser.email) {
+      toast.error("Preencha nome e e-mail")
       return
     }
 
@@ -166,7 +165,6 @@ export default function SettingsPage() {
       setNewUser({
         name: "",
         email: "",
-        password: "",
         role: "ANALISTA",
         hubId: userManagement?.hubs[0]?.id || "hub-sp",
         telegramChatId: "",
@@ -548,7 +546,7 @@ export default function SettingsPage() {
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">Criar Usuario</CardTitle>
-                    <CardDescription>O admin pode criar novos acessos para o painel</CardDescription>
+                    <CardDescription>Crie um acesso ja aprovado ou aprove cadastros pendentes logo abaixo</CardDescription>
                   </CardHeader>
                   <CardContent className="flex flex-col gap-4">
                     <div className="flex flex-col gap-2">
@@ -565,15 +563,6 @@ export default function SettingsPage() {
                         value={newUser.email}
                         onChange={(e) => setNewUser((current) => ({ ...current, email: e.target.value }))}
                         placeholder="usuario@rotabot.com"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label>Senha</Label>
-                      <Input
-                        type="password"
-                        value={newUser.password}
-                        onChange={(e) => setNewUser((current) => ({ ...current, password: e.target.value }))}
-                        placeholder="Minimo 4 caracteres"
                       />
                     </div>
                     <div className="flex flex-col gap-2">
@@ -676,7 +665,7 @@ export default function SettingsPage() {
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <CardTitle className="text-base">Usuarios Cadastrados</CardTitle>
-                        <CardDescription>Ative, desative e ajuste o papel dos acessos existentes</CardDescription>
+                        <CardDescription>Aprove, suspenda e ajuste os acessos existentes</CardDescription>
                       </div>
                       <Button variant="outline" onClick={() => void loadUsers()} disabled={isUsersLoading}>
                         {isUsersLoading ? "Atualizando..." : "Atualizar"}
@@ -697,7 +686,7 @@ export default function SettingsPage() {
                                 <div className="mt-2 flex flex-wrap gap-2">
                                   <Badge variant="outline">{user.role}</Badge>
                                   <Badge variant={user.isActive ? "outline" : "secondary"}>
-                                    {user.isActive ? "Ativo" : "Inativo"}
+                                    {user.isActive ? "Aprovado" : "Pendente"}
                                   </Badge>
                                   <Badge variant="outline">{user.hubName || "Sem hub"}</Badge>
                                 </div>
@@ -706,7 +695,7 @@ export default function SettingsPage() {
                                 variant={user.isActive ? "outline" : "default"}
                                 onClick={() => void handleToggleUser(user.id, user.isActive)}
                               >
-                                {user.isActive ? "Desativar" : "Ativar"}
+                                {user.isActive ? "Suspender" : "Aprovar"}
                               </Button>
                             </div>
 

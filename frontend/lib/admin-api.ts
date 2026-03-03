@@ -435,7 +435,6 @@ export async function createHub(payload: {
 export async function createManagedUser(payload: {
   name: string
   email: string
-  password: string
   role: "ADMIN" | "ANALISTA" | "SUPERVISOR"
   hubId?: string | null
   telegramChatId?: string | null

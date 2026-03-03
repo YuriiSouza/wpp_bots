@@ -197,7 +197,7 @@ model SystemConfig {
 
 model DriverBlocklist {
   driverId           String          @id
-  status             BlocklistStatus @default(ACTIVE)
+  status             BlocklistStatus @default(BLOCKED)
   timesListed        Int             @default(1)
   lastActivatedAt    DateTime?
   lastInactivatedAt  DateTime?

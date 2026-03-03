@@ -159,6 +159,15 @@ export class AppController {
     return this.appService.login(email, password);
   }
 
+  @Post('auth/google')
+  async loginWithGoogle(
+    @Body('credential') credential: string,
+    @Body('hubId') hubId?: string,
+    @Body('telegramChatId') telegramChatId?: string,
+  ) {
+    return this.appService.loginWithGoogle(credential, hubId, telegramChatId);
+  }
+
   @Post('auth/register')
   async register(
     @Body('name') name: string,

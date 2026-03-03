@@ -4,42 +4,6 @@ import { useState, useCallback, useEffect } from "react"
 import { api } from "@/lib/api"
 import type { User, UserRole } from "@/lib/types"
 
-const MOCK_USERS: Record<string, { password: string; user: User }> = {
-  "admin@rotabot.com": {
-    password: "admin123",
-    user: {
-      id: "admin-1",
-      name: "Aline Costa",
-      email: "admin@rotabot.com",
-      role: "ADMIN",
-      hubId: "hub-sp",
-      hubName: "Hub Sao Paulo",
-    },
-  },
-  "analista@rotabot.com": {
-    password: "analista123",
-    user: {
-      id: "analyst-1",
-      name: "Ana Analista",
-      email: "analista@rotabot.com",
-      role: "ANALISTA",
-      hubId: "hub-sp",
-      hubName: "Hub Sao Paulo",
-    },
-  },
-  "supervisor@rotabot.com": {
-    password: "super123",
-    user: {
-      id: "super-1",
-      name: "Sergio Supervisor",
-      email: "supervisor@rotabot.com",
-      role: "SUPERVISOR",
-      hubId: null,
-      hubName: null,
-    },
-  },
-}
-
 interface JwtPayload {
   sub?: string
   name?: string
@@ -56,13 +20,6 @@ function decodeBase64Url(value: string) {
     return window.atob(padded)
   }
   return ""
-}
-
-function encodeBase64Url(value: string) {
-  if (typeof window !== "undefined" && typeof window.btoa === "function") {
-    return window.btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
-  }
-  return value
 }
 
 function parseUserFromToken(token: string): User | null {
@@ -85,22 +42,6 @@ function parseUserFromToken(token: string): User | null {
   }
 }
 
-function createMockJwt(user: User) {
-  const header = encodeBase64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }))
-  const payload = encodeBase64Url(
-    JSON.stringify({
-      sub: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      hubId: user.hubId ?? null,
-      hubName: user.hubName ?? null,
-      exp: Math.floor(Date.now() / 1000) + 8 * 3600,
-    })
-  )
-  return `${header}.${payload}.local-signature`
-}
-
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -120,14 +61,24 @@ export function useAuth() {
     setIsLoading(false)
   }, [])
 
-  const login = useCallback(async (email: string, password: string) => {
-    try {
-      const response = await api.post<{ accessToken: string; user?: User }>("/auth/login", {
-        email,
-        password,
+  const googleLogin = useCallback(
+    async (credential: string, hubId?: string | null, telegramChatId?: string | null) => {
+      const response = await api.post<{
+        accessToken?: string
+        user?: User
+        requiresApproval?: boolean
+        message?: string
+      }>("/auth/google", {
+        credential,
+        hubId: hubId || null,
+        telegramChatId: telegramChatId || null,
       })
+      if (response.data.requiresApproval) {
+        throw new Error(response.data.message || "Seu acesso ainda nao foi aprovado")
+      }
+
       const token = response.data.accessToken
-      const resolvedUser = response.data.user || parseUserFromToken(token)
+      const resolvedUser = response.data.user || (token ? parseUserFromToken(token) : null)
 
       if (!token || !resolvedUser) {
         throw new Error("Resposta de autenticacao invalida")
@@ -137,45 +88,6 @@ export function useAuth() {
       localStorage.setItem("auth_user", JSON.stringify(resolvedUser))
       setUser(resolvedUser)
       return resolvedUser
-    } catch {
-      const entry = MOCK_USERS[email]
-      if (!entry || entry.password !== password) {
-        throw new Error("Credenciais invalidas")
-      }
-      const token = createMockJwt(entry.user)
-      localStorage.setItem("auth_token", token)
-      localStorage.setItem("auth_user", JSON.stringify(entry.user))
-      setUser(entry.user)
-      return entry.user
-    }
-  }, [])
-
-  const register = useCallback(
-    async (
-      name: string,
-      email: string,
-      password: string,
-      hubId?: string | null,
-      telegramChatId?: string | null
-    ) => {
-    const response = await api.post<{ accessToken: string; user?: User }>("/auth/register", {
-      name,
-      email,
-      password,
-      hubId: hubId || null,
-      telegramChatId: telegramChatId || null,
-    })
-    const token = response.data.accessToken
-    const resolvedUser = response.data.user || parseUserFromToken(token)
-
-    if (!token || !resolvedUser) {
-      throw new Error("Resposta de cadastro invalida")
-    }
-
-    localStorage.setItem("auth_token", token)
-    localStorage.setItem("auth_user", JSON.stringify(resolvedUser))
-    setUser(resolvedUser)
-    return resolvedUser
     },
     []
   )
@@ -198,8 +110,7 @@ export function useAuth() {
     user,
     isLoading,
     isAuthenticated: !!user,
-    login,
-    register,
+    googleLogin,
     logout,
     hasRole,
   }

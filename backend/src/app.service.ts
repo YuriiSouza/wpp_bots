@@ -2899,17 +2899,132 @@ export class AppService {
     emailRaw: string,
     passwordRaw: string,
   ): Promise<{ accessToken: string; user: Record<string, unknown> }> {
+    void emailRaw;
+    void passwordRaw;
+    throw new UnauthorizedException('Use o login com Google');
+  }
+
+  async loginWithGoogle(
+    credentialRaw: string,
+    hubIdRaw?: string | null,
+    telegramChatIdRaw?: string | null,
+  ): Promise<{
+    accessToken?: string;
+    user?: Record<string, unknown>;
+    requiresApproval?: boolean;
+    message?: string;
+  }> {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
-    const email = String(emailRaw || '').trim().toLowerCase();
-    const password = String(passwordRaw || '').trim();
-    const analyst = await prisma.analyst.findUnique({
+    const credential = String(credentialRaw || '').trim();
+    const telegramChatId = this.normalizeTelegramChatIdInput(telegramChatIdRaw);
+    const requestedHubId =
+      hubIdRaw == null ? 'hub-sp' : String(hubIdRaw).trim() || 'hub-sp';
+
+    if (!credential) {
+      throw new BadRequestException('Token do Google invalido');
+    }
+
+    let googleResponse: Response;
+    try {
+      googleResponse = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`,
+      );
+    } catch {
+      throw new UnauthorizedException('Nao foi possivel validar o login com Google');
+    }
+
+    if (!googleResponse.ok) {
+      throw new UnauthorizedException('Nao foi possivel validar o login com Google');
+    }
+
+    const googleData = (await googleResponse.json()) as {
+      aud?: string;
+      sub?: string;
+      email?: string;
+      email_verified?: string;
+      name?: string;
+    };
+
+    const allowedAudience = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+    if (allowedAudience && googleData.aud !== allowedAudience) {
+      throw new UnauthorizedException('Cliente Google invalido');
+    }
+
+    const email = String(googleData.email || '').trim().toLowerCase();
+    const name = String(googleData.name || '').trim();
+    const googleSub = String(googleData.sub || '').trim();
+
+    if (!googleSub || !email || googleData.email_verified !== 'true') {
+      throw new UnauthorizedException('Conta Google invalida');
+    }
+
+    let analyst = await prisma.analyst.findUnique({
       where: { email },
       include: { hub: true },
     });
 
-    if (!analyst || analyst.password !== password || !analyst.isActive) {
-      throw new UnauthorizedException('Credenciais invalidas');
+    if (!analyst) {
+      const hub = await prisma.hub.findUnique({
+        where: { id: requestedHubId },
+        select: { id: true },
+      });
+      if (!hub) {
+        throw new BadRequestException('Hub invalido');
+      }
+
+      const baseId = email
+        .split('@')[0]
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 24) || 'analyst';
+      const analystId = `${baseId}-${Date.now()}`;
+
+      analyst = await prisma.analyst.create({
+        data: {
+          id: analystId,
+          name: name || email.split('@')[0],
+          email,
+          password: 'GOOGLE_AUTH_ONLY',
+          role: 'ANALISTA',
+          hubId: requestedHubId,
+          isActive: false,
+        },
+        include: { hub: true },
+      });
+
+      if (telegramChatId) {
+        const chatMap = await this.getAnalystTelegramChatMap();
+        chatMap[analyst.id] = telegramChatId;
+        await this.saveAnalystTelegramChatMap(chatMap);
+      }
+
+      await this.recordAudit({
+        entityType: 'ANALYST',
+        entityId: analyst.id,
+        action: 'ACCESS_REQUEST_CREATED',
+        userId: analyst.id,
+        userName: analyst.name,
+        after: {
+          email: analyst.email,
+          role: analyst.role,
+          hubId: analyst.hubId,
+          provider: 'GOOGLE',
+        },
+      });
+
+      return {
+        requiresApproval: true,
+        message: 'Cadastro recebido. Aguarde a aprovacao de um admin para acessar o painel.',
+      };
+    }
+
+    if (!analyst.isActive) {
+      return {
+        requiresApproval: true,
+        message: 'Seu acesso ainda nao foi aprovado por um admin.',
+      };
     }
 
     const user = {
@@ -2941,88 +3056,12 @@ export class AppService {
     hubIdRaw?: string | null,
     telegramChatIdRaw?: string | null,
   ): Promise<{ accessToken: string; user: Record<string, unknown> }> {
-    await this.ensureSupportSeedData();
-    const prisma = this.prisma as any;
-    const name = String(nameRaw || '').trim();
-    const email = String(emailRaw || '').trim().toLowerCase();
-    const password = String(passwordRaw || '').trim();
-    const telegramChatId = this.normalizeTelegramChatIdInput(telegramChatIdRaw);
-    const requestedHubId =
-      hubIdRaw == null ? 'hub-sp' : String(hubIdRaw).trim() || 'hub-sp';
-
-    if (!name || name.length < 3) {
-      throw new BadRequestException('Nome invalido');
-    }
-    if (!email || !email.includes('@')) {
-      throw new BadRequestException('E-mail invalido');
-    }
-    if (!password || password.length < 4) {
-      throw new BadRequestException('Senha invalida');
-    }
-
-    const existing = await prisma.analyst.findUnique({
-      where: { email },
-      select: { id: true },
-    });
-    if (existing) {
-      throw new BadRequestException('E-mail ja cadastrado');
-    }
-
-    const hub = await prisma.hub.findUnique({
-      where: { id: requestedHubId },
-      select: { id: true, name: true },
-    });
-    if (!hub) {
-      throw new BadRequestException('Hub invalido');
-    }
-
-    const baseId = email
-      .split('@')[0]
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 24) || 'analyst';
-    const analystId = `${baseId}-${Date.now()}`;
-
-    const created = await prisma.analyst.create({
-      data: {
-        id: analystId,
-        name,
-        email,
-        password,
-        role: 'ANALISTA',
-        hubId: requestedHubId,
-        isActive: true,
-      },
-      include: { hub: true },
-    });
-
-    if (telegramChatId) {
-      const chatMap = await this.getAnalystTelegramChatMap();
-      chatMap[created.id] = telegramChatId;
-      await this.saveAnalystTelegramChatMap(chatMap);
-    }
-
-    const user = {
-      id: created.id,
-      name: created.name,
-      email: created.email,
-      role: created.role,
-      hubId: created.hubId,
-      hubName: created.hub?.name || null,
-    };
-
-    const accessToken = this.createJwtToken({
-      sub: created.id,
-      name: created.name,
-      email: created.email,
-      role: created.role,
-      hubId: created.hubId,
-      hubName: created.hub?.name || null,
-      exp: Math.floor(Date.now() / 1000) + 8 * 3600,
-    });
-
-    return { accessToken, user };
+    void nameRaw;
+    void emailRaw;
+    void passwordRaw;
+    void hubIdRaw;
+    void telegramChatIdRaw;
+    throw new BadRequestException('Use o login com Google');
   }
 
   async getHubs() {
@@ -3121,7 +3160,7 @@ export class AppService {
     const [users, hubs] = await Promise.all([
       prisma.analyst.findMany({
         include: { hub: true },
-        orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+        orderBy: [{ isActive: 'asc' }, { createdAt: 'desc' }],
       }),
       prisma.hub.findMany({
         orderBy: { name: 'asc' },
@@ -3138,7 +3177,6 @@ export class AppService {
   async createManagedUser(payload: {
     name?: string;
     email?: string;
-    password?: string;
     role?: string;
     hubId?: string | null;
     telegramChatId?: string | null;
@@ -3147,7 +3185,6 @@ export class AppService {
     const prisma = this.prisma as any;
     const name = String(payload?.name || '').trim();
     const email = String(payload?.email || '').trim().toLowerCase();
-    const password = String(payload?.password || '').trim();
     const role = String(payload?.role || 'ANALISTA').trim().toUpperCase();
     const hubIdRaw = payload?.hubId == null ? 'hub-sp' : String(payload.hubId).trim();
     const hubId = hubIdRaw || null;
@@ -3158,9 +3195,6 @@ export class AppService {
     }
     if (!email || !email.includes('@')) {
       throw new BadRequestException('E-mail invalido');
-    }
-    if (!password || password.length < 4) {
-      throw new BadRequestException('Senha invalida');
     }
     if (!['ADMIN', 'ANALISTA', 'SUPERVISOR'].includes(role)) {
       throw new BadRequestException('Papel invalido');
@@ -3197,7 +3231,7 @@ export class AppService {
         id: analystId,
         name,
         email,
-        password,
+        password: 'GOOGLE_AUTH_ONLY',
         role,
         hubId,
         isActive: true,

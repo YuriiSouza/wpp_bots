@@ -35,6 +35,7 @@ export interface Route {
   gg: string | null
   veiculoRoterizado: string | null
   requestedDriverId?: string | null
+  requestedDriverName?: string | null
   assignmentSource?: RouteAssignmentSource
   noShow?: boolean
   sheetRowNumber?: number | null

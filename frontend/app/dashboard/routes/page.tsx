@@ -49,14 +49,71 @@ import {
 import type { Driver, Route } from "@/lib/types"
 import { toast } from "sonner"
 
+const ROUTES_FILTERS_STORAGE_KEY = "routes-page-filters"
+
+function getInitialRouteFilters(today: string) {
+  if (typeof window === "undefined") {
+    return {
+      search: "",
+      dayFilter: today,
+      shiftFilter: "all",
+      statusFilter: "all",
+      cityFilter: "all",
+      vehicleFilter: "all",
+    }
+  }
+
+  try {
+    const raw = window.localStorage.getItem(ROUTES_FILTERS_STORAGE_KEY)
+    if (!raw) {
+      return {
+        search: "",
+        dayFilter: today,
+        shiftFilter: "all",
+        statusFilter: "all",
+        cityFilter: "all",
+        vehicleFilter: "all",
+      }
+    }
+
+    const parsed = JSON.parse(raw) as Partial<{
+      search: string
+      dayFilter: string
+      shiftFilter: string
+      statusFilter: string
+      cityFilter: string
+      vehicleFilter: string
+    }>
+
+    return {
+      search: parsed.search || "",
+      dayFilter: parsed.dayFilter || today,
+      shiftFilter: parsed.shiftFilter || "all",
+      statusFilter: parsed.statusFilter || "all",
+      cityFilter: parsed.cityFilter || "all",
+      vehicleFilter: parsed.vehicleFilter || "all",
+    }
+  } catch {
+    return {
+      search: "",
+      dayFilter: today,
+      shiftFilter: "all",
+      statusFilter: "all",
+      cityFilter: "all",
+      vehicleFilter: "all",
+    }
+  }
+}
+
 export default function RoutesPage() {
   const today = new Date().toISOString().slice(0, 10)
-  const [search, setSearch] = useState("")
-  const [dayFilter, setDayFilter] = useState(today)
-  const [shiftFilter, setShiftFilter] = useState("all")
-  const [statusFilter, setStatusFilter] = useState("all")
-  const [cityFilter, setCityFilter] = useState("all")
-  const [vehicleFilter, setVehicleFilter] = useState("all")
+  const initialFilters = getInitialRouteFilters(today)
+  const [search, setSearch] = useState(initialFilters.search)
+  const [dayFilter, setDayFilter] = useState(initialFilters.dayFilter)
+  const [shiftFilter, setShiftFilter] = useState(initialFilters.shiftFilter)
+  const [statusFilter, setStatusFilter] = useState(initialFilters.statusFilter)
+  const [cityFilter, setCityFilter] = useState(initialFilters.cityFilter)
+  const [vehicleFilter, setVehicleFilter] = useState(initialFilters.vehicleFilter)
   const [routes, setRoutes] = useState<Route[]>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
   const [selectedRoute, setSelectedRoute] = useState<Route | null>(null)
@@ -104,6 +161,20 @@ export default function RoutesPage() {
     }
   }, [])
 
+  useEffect(() => {
+    window.localStorage.setItem(
+      ROUTES_FILTERS_STORAGE_KEY,
+      JSON.stringify({
+        search,
+        dayFilter,
+        shiftFilter,
+        statusFilter,
+        cityFilter,
+        vehicleFilter,
+      })
+    )
+  }, [search, dayFilter, shiftFilter, statusFilter, cityFilter, vehicleFilter])
+
   const handleRefresh = async () => {
     const currentWindow = getCurrentRouteWindow()
 
@@ -138,7 +209,8 @@ export default function RoutesPage() {
           r.id.toLowerCase().includes(q) ||
           r.atId?.toLowerCase().includes(q) ||
           r.bairro?.toLowerCase().includes(q) ||
-          r.driverName?.toLowerCase().includes(q)
+          r.driverName?.toLowerCase().includes(q) ||
+          r.requestedDriverName?.toLowerCase().includes(q)
       )
     }
     if (dayFilter) result = result.filter((r) => (r.routeDate || "") === dayFilter)
@@ -459,6 +531,7 @@ export default function RoutesPage() {
                     <TableHead className="w-[120px]">Status</TableHead>
                     <TableHead className="w-[150px]">Cidade</TableHead>
                     <TableHead className="w-[180px]">Bairro</TableHead>
+                    <TableHead className="w-[180px]">Solicitante</TableHead>
                     <TableHead className="w-[320px]">Acoes</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -502,6 +575,9 @@ export default function RoutesPage() {
                         </TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">{route.cidade}</TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">{route.bairro}</TableCell>
+                        <TableCell className="truncate text-sm text-card-foreground">
+                          {route.requestedDriverName || "-"}
+                        </TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-2">
                             <Button
@@ -577,7 +653,9 @@ export default function RoutesPage() {
                     </div>
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">Motorista solicitado</p>
-                      <p className="font-medium text-card-foreground">{selectedRoute.requestedDriverId || "-"}</p>
+                      <p className="font-medium text-card-foreground">
+                        {selectedRoute.requestedDriverName || selectedRoute.requestedDriverId || "-"}
+                      </p>
                     </div>
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">Data e Turno</p>

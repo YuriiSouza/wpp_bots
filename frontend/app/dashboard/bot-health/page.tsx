@@ -124,29 +124,71 @@ export default function BotHealthPage() {
 
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Conversas Ativas</CardTitle>
-                  <CardDescription>Sessoes em andamento no bot</CardDescription>
+                  <CardTitle className="text-base">Fila Ativa</CardTitle>
+                  <CardDescription>Motoristas que estao aguardando ou em atendimento</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-col gap-3">
-                    {health.conversations.map((conv) => (
-                      <div key={conv.phone} className="flex items-center justify-between rounded-lg border p-3">
-                        <div className="flex items-center gap-3">
-                          <div className={`h-2 w-2 rounded-full ${conv.step === "DONE" ? "bg-muted-foreground" : "bg-success animate-pulse"}`} />
-                          <div>
-                            <p className="text-sm font-medium text-card-foreground font-mono">{conv.phone}</p>
-                            <p className="text-xs text-muted-foreground">Step: {conv.step}</p>
+                    {health.activeQueue.length ? (
+                      health.activeQueue.map((entry) => (
+                        <div key={`${entry.group}-${entry.chatId}`} className="flex items-center justify-between rounded-lg border p-3">
+                          <div className="flex items-center gap-3">
+                            <div className="h-2 w-2 rounded-full bg-success animate-pulse" />
+                            <div>
+                              <p className="text-sm font-medium text-card-foreground">
+                                {entry.driverName || entry.driverId || entry.chatId}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {entry.group.toUpperCase()} | {entry.vehicleType || "-"} | Step: {entry.step || "-"}
+                              </p>
+                            </div>
                           </div>
+                          <Badge variant="outline" className="text-xs bg-chart-1/15 text-chart-1">
+                            Em atendimento
+                          </Badge>
                         </div>
-                        <Badge variant="outline" className={`text-xs ${conv.step === "DONE" ? "bg-muted text-muted-foreground" : "bg-chart-1/15 text-chart-1"}`}>
-                          {conv.step === "DONE" ? "Concluido" : "Em andamento"}
-                        </Badge>
+                      ))
+                    ) : (
+                      <div className="rounded-lg border p-3 text-sm text-muted-foreground">
+                        Nenhum motorista esta sendo atendido agora.
                       </div>
-                    ))}
+                    )}
                   </div>
                 </CardContent>
               </Card>
             </div>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Fila de Motoristas</CardTitle>
+                <CardDescription>Motoristas aguardando o bot responder</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col gap-3">
+                  {health.queue.length ? (
+                    health.queue.map((entry) => (
+                      <div key={`${entry.group}-${entry.chatId}-${entry.position}`} className="flex items-center justify-between rounded-lg border p-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-card-foreground">
+                            #{entry.position} {entry.driverName || entry.driverId || entry.chatId}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {entry.group.toUpperCase()} | {entry.vehicleType || "-"} | Step: {entry.step || "-"}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="text-xs">
+                          Chat {entry.chatId}
+                        </Badge>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-lg border p-3 text-sm text-muted-foreground">
+                      Nenhum motorista esta aguardando na fila.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader className="pb-3">

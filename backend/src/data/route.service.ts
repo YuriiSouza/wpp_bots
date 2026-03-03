@@ -188,6 +188,8 @@ export class RouteService {
         id: true,
         atId: true,
         gaiola: true,
+        bairro: true,
+        cidade: true,
         assignmentSource: true,
         sheetRowNumber: true,
       },

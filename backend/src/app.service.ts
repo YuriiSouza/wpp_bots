@@ -1078,8 +1078,16 @@ export class AppService {
     return { ok: true, message: 'No-show resetado com sucesso.' };
   }
 
-  async getRoutes() {
-    const cacheKey = `${this.ROUTES_CACHE_PREFIX}:v1`;
+  async getRoutes(date?: string, shift?: 'AM' | 'PM' | 'PM2') {
+    const effectiveWindow = await this.getEffectiveRouteWindow();
+    const selectedDate = String(date || '').trim() || effectiveWindow.date;
+    const selectedShift =
+      String(shift || '').trim().toUpperCase() === 'AM' ||
+      String(shift || '').trim().toUpperCase() === 'PM' ||
+      String(shift || '').trim().toUpperCase() === 'PM2'
+        ? (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2')
+        : undefined;
+    const cacheKey = `${this.ROUTES_CACHE_PREFIX}:v2:${selectedDate}:${selectedShift || 'all'}`;
     const cached = await this.redisService.get<any[]>(cacheKey);
     if (cached) {
       return cached;
@@ -1098,6 +1106,17 @@ export class AppService {
     }
 
     const routes = await (this.prisma as any).route.findMany({
+      where: {
+        AND: [
+          selectedShift ? { shift: selectedShift } : {},
+          {
+            OR: [
+              { routeDate: selectedDate },
+              { noShow: true, status: RouteStatus.DISPONIVEL },
+            ],
+          },
+        ],
+      },
       include: { driver: true },
       orderBy: [{ routeDate: 'desc' }, { createdAt: 'desc' }],
     });

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { formatDistanceToNowStrict } from "date-fns"
 import { ptBR } from "date-fns/locale/pt-BR"
 import {
@@ -55,7 +55,6 @@ const statusOptions: Array<{ value: SupportTicketStatus | "ALL"; label: string }
   { value: "WAITING_ANALYST", label: "Aguardando analista" },
   { value: "IN_PROGRESS", label: "Em atendimento" },
   { value: "WAITING_DRIVER", label: "Aguardando motorista" },
-  { value: "CLOSED", label: "Encerrado" },
 ]
 
 const statusLabel: Record<SupportTicketStatus, string> = {
@@ -75,6 +74,11 @@ export default function SupportCenterPage() {
   const [isTransferOpen, setIsTransferOpen] = useState(false)
   const [selectedAnalystId, setSelectedAnalystId] = useState("")
   const [liveMessages, setLiveMessages] = useState<SupportMessage[]>([])
+  const selectedTicketIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    selectedTicketIdRef.current = selectedTicketId
+  }, [selectedTicketId])
 
   useEffect(() => {
     if (user?.role === "ANALISTA" && user.hubId) {
@@ -95,9 +99,13 @@ export default function SupportCenterPage() {
   })
 
   const tickets = ticketsQuery.data?.tickets || []
+  const visibleTickets = useMemo(
+    () => tickets.filter((ticket) => ticket.status !== "CLOSED"),
+    [tickets]
+  )
   const selectedTicket = useMemo(
-    () => tickets.find((ticket) => ticket.id === selectedTicketId) || tickets[0] || null,
-    [selectedTicketId, tickets]
+    () => visibleTickets.find((ticket) => ticket.id === selectedTicketId) || visibleTickets[0] || null,
+    [selectedTicketId, visibleTickets]
   )
 
   useEffect(() => {
@@ -142,6 +150,9 @@ export default function SupportCenterPage() {
 
   useEffect(() => {
     if (lastEvent?.message) {
+      if (lastEvent.ticketId && lastEvent.ticketId !== selectedTicketIdRef.current) {
+        return
+      }
       setLiveMessages((current) =>
         current.some((message) => message.id === lastEvent.message!.id)
           ? current
@@ -169,9 +180,10 @@ export default function SupportCenterPage() {
       }),
     onMutate: async (body: string) => {
       if (!selectedTicket || !user || !body.trim()) return
+      const ticketId = selectedTicket.id
       const tempMessage: SupportMessage = {
         id: `temp-${Date.now()}`,
-        ticketId: selectedTicket.id,
+        ticketId,
         authorType: "ANALYST",
         authorId: user.id,
         authorName: user.name,
@@ -182,13 +194,28 @@ export default function SupportCenterPage() {
       }
       setLiveMessages((current) => [...current, tempMessage])
       setDraft("")
+      return {
+        ticketId,
+        tempMessageId: tempMessage.id,
+      }
     },
-    onSuccess: (message) => {
-      setLiveMessages((current) => current.filter((item) => !item.pending).concat(message))
+    onSuccess: (message, _body, context) => {
+      if (selectedTicketIdRef.current === message.ticketId) {
+        setLiveMessages((current) =>
+          current
+            .filter((item) => item.id !== context?.tempMessageId)
+            .concat(message)
+        )
+      }
       void queryClient.invalidateQueries({ queryKey: ["support", "tickets"] })
-      void queryClient.invalidateQueries({ queryKey: ["support", "messages", selectedTicket?.id] })
+      void queryClient.invalidateQueries({ queryKey: ["support", "messages", message.ticketId] })
     },
-    onError: () => toast.error("Nao foi possivel enviar a mensagem"),
+    onError: (_error, _body, context) => {
+      if (context?.ticketId && selectedTicketIdRef.current === context.ticketId) {
+        setLiveMessages((current) => current.filter((item) => item.id !== context.tempMessageId))
+      }
+      toast.error("Nao foi possivel enviar a mensagem")
+    },
   })
 
   const closeMutation = useMutation({
@@ -212,12 +239,12 @@ export default function SupportCenterPage() {
   })
 
   const ticketSummary = useMemo(() => {
-    const waiting = tickets.filter((ticket) => ticket.status === "WAITING_ANALYST").length
-    const inProgress = tickets.filter((ticket) => ticket.status === "IN_PROGRESS").length
-    const waitingDriver = tickets.filter((ticket) => ticket.status === "WAITING_DRIVER").length
-    const unread = tickets.reduce((total, ticket) => total + ticket.unreadCount, 0)
+    const waiting = visibleTickets.filter((ticket) => ticket.status === "WAITING_ANALYST").length
+    const inProgress = visibleTickets.filter((ticket) => ticket.status === "IN_PROGRESS").length
+    const waitingDriver = visibleTickets.filter((ticket) => ticket.status === "WAITING_DRIVER").length
+    const unread = visibleTickets.reduce((total, ticket) => total + ticket.unreadCount, 0)
     return { waiting, inProgress, waitingDriver, unread }
-  }, [tickets])
+  }, [visibleTickets])
 
   const canTransfer = hasRole("ADMIN", "SUPERVISOR") || (user?.role === "ANALISTA" && selectedTicket?.hubId === user.hubId)
 
@@ -277,7 +304,7 @@ export default function SupportCenterPage() {
                   Carregando fila...
                 </div>
               ) : (
-                tickets.map((ticket) => {
+                visibleTickets.map((ticket) => {
                   const isSelected = selectedTicket?.id === ticket.id
                   return (
                     <button

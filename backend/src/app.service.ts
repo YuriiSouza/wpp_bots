@@ -3807,6 +3807,7 @@ export class AppService {
   async getBotHealthData() {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
+    const redis = this.redisService.client();
     const [conversations, syncLogs, lastMinuteMessages, activeTickets, openRoutes] =
       await Promise.all([
         this.prisma.conversationState.findMany({ orderBy: { updatedAt: 'desc' }, take: 30 }),
@@ -3822,6 +3823,54 @@ export class AppService {
         }),
       ]);
 
+    const [queue, motoQueue, activeChatId, activeMotoChatId] = await Promise.all([
+      redis.lrange(this.QUEUE_LIST_KEY_GENERAL, 0, -1),
+      redis.lrange(this.QUEUE_LIST_KEY_MOTO, 0, -1),
+      redis.get(this.QUEUE_ACTIVE_KEY_GENERAL),
+      redis.get(this.QUEUE_ACTIVE_KEY_MOTO),
+    ]);
+
+    const queueEntries = [
+      ...queue.map((chatId, index) => ({ chatId, position: index + 1, group: 'general' as const })),
+      ...motoQueue.map((chatId, index) => ({ chatId, position: index + 1, group: 'moto' as const })),
+    ];
+
+    const queueStates = await Promise.all(
+      queueEntries.map(async (entry) => {
+        const state = await this.redisService.get<any>(this.stateKey(entry.chatId));
+        return {
+          chatId: entry.chatId,
+          position: entry.position,
+          group: entry.group,
+          driverId: state?.driverId || null,
+          driverName: state?.driverName || null,
+          vehicleType: state?.vehicleType || null,
+          step: state?.step || null,
+        };
+      }),
+    );
+
+    const activeEntries = (
+      await Promise.all(
+        [
+          activeChatId ? { chatId: activeChatId, group: 'general' as const } : null,
+          activeMotoChatId ? { chatId: activeMotoChatId, group: 'moto' as const } : null,
+        ]
+          .filter((value): value is { chatId: string; group: 'general' | 'moto' } => Boolean(value))
+          .map(async (entry) => {
+            const state = await this.redisService.get<any>(this.stateKey(entry.chatId));
+            return {
+              chatId: entry.chatId,
+              group: entry.group,
+              driverId: state?.driverId || null,
+              driverName: state?.driverName || null,
+              vehicleType: state?.vehicleType || null,
+              step: state?.step || null,
+            };
+          }),
+      )
+    );
+
     const recentErrors = syncLogs.filter((item) => item.status === 'FAILED').length;
     return {
       messagesPerMin: lastMinuteMessages,
@@ -3831,6 +3880,8 @@ export class AppService {
       totalUsers: conversations.length,
       recentErrors,
       conversations,
+      queue: queueStates,
+      activeQueue: activeEntries,
       alerts: [
         activeTickets > 0
           ? {

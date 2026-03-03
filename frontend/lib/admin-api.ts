@@ -179,6 +179,23 @@ export interface BotHealthPayload {
   totalUsers: number
   recentErrors: number
   conversations: ConversationState[]
+  queue: Array<{
+    chatId: string
+    position: number
+    group: "general" | "moto"
+    driverId: string | null
+    driverName: string | null
+    vehicleType: string | null
+    step: string | null
+  }>
+  activeQueue: Array<{
+    chatId: string
+    group: "general" | "moto"
+    driverId: string | null
+    driverName: string | null
+    vehicleType: string | null
+    step: string | null
+  }>
   alerts: Array<{ type: "warning" | "error" | "info"; message: string; time: string }>
 }
 

@@ -87,7 +87,7 @@ export class AppService {
   private readonly DASHBOARD_NOSHOW_CACHE_TTL_SECONDS = 60;
   private readonly DRIVERS_LIST_CACHE_TTL_SECONDS = 45;
   private readonly DRIVERS_ANALYTICS_CACHE_TTL_SECONDS = 90;
-  private readonly ROUTES_CACHE_TTL_SECONDS = 15;
+  private readonly ROUTES_CACHE_TTL_SECONDS = 60 * 10;
   private readonly BLOCKLIST_LIST_CACHE_TTL_SECONDS = 20;
   private readonly OVERVIEW_ROUTE_REQUESTS_CACHE_TTL_SECONDS = 15;
   private readonly LOG_PREFIX = 'telegram:log';
@@ -1102,11 +1102,31 @@ export class AppService {
       orderBy: [{ routeDate: 'desc' }, { createdAt: 'desc' }],
     });
 
+    const requestedDriverIds: string[] = Array.from(
+      new Set<string>(
+        routes
+          .map((route: any) => String(route.requestedDriverId || '').trim())
+          .filter((value: string): value is string => Boolean(value)),
+      ),
+    );
+    const requestedDrivers = requestedDriverIds.length
+      ? await this.prisma.driver.findMany({
+          where: { id: { in: requestedDriverIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const requestedDriverNameById = new Map(
+      requestedDrivers.map((driver) => [driver.id, driver.name || driver.id]),
+    );
+
     const normalized = routes.map((route: any) => ({
       ...route,
       cluster: clusterByAt.get(String(route.atId || '').trim()) || null,
       driverName: route.driverName || route.driver?.name || null,
       driverVehicleType: route.driverVehicleType || route.driver?.vehicleType || null,
+      requestedDriverName: route.requestedDriverId
+        ? requestedDriverNameById.get(String(route.requestedDriverId).trim()) || route.requestedDriverId
+        : null,
     }));
 
     const payload = normalized.sort((a: any, b: any) => {

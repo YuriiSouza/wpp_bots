@@ -2,6 +2,7 @@
 export type RouteStatus = "DISPONIVEL" | "ATRIBUIDA" | "BLOQUEADA"
 export type BlocklistStatus = "BLOCKED" | "UNBLOCKED"
 export type UserRole = "ADMIN" | "ANALISTA" | "SUPERVISOR"
+export type RouteAssignmentSource = "SYNC" | "MANUAL" | "TELEGRAM_BOT"
 
 // ===== Models =====
 export interface Driver {
@@ -34,6 +35,7 @@ export interface Route {
   gg: string | null
   veiculoRoterizado: string | null
   requestedDriverId?: string | null
+  assignmentSource?: RouteAssignmentSource
   noShow?: boolean
   sheetRowNumber?: number | null
   driverId: string | null

@@ -139,6 +139,14 @@ export class AppController {
     return this.appService.markRouteNoShow(routeId, makeAvailable);
   }
 
+  @Post('api/routes/sync-overview-assignments')
+  async syncRouteAssignmentsFromOverview(
+    @Body('date') date?: string,
+    @Body('shift') shift?: 'AM' | 'PM' | 'PM2',
+  ) {
+    return this.appService.syncRouteAssignmentsFromOverview(date, shift);
+  }
+
   @Post('api/routes/:routeId/clear-no-show')
   async clearRouteNoShow(@Param('routeId') routeId: string) {
     return this.appService.clearRouteNoShow(routeId);

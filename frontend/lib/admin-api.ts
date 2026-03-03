@@ -376,6 +376,17 @@ export async function runSync(
   return response.data
 }
 
+export async function syncRouteAssignmentsFromOverview(
+  date?: string,
+  shift?: "AM" | "PM" | "PM2"
+) {
+  const response = await api.post<ApiActionResponse>("/api/routes/sync-overview-assignments", {
+    date,
+    shift,
+  })
+  return response.data
+}
+
 export async function resetQueue() {
   const response = await api.post<ApiActionResponse>("/api/sync/reset-queue")
   return response.data

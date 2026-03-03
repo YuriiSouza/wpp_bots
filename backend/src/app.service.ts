@@ -2314,21 +2314,27 @@ export class AppService {
     const routeDate = String(date || '').trim() || undefined;
     const routes = await (this.prisma as any).route.findMany({
       where: {
-        status: RouteStatus.ATRIBUIDA,
-        assignmentSource: {
-          in: [
-            ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
-            ROUTE_ASSIGNMENT_SOURCE.MANUAL,
-          ],
-        },
+        OR: [
+          {
+            assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
+            requestedDriverId: { not: null },
+          },
+          {
+            assignmentSource: ROUTE_ASSIGNMENT_SOURCE.MANUAL,
+            status: RouteStatus.ATRIBUIDA,
+          },
+        ],
         ...(routeDate ? { routeDate } : {}),
       },
       orderBy: [{ routeDate: 'asc' }, { shift: 'asc' }, { atId: 'asc' }],
       select: {
         atId: true,
+        requestedDriverId: true,
         driverId: true,
         routeDate: true,
         shift: true,
+        assignmentSource: true,
+        status: true,
       },
     });
 
@@ -2340,9 +2346,26 @@ export class AppService {
       return text;
     };
 
-    const header = ['AT', 'ID Motorista', 'Data', 'Turno'];
-    const rows = routes.map((route: { atId: string; driverId: string | null; routeDate: string | null; shift: string | null }) =>
-      [route.atId, route.driverId, route.routeDate, route.shift].map(escapeCsv).join(','),
+    const header = ['AT', 'ID Motorista', 'Data', 'Turno', 'Origem', 'Situacao'];
+    const rows = routes.map((route: {
+      atId: string;
+      requestedDriverId: string | null;
+      driverId: string | null;
+      routeDate: string | null;
+      shift: string | null;
+      assignmentSource: RouteAssignmentSourceValue;
+      status: RouteStatus;
+    }) =>
+      [
+        route.atId,
+        route.driverId || route.requestedDriverId,
+        route.routeDate,
+        route.shift,
+        route.assignmentSource,
+        route.status === RouteStatus.ATRIBUIDA ? 'ATRIBUIDA' : 'SOLICITADA',
+      ]
+        .map(escapeCsv)
+        .join(','),
     );
 
     return [header.join(','), ...rows].join('\n');
@@ -2384,11 +2407,18 @@ export class AppService {
       return { ok: false, message: 'O motorista nao atende o veiculo requerido para a rota.' };
     }
 
+    const nextAssignmentSource =
+      route.assignmentSource === ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT &&
+      route.requestedDriverId &&
+      route.requestedDriverId === driver.id
+        ? ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT
+        : ROUTE_ASSIGNMENT_SOURCE.MANUAL;
+
     await prisma.route.update({
       where: { id: routeId },
       data: {
         requestedDriverId: driver.id,
-        assignmentSource: ROUTE_ASSIGNMENT_SOURCE.MANUAL,
+        assignmentSource: nextAssignmentSource,
         driverId: driver.id,
         driverName: driver.name,
         driverVehicleType: driver.vehicleType,
@@ -3559,6 +3589,39 @@ export class AppService {
     shift?: 'AM' | 'PM' | 'PM2',
   ) {
     return this.runAnalystSync(action, date, shift);
+  }
+
+  async syncRouteAssignmentsFromOverview(
+    date?: string,
+    shift?: 'AM' | 'PM' | 'PM2',
+  ): Promise<{ ok: boolean; message: string }> {
+    if (await this.sync.isLocked()) {
+      return { ok: false, message: 'Ja existe uma sincronizacao em andamento.' };
+    }
+
+    try {
+      const inferredWindow = await this.sheets.getCurrentCalculationWindow();
+      const fallbackWindow = this.getCurrentRouteWindow();
+      const selectedDate =
+        String(date || '').trim() || inferredWindow?.date || fallbackWindow.date;
+      const selectedShift =
+        (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2' | '') ||
+        inferredWindow?.shift ||
+        fallbackWindow.shift;
+
+      const summary = await this.sync.syncRouteAssignmentsFromOverview(selectedDate, selectedShift);
+      await this.invalidateRoutesCache();
+
+      return {
+        ok: true,
+        message: `Atribuicoes atualizadas pela Visão Geral para ${selectedDate} (${selectedShift}). Processadas: ${summary.processed}. Disponiveis: ${summary.routesAvailable}. Atribuidas: ${summary.routesAssigned}.`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Erro ao sincronizar atribuicoes: ${(error as Error).message}`,
+      };
+    }
   }
 
   async resetQueue() {

@@ -39,8 +39,16 @@ export class RouteService {
     const currentWindow = await this.getCurrentRouteWindow();
     const existing = await this.prisma.route.findFirst({
       where: {
-        driverId,
-        status: 'ATRIBUIDA',
+        OR: [
+          {
+            driverId,
+            status: 'ATRIBUIDA',
+          },
+          {
+            requestedDriverId: driverId,
+            assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
+          },
+        ],
         routeDate: currentWindow.date,
         shift: currentWindow.shift,
       },
@@ -53,8 +61,16 @@ export class RouteService {
     const currentWindow = await this.getCurrentRouteWindow();
     return (this.prisma as any).route.findFirst({
       where: {
-        driverId,
-        status: 'ATRIBUIDA',
+        OR: [
+          {
+            driverId,
+            status: 'ATRIBUIDA',
+          },
+          {
+            requestedDriverId: driverId,
+            assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
+          },
+        ],
         routeDate: currentWindow.date,
         shift: currentWindow.shift,
       },
@@ -128,14 +144,18 @@ export class RouteService {
         where: {
           id: routeId,
           status: 'DISPONIVEL',
-          driverId: null,
+          requestedDriverId: null,
         },
         data: {
           requestedDriverId: driverId,
           assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
-          driverId,
-          status: 'ATRIBUIDA',
-          assignedAt: new Date(),
+          driverId: null,
+          driverName: null,
+          driverVehicleType: null,
+          driverAccuracy: null,
+          driverPlate: null,
+          status: 'DISPONIVEL',
+          assignedAt: null,
         },
       });
 
@@ -151,8 +171,8 @@ export class RouteService {
     const currentWindow = await this.getCurrentRouteWindow();
     const route = await (this.prisma as any).route.findFirst({
       where: {
-        driverId,
-        status: 'ATRIBUIDA',
+        requestedDriverId: driverId,
+        assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
         routeDate: currentWindow.date,
         shift: currentWindow.shift,
       },

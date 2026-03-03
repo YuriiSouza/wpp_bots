@@ -8,6 +8,7 @@ interface AuthContextType {
   user: User | null
   isLoading: boolean
   isAuthenticated: boolean
+  login: (email: string, password: string) => Promise<User>
   googleLogin: (credential: string) => Promise<User>
   completeOnboarding: (hubId: string, telegramChatId: string) => Promise<User>
   logout: () => void

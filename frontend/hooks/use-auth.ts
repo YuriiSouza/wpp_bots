@@ -69,6 +69,25 @@ export function useAuth() {
     setUser(resolvedUser)
   }, [])
 
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const response = await api.post<{ accessToken?: string; user?: User }>("/auth/login", {
+        email,
+        password,
+      })
+      const token = response.data.accessToken
+      const resolvedUser = response.data.user || (token ? parseUserFromToken(token) : null)
+
+      if (!token || !resolvedUser) {
+        throw new Error("Resposta de autenticacao invalida")
+      }
+
+      persistAuthenticatedUser(token, resolvedUser)
+      return resolvedUser
+    },
+    [persistAuthenticatedUser]
+  )
+
   const googleLogin = useCallback(
     async (credential: string) => {
       const response = await api.post<{
@@ -133,6 +152,7 @@ export function useAuth() {
     user,
     isLoading,
     isAuthenticated: !!user,
+    login,
     googleLogin,
     completeOnboarding,
     logout,

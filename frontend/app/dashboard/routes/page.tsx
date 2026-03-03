@@ -241,11 +241,13 @@ export default function RoutesPage() {
   }), [routes])
 
   const handleAssign = async () => {
-    if (!assignRoute || !selectedDriver) return
-    const driver = drivers.find((d) => d.id === selectedDriver)
+    if (!assignRoute) return
+    const resolvedDriverId = selectedDriver || (isTelegramRequested(assignRoute) ? assignRoute.requestedDriverId || "" : "")
+    if (!resolvedDriverId) return
+    const driver = drivers.find((d) => d.id === resolvedDriverId)
     if (!driver) return
     try {
-      const response = await assignRouteRequest(assignRoute.id, selectedDriver)
+      const response = await assignRouteRequest(assignRoute.id, resolvedDriverId)
       if (!response.ok) {
         toast.error(response.message)
         return
@@ -599,6 +601,8 @@ export default function RoutesPage() {
                               onClick={(event) => {
                                 event.stopPropagation()
                                 setAssignRoute(route)
+                                setSelectedDriver(isTelegramRequested(route) ? route.requestedDriverId || "" : "")
+                                setAssignDriverSearch("")
                               }}
                               className="h-8 px-2 text-xs"
                             >
@@ -736,7 +740,9 @@ export default function RoutesPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Atribuir Rota Manualmente</DialogTitle>
+            <DialogTitle>
+              {assignRoute && isTelegramRequested(assignRoute) ? "Aprovar Solicitacao" : "Atribuir Rota Manualmente"}
+            </DialogTitle>
             <DialogDescription>
               Rota {assignRoute?.atId || assignRoute?.id} - {assignRoute?.cidade}, {assignRoute?.bairro}
             </DialogDescription>
@@ -763,7 +769,12 @@ export default function RoutesPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssignRoute(null)}>Cancelar</Button>
-            <Button onClick={handleAssign} disabled={!selectedDriver}>Concluir</Button>
+            <Button
+              onClick={handleAssign}
+              disabled={!selectedDriver && !(assignRoute && isTelegramRequested(assignRoute) && assignRoute.requestedDriverId)}
+            >
+              {assignRoute && isTelegramRequested(assignRoute) ? "Aprovar" : "Concluir"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

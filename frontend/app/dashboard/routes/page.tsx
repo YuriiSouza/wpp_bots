@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/page-header"
 import { getCurrentRouteWindow } from "@/lib/route-window"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -43,6 +44,8 @@ import {
   fetchRoutes,
   getApiErrorMessage,
   markRouteNoShow,
+  releaseRouteToBot as releaseRouteToBotRequest,
+  releaseRoutesToBotByAt as releaseRoutesToBotByAtRequest,
   syncRouteAssignmentsFromOverview,
   unassignRoute,
 } from "@/lib/admin-api"
@@ -120,10 +123,16 @@ export default function RoutesPage() {
   const [assignRoute, setAssignRoute] = useState<Route | null>(null)
   const [selectedDriver, setSelectedDriver] = useState("")
   const [assignDriverSearch, setAssignDriverSearch] = useState("")
+  const [bulkReleaseOpen, setBulkReleaseOpen] = useState(false)
+  const [bulkAtInput, setBulkAtInput] = useState("")
+  const [isBulkReleasing, setIsBulkReleasing] = useState(false)
+  const [releasingRouteId, setReleasingRouteId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const isTelegramRequested = (route: Route) =>
     route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !route.driverId
+  const isReleasedToBot = (route: Route) =>
+    Boolean(route.botAvailable) || isTelegramRequested(route)
   const isTelegramApproved = (route: Route) =>
     route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !!route.driverId && route.status === "ATRIBUIDA"
 
@@ -341,6 +350,82 @@ export default function RoutesPage() {
     }
   }
 
+  const handleReleaseToBot = async (route: Route) => {
+    if (route.status !== "DISPONIVEL" || isReleasedToBot(route)) {
+      return
+    }
+
+    setReleasingRouteId(route.id)
+    try {
+      const response = await releaseRouteToBotRequest(route.id)
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setRoutes((prev) =>
+        prev.map((item) =>
+          item.id === route.id
+            ? {
+                ...item,
+                botAvailable: true,
+              }
+            : item
+        )
+      )
+      setSelectedRoute((prev) =>
+        prev?.id === route.id
+          ? {
+              ...prev,
+              botAvailable: true,
+            }
+          : prev
+      )
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel liberar a rota no bot"))
+    } finally {
+      setReleasingRouteId(null)
+    }
+  }
+
+  const handleBulkReleaseToBot = async () => {
+    const atIds = Array.from(
+      new Set(
+        bulkAtInput
+          .split(/[\s,;\n\r\t]+/g)
+          .map((value) => value.trim())
+          .filter(Boolean)
+      )
+    )
+
+    if (!atIds.length) {
+      toast.error("Informe ao menos um AT para liberar no bot")
+      return
+    }
+
+    setIsBulkReleasing(true)
+    try {
+      const response = await releaseRoutesToBotByAtRequest(atIds, {
+        date: dayFilter || undefined,
+        shift: shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined,
+      })
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      await loadData(true)
+      setBulkReleaseOpen(false)
+      setBulkAtInput("")
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel liberar a lista de ATs no bot"))
+    } finally {
+      setIsBulkReleasing(false)
+    }
+  }
+
   const assignableDrivers = useMemo(() => {
     const q = assignDriverSearch.trim().toLowerCase()
 
@@ -435,6 +520,10 @@ export default function RoutesPage() {
             <Button variant="outline" onClick={handleExportCsv} className="w-full sm:w-auto">
               <Download className="mr-2 h-4 w-4" />
               Exportar CSV
+            </Button>
+            <Button variant="outline" onClick={() => setBulkReleaseOpen(true)} className="w-full sm:w-auto">
+              <UserPlus className="mr-2 h-4 w-4" />
+              Liberar ATs no Bot
             </Button>
             <Badge variant="outline" className="bg-amber-500/10 text-amber-700 border-amber-500/30">
               {statusCounts.SOLICITADA} Solicitadas
@@ -540,7 +629,7 @@ export default function RoutesPage() {
                     <TableHead className="w-[150px]">Cidade</TableHead>
                     <TableHead className="w-[180px]">Bairro</TableHead>
                     <TableHead className="w-[180px]">Solicitante</TableHead>
-                    <TableHead className="w-[320px]">Acoes</TableHead>
+                    <TableHead className="w-[420px]">Acoes</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -620,6 +709,18 @@ export default function RoutesPage() {
                               size="sm"
                               onClick={(event) => {
                                 event.stopPropagation()
+                                void handleReleaseToBot(route)
+                              }}
+                              disabled={route.status !== "DISPONIVEL" || isReleasedToBot(route) || releasingRouteId === route.id}
+                              className="h-8 px-2 text-xs"
+                            >
+                              {isReleasedToBot(route) ? "No Bot" : releasingRouteId === route.id ? "Liberando..." : "Liberar Bot"}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation()
                                 void handleMakeAvailable(route)
                               }}
                               disabled={route.status === "DISPONIVEL"}
@@ -659,6 +760,12 @@ export default function RoutesPage() {
                       <p className="font-medium text-card-foreground">
                         {selectedRoute.assignmentSource || "-"}
                         {isTelegramApproved(selectedRoute) ? " | Solicitação aprovada" : ""}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Disponivel no Bot</p>
+                      <p className="font-medium text-card-foreground">
+                        {isReleasedToBot(selectedRoute) ? "Sim" : "Nao"}
                       </p>
                     </div>
                     <div>
@@ -780,6 +887,41 @@ export default function RoutesPage() {
               disabled={!selectedDriver && !(assignRoute && isTelegramRequested(assignRoute) && assignRoute.requestedDriverId)}
             >
               {assignRoute && isTelegramRequested(assignRoute) ? "Aprovar" : "Concluir"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={bulkReleaseOpen}
+        onOpenChange={(open) => {
+          setBulkReleaseOpen(open)
+          if (!open) {
+            setBulkAtInput("")
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Liberar Lista de ATs no Bot</DialogTitle>
+            <DialogDescription>
+              Cole uma lista de ATs separados por quebra de linha, espaco ou virgula. A liberacao usa o filtro atual de data e turno.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Textarea
+              placeholder={"AT12345\nAT67890\nAT24680"}
+              value={bulkAtInput}
+              onChange={(event) => setBulkAtInput(event.target.value)}
+              className="min-h-40"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkReleaseOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleBulkReleaseToBot} disabled={isBulkReleasing}>
+              {isBulkReleasing ? "Liberando..." : "Liberar no Bot"}
             </Button>
           </DialogFooter>
         </DialogContent>

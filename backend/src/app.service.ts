@@ -292,6 +292,21 @@ export class AppService {
     await this.clearCacheByPrefix(this.OVERVIEW_ROUTE_REQUESTS_CACHE_PREFIX);
   }
 
+  private normalizeAtIds(atIds: string[] | string | undefined) {
+    const values = Array.isArray(atIds)
+      ? atIds
+      : String(atIds || '')
+          .split(/[\s,;\n\r\t]+/g);
+
+    return Array.from(
+      new Set(
+        values
+          .map((value) => String(value || '').trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
   private async getPlanningClusterMap(): Promise<Map<string, string>> {
     try {
       const relatorioRows = await this.sheets.getRows("'Relatorio de Expedição'!A:AC");
@@ -2614,6 +2629,121 @@ export class AppService {
       message: makeAvailable
         ? 'Rota marcada como no-show e liberada para nova selecao.'
         : 'Rota marcada como no-show com sucesso.',
+    };
+  }
+
+  async releaseRouteToBot(routeIdRaw: string) {
+    const routeId = String(routeIdRaw || '').trim();
+    if (!routeId) return { ok: false, message: 'Rota invalida.' };
+
+    const route = await (this.prisma as any).route.findUnique({
+      where: { id: routeId },
+      select: {
+        id: true,
+        atId: true,
+        status: true,
+        botAvailable: true,
+      },
+    });
+
+    if (!route) {
+      return { ok: false, message: 'Rota nao encontrada.' };
+    }
+
+    if (route.status !== RouteStatus.DISPONIVEL) {
+      return { ok: false, message: 'Apenas rotas disponiveis podem ser liberadas no bot.' };
+    }
+
+    if (route.botAvailable) {
+      return { ok: true, message: 'Rota ja estava liberada no bot.' };
+    }
+
+    await (this.prisma as any).route.update({
+      where: { id: route.id },
+      data: {
+        botAvailable: true,
+      },
+    });
+
+    await this.recordAudit({
+      entityType: 'Route',
+      entityId: route.id,
+      action: 'RELEASE_TO_BOT',
+      userId: 'system',
+      userName: 'System',
+      after: { botAvailable: true },
+    });
+
+    await Promise.all([
+      this.invalidateRoutesCache(),
+      this.invalidateOverviewRouteRequestsCache(),
+    ]);
+
+    return {
+      ok: true,
+      message: `Rota ${route.atId || route.id} liberada no bot.`,
+    };
+  }
+
+  async releaseRoutesToBotByAt(
+    atIdsRaw: string[] | string | undefined,
+    date?: string,
+    shift?: 'AM' | 'PM' | 'PM2',
+  ) {
+    const atIds = this.normalizeAtIds(atIdsRaw);
+    if (!atIds.length) {
+      return { ok: false, message: 'Informe ao menos um AT para liberar no bot.' };
+    }
+
+    const selectedDate = String(date || '').trim() || undefined;
+    const selectedShift =
+      String(shift || '').trim().toUpperCase() === 'AM' ||
+      String(shift || '').trim().toUpperCase() === 'PM' ||
+      String(shift || '').trim().toUpperCase() === 'PM2'
+        ? (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2')
+        : undefined;
+
+    const result = await (this.prisma as any).route.updateMany({
+      where: {
+        atId: { in: atIds },
+        status: RouteStatus.DISPONIVEL,
+        botAvailable: false,
+        ...(selectedDate ? { routeDate: selectedDate } : {}),
+        ...(selectedShift ? { shift: selectedShift } : {}),
+      },
+      data: {
+        botAvailable: true,
+      },
+    });
+
+    await this.recordAudit({
+      entityType: 'Route',
+      entityId: atIds.join(','),
+      action: 'BULK_RELEASE_TO_BOT',
+      userId: 'system',
+      userName: 'System',
+      after: {
+        atIds,
+        date: selectedDate || null,
+        shift: selectedShift || null,
+        releasedCount: result.count,
+      },
+    });
+
+    if (result.count > 0) {
+      await Promise.all([
+        this.invalidateRoutesCache(),
+        this.invalidateOverviewRouteRequestsCache(),
+      ]);
+    }
+
+    return {
+      ok: true,
+      count: result.count,
+      message:
+        result.count > 0
+          ? `${result.count} rota(s) liberada(s) no bot.`
+          : 'Nenhuma rota disponivel correspondente foi encontrada para liberar.',
     };
   }
 

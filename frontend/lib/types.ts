@@ -36,6 +36,7 @@ export interface Route {
   veiculoRoterizado: string | null
   requestedDriverId?: string | null
   requestedDriverName?: string | null
+  botAvailable?: boolean
   assignmentSource?: RouteAssignmentSource
   noShow?: boolean
   sheetRowNumber?: number | null

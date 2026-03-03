@@ -4,7 +4,10 @@ import { useEffect, useRef, useState } from "react"
 import Script from "next/script"
 import { useRouter } from "next/navigation"
 import { Headset } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { useAuth } from "@/hooks/use-auth"
 
 declare global {
@@ -28,9 +31,11 @@ declare global {
 
 export default function LoginPage() {
   const router = useRouter()
-  const { googleLogin } = useAuth()
+  const { googleLogin, login } = useAuth()
   const googleButtonRef = useRef<HTMLDivElement | null>(null)
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || ""
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
   const [isGoogleScriptReady, setIsGoogleScriptReady] = useState(false)
   const [error, setError] = useState("")
   const [isLoading, setIsLoading] = useState(false)
@@ -77,6 +82,25 @@ export default function LoginPage() {
     })
   }, [googleClientId, googleLogin, isGoogleScriptReady, router])
 
+  const handlePasswordLogin = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError("")
+    setIsLoading(true)
+
+    try {
+      await login(email, password)
+      router.push("/dashboard")
+    } catch (responseError: unknown) {
+      const message =
+        responseError instanceof Error
+          ? responseError.message
+          : "Nao foi possivel entrar com e-mail e senha"
+      setError(message)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   return (
     <div className="flex min-h-svh items-center justify-center bg-background p-4">
       <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" onLoad={() => setIsGoogleScriptReady(true)} />
@@ -92,9 +116,9 @@ export default function LoginPage() {
         </div>
         <Card>
           <CardHeader className="pb-4">
-            <CardTitle className="text-lg">Entrar com Google</CardTitle>
+            <CardTitle className="text-lg">Entrar</CardTitle>
             <CardDescription>
-              Use sua conta Google. O primeiro acesso fica pendente ate um admin aprovar.
+              Use Google ou entre com e-mail e senha de um usuario ja cadastrado.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -106,7 +130,42 @@ export default function LoginPage() {
               )}
               <div className="flex flex-col gap-2">
                 <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
-                  No primeiro acesso, seu cadastro fica pendente ate um admin aprovar. Depois da aprovacao, voce define hub e Telegram Chat ID dentro do app.
+                  No primeiro acesso via Google, seu cadastro fica pendente ate um admin aprovar. Depois da aprovacao, voce define hub e Telegram Chat ID dentro do app.
+                </div>
+              </div>
+              <form onSubmit={handlePasswordLogin} className="flex flex-col gap-3">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="email">E-mail</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="admin@empresa.com"
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="password">Senha</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder="Sua senha"
+                    required
+                  />
+                </div>
+                <Button type="submit" disabled={isLoading}>
+                  {isLoading ? "Entrando..." : "Entrar com e-mail"}
+                </Button>
+              </form>
+              <div className="relative py-1">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-card px-2 text-muted-foreground">ou</span>
                 </div>
               </div>
               {!googleClientId ? (

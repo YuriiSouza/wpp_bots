@@ -2890,9 +2890,42 @@ export class AppService {
     emailRaw: string,
     passwordRaw: string,
   ): Promise<{ accessToken: string; user: Record<string, unknown> }> {
-    void emailRaw;
-    void passwordRaw;
-    throw new UnauthorizedException('Use o login com Google');
+    await this.ensureSupportSeedData();
+    const prisma = this.prisma as any;
+    const email = String(emailRaw || '').trim().toLowerCase();
+    const password = String(passwordRaw || '').trim();
+
+    const analyst = await prisma.analyst.findUnique({
+      where: { email },
+      include: { hub: true },
+    });
+
+    if (!analyst || analyst.password !== password || !analyst.isActive) {
+      throw new UnauthorizedException('Credenciais invalidas');
+    }
+
+    const user = {
+      id: analyst.id,
+      name: analyst.name,
+      email: analyst.email,
+      role: analyst.role,
+      hubId: analyst.hubId,
+      hubName: analyst.hub?.name || null,
+      telegramChatId: analyst.telegramChatId || null,
+    };
+
+    const accessToken = this.createJwtToken({
+      sub: analyst.id,
+      name: analyst.name,
+      email: analyst.email,
+      role: analyst.role,
+      hubId: analyst.hubId,
+      hubName: analyst.hub?.name || null,
+      telegramChatId: analyst.telegramChatId || null,
+      exp: Math.floor(Date.now() / 1000) + 8 * 3600,
+    });
+
+    return { accessToken, user };
   }
 
   async loginWithGoogle(

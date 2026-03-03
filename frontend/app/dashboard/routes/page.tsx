@@ -133,7 +133,13 @@ export default function RoutesPage() {
     }
 
     try {
-      const [routeData, driverData] = await Promise.all([fetchRoutes(), fetchDrivers()])
+      const [routeData, driverData] = await Promise.all([
+        fetchRoutes({
+          date: dayFilter || undefined,
+          shift: shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined,
+        }),
+        fetchDrivers(),
+      ])
       setRoutes(routeData)
       setDrivers(driverData)
       setSelectedRoute((current) =>
@@ -159,7 +165,7 @@ export default function RoutesPage() {
     return () => {
       window.clearInterval(interval)
     }
-  }, [])
+  }, [dayFilter, shiftFilter])
 
   useEffect(() => {
     window.localStorage.setItem(

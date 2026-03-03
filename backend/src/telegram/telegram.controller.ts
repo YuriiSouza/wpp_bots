@@ -344,6 +344,8 @@ Bairro: ${route.bairro || '-'}`;
       vehicleType: state.vehicleType,
       routeLabel: result.route.gaiola || result.route.atId || result.route.id,
       atId: result.route.atId,
+      bairro: result.route.bairro,
+      cidade: result.route.cidade,
     });
     await this.telegram.sendMessage(
       Number(chatId),
@@ -872,6 +874,8 @@ Peça ao analista para cadastrar em /acess/duvidas.
     vehicleType?: string | null;
     routeLabel: string;
     atId?: string | null;
+    bairro?: string | null;
+    cidade?: string | null;
   }) {
     const targets = await this.getAnalystNotificationTargets(input.driverId);
     if (!targets.length) return;
@@ -890,6 +894,12 @@ Peça ao analista para cadastrar em /acess/duvidas.
 
     if (input.atId) {
       messageLines.push(`AT: ${input.atId}`);
+    }
+
+    if (input.bairro || input.cidade) {
+      messageLines.push(
+        `Local: ${input.cidade || '-'}${input.bairro ? ` | ${input.bairro}` : ''}`,
+      );
     }
 
     messageLines.push(`Horario: ${new Date().toLocaleString('pt-BR')}`);
@@ -1446,6 +1456,13 @@ Para encerrar, digite: encerrar
 
     /* ===== ESCOLHA DE ROTA ===== */
     if (state.state === DriverState.CHOOSING_ROUTE) {
+      const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
+      const timeoutToken = await this.redis.client().get(this.routeTimeoutKey(chatId));
+      if (!timeoutToken) {
+        await this.handleTimeout(chatId, state.vehicleType, group);
+        return { ok: true };
+      }
+
       await this.clearRouteTimeout(chatId);
       if (command === 'encerrar') {
         await this.telegram.sendMessage(
@@ -1453,7 +1470,6 @@ Para encerrar, digite: encerrar
           'Atendimento encerrado.',
         );
         await this.clearState(chatId);
-        const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
         await this.releaseAndNotifyNext(group);
         return { ok: true };
       }
@@ -1478,7 +1494,6 @@ Para encerrar, digite: encerrar
             : 'Você já possui rota solicitada. O bot não realiza trocas.',
         );
         await this.setState(chatId, { ...state, state: DriverState.MENU });
-        const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
         await this.releaseAndNotifyNext(group);
         await this.sendMainMenu(Number(chatId));
         return { ok: true };
@@ -1511,6 +1526,8 @@ Como pegar a rota:
         vehicleType: state.vehicleType,
         routeLabel: route.gaiola || route.atId || route.routeId,
         atId: route.atId,
+        bairro: route.bairro,
+        cidade: route.cidade,
       });
 
       try {
@@ -1522,7 +1539,6 @@ Como pegar a rota:
       }
 
       await this.clearState(chatId);
-      const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
       await this.releaseAndNotifyNext(group);
       await this.telegram.sendMessage(
         Number(chatId),

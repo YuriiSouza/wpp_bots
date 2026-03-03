@@ -19,7 +19,11 @@ export class RouteService {
   ) {}
 
   private async invalidateRoutesCache() {
-    await this.redis.client().del('cache:routes:list:v1');
+    const client = this.redis.client();
+    const keys = await client.keys('cache:routes:list:*');
+    if (keys.length) {
+      await client.del(...keys);
+    }
   }
 
   private getCurrentRouteWindowFallback() {
@@ -104,12 +108,14 @@ export class RouteService {
     const where =
       normalized === 'MOTO'
         ? {
+            botAvailable: true,
             status: RouteStatus.DISPONIVEL,
             requiredVehicleTypeNorm: 'MOTO',
             routeDate: currentWindow.date,
             shift: currentWindow.shift,
           }
         : {
+            botAvailable: true,
             status: RouteStatus.DISPONIVEL,
             routeDate: currentWindow.date,
             shift: currentWindow.shift,
@@ -149,6 +155,7 @@ export class RouteService {
       const updated = await prismaTx.route.updateMany({
         where: {
           id: routeId,
+          botAvailable: true,
           status: 'DISPONIVEL',
           requestedDriverId: null,
         },

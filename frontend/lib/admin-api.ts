@@ -329,6 +329,25 @@ export async function markRouteNoShow(routeId: string, makeAvailable = false) {
   return response.data
 }
 
+export async function releaseRouteToBot(routeId: string) {
+  const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/release-bot`)
+  return response.data
+}
+
+export async function releaseRoutesToBotByAt(
+  atIds: string[] | string,
+  params?: {
+    date?: string
+    shift?: "AM" | "PM" | "PM2"
+  }
+) {
+  const response = await api.post<ApiActionResponse & { count?: number }>("/api/routes/release-bot", {
+    atIds,
+    ...params,
+  })
+  return response.data
+}
+
 export async function clearRouteNoShow(routeId: string) {
   const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/clear-no-show`)
   return response.data

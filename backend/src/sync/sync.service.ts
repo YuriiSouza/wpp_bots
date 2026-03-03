@@ -32,6 +32,7 @@ type RouteRecordInput = {
   gg: string | null;
   veiculoRoterizado: string | null;
   requestedDriverId: string | null;
+  botAvailable?: boolean;
   assignmentSource: RouteAssignmentSourceValue;
   sheetRowNumber: number;
   driverId: string | null;
@@ -723,6 +724,7 @@ export class SyncService implements OnModuleInit {
           gg: String(rawRow[13] ?? row['GG'] ?? '').trim() || null,
           veiculoRoterizado: String(row['Veiculo Roterizado'] ?? '').trim() || null,
           requestedDriverId,
+          botAvailable: requestedDriverId ? true : undefined,
           assignmentSource,
           sheetRowNumber: sourceRowNumber,
           driverId: effectiveDriverId,
@@ -751,21 +753,29 @@ export class SyncService implements OnModuleInit {
 
     if (toCreate.length) {
       await prisma.route.createMany({
-        data: toCreate.map((entry) => ({
+        data: toCreate.map((entry) => {
+          const { botAvailable, ...payload } = entry.payload;
+          return {
           id: entry.routeId,
-          ...entry.payload,
-        })),
+          ...payload,
+          botAvailable: botAvailable ?? false,
+        };
+        }),
         skipDuplicates: true,
       });
     }
 
     if (toUpdate.length) {
-      await this.runInBatches(toUpdate, 25, (entry) =>
-        prisma.route.update({
+      await this.runInBatches(toUpdate, 25, (entry) => {
+        const { botAvailable, ...payload } = entry.payload;
+        return prisma.route.update({
           where: { id: entry.routeId },
-          data: entry.payload,
-        }),
-      );
+          data: {
+            ...payload,
+            ...(botAvailable !== undefined ? { botAvailable } : {}),
+          },
+        });
+      });
     }
 
     let availableCount = 0;

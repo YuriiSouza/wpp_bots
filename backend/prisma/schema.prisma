@@ -59,6 +59,7 @@ model Route {
   gg                        String?
   veiculoRoterizado         String?
   requestedDriverId         String?
+  botAvailable              Boolean     @default(false)
   assignmentSource          RouteAssignmentSource @default(SYNC)
   noShow                    Boolean     @default(false)
   sheetRowNumber            Int?

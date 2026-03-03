@@ -142,6 +142,20 @@ export class AppController {
     return this.appService.markRouteNoShow(routeId, makeAvailable);
   }
 
+  @Post('api/routes/:routeId/release-bot')
+  async releaseRouteToBot(@Param('routeId') routeId: string) {
+    return this.appService.releaseRouteToBot(routeId);
+  }
+
+  @Post('api/routes/release-bot')
+  async releaseRoutesToBotByAt(
+    @Body('atIds') atIds?: string[] | string,
+    @Body('date') date?: string,
+    @Body('shift') shift?: 'AM' | 'PM' | 'PM2',
+  ) {
+    return this.appService.releaseRoutesToBotByAt(atIds, date, shift);
+  }
+
   @Post('api/routes/sync-overview-assignments')
   async syncRouteAssignmentsFromOverview(
     @Body('date') date?: string,

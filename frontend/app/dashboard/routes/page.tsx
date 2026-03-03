@@ -43,7 +43,7 @@ import {
   fetchRoutes,
   getApiErrorMessage,
   markRouteNoShow,
-  runSync,
+  syncRouteAssignmentsFromOverview,
   unassignRoute,
 } from "@/lib/admin-api"
 import type { Driver, Route } from "@/lib/types"
@@ -65,6 +65,10 @@ export default function RoutesPage() {
   const [assignDriverSearch, setAssignDriverSearch] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const isTelegramRequested = (route: Route) =>
+    route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !route.driverId
+  const isTelegramApproved = (route: Route) =>
+    route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !!route.driverId && route.status === "ATRIBUIDA"
 
   const loadData = async (silent = false) => {
     if (!silent) {
@@ -105,7 +109,7 @@ export default function RoutesPage() {
 
     setIsRefreshing(true)
     try {
-      const syncResponse = await runSync("routes")
+      const syncResponse = await syncRouteAssignmentsFromOverview(currentWindow.date, currentWindow.shift)
       if (!syncResponse.ok) {
         toast.error(syncResponse.message)
         return
@@ -113,7 +117,7 @@ export default function RoutesPage() {
 
       setDayFilter(currentWindow.date)
       await loadData(true)
-      toast.success("Rotas sincronizadas com a planilha e atualizadas no banco.")
+      toast.success("Atribuicoes das rotas atualizadas pela guia Visao Geral Atribuicoes.")
     } catch {
       toast.error("Nao foi possivel sincronizar as rotas")
     } finally {
@@ -139,7 +143,13 @@ export default function RoutesPage() {
     }
     if (dayFilter) result = result.filter((r) => (r.routeDate || "") === dayFilter)
     if (shiftFilter !== "all") result = result.filter((r) => (r.shift || "") === shiftFilter)
-    if (statusFilter !== "all") result = result.filter((r) => r.status === statusFilter)
+    if (statusFilter === "SOLICITADA") {
+      result = result.filter((r) => isTelegramRequested(r))
+    } else if (statusFilter === "DISPONIVEL") {
+      result = result.filter((r) => r.status === "DISPONIVEL" && !isTelegramRequested(r))
+    } else if (statusFilter !== "all") {
+      result = result.filter((r) => r.status === statusFilter)
+    }
     if (cityFilter !== "all") result = result.filter((r) => r.cidade === cityFilter)
     if (vehicleFilter !== "all") result = result.filter((r) => r.requiredVehicleType === vehicleFilter)
     return result.sort((a, b) => {
@@ -152,7 +162,8 @@ export default function RoutesPage() {
 
   const statusCounts = useMemo(() => ({
     total: routes.length,
-    DISPONIVEL: routes.filter((r) => r.status === "DISPONIVEL").length,
+    SOLICITADA: routes.filter((r) => isTelegramRequested(r)).length,
+    DISPONIVEL: routes.filter((r) => r.status === "DISPONIVEL" && !isTelegramRequested(r)).length,
     ATRIBUIDA: routes.filter((r) => r.status === "ATRIBUIDA").length,
     BLOQUEADA: routes.filter((r) => r.status === "BLOQUEADA").length,
   }), [routes])
@@ -194,7 +205,11 @@ export default function RoutesPage() {
             }
           : prev
       )
-      toast.success(`Rota ${assignRoute.atId || assignRoute.id} atribuida a ${driver.name}`)
+      toast.success(
+        isTelegramRequested(assignRoute)
+          ? `Solicitacao da rota ${assignRoute.atId || assignRoute.id} aprovada para ${driver.name}`
+          : `Rota ${assignRoute.atId || assignRoute.id} atribuida a ${driver.name}`
+      )
       setAssignRoute(null)
       setSelectedDriver("")
     } catch (error) {
@@ -341,6 +356,9 @@ export default function RoutesPage() {
               <Download className="mr-2 h-4 w-4" />
               Exportar CSV
             </Button>
+            <Badge variant="outline" className="bg-amber-500/10 text-amber-700 border-amber-500/30">
+              {statusCounts.SOLICITADA} Solicitadas
+            </Badge>
             <Badge variant="outline" className="bg-chart-2/10 text-chart-2 border-chart-2/30">
               {statusCounts.DISPONIVEL} Disponiveis
             </Badge>
@@ -392,6 +410,7 @@ export default function RoutesPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todos Status</SelectItem>
+                  <SelectItem value="SOLICITADA">Solicitada</SelectItem>
                   <SelectItem value="DISPONIVEL">Disponivel</SelectItem>
                   <SelectItem value="ATRIBUIDA">Atribuida</SelectItem>
                   <SelectItem value="BLOQUEADA">Bloqueada</SelectItem>
@@ -465,6 +484,8 @@ export default function RoutesPage() {
                             className={
                               route.noShow
                                 ? "border-destructive/30 bg-destructive/15 text-destructive"
+                                : isTelegramRequested(route)
+                                  ? "border-amber-500/30 bg-amber-500/10 text-amber-700"
                                 : route.status === "ATRIBUIDA"
                                   ? "border-chart-1/30 bg-chart-1/10 text-chart-1"
                                   : route.status === "BLOQUEADA"
@@ -472,7 +493,11 @@ export default function RoutesPage() {
                                     : "border-chart-2/30 bg-chart-2/10 text-chart-2"
                             }
                           >
-                            {route.noShow ? "No-Show" : route.status}
+                            {route.noShow
+                              ? "No-Show"
+                              : isTelegramRequested(route)
+                                ? "SOLICITADA"
+                                : route.status}
                           </Badge>
                         </TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">{route.cidade}</TableCell>
@@ -502,7 +527,7 @@ export default function RoutesPage() {
                               className="h-8 px-2 text-xs"
                             >
                               <UserPlus className="mr-2 h-4 w-4" />
-                              Atribuir
+                              {isTelegramRequested(route) ? "Aprovar" : "Atribuir"}
                             </Button>
                             <Button
                               variant="outline"
@@ -539,8 +564,20 @@ export default function RoutesPage() {
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p>
                       <p className="font-medium text-card-foreground">
-                        {selectedRoute.status}{selectedRoute.noShow ? " | No-Show" : ""}
+                        {isTelegramRequested(selectedRoute) ? "SOLICITADA" : selectedRoute.status}
+                        {selectedRoute.noShow ? " | No-Show" : ""}
                       </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Origem</p>
+                      <p className="font-medium text-card-foreground">
+                        {selectedRoute.assignmentSource || "-"}
+                        {isTelegramApproved(selectedRoute) ? " | Solicitação aprovada" : ""}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Motorista solicitado</p>
+                      <p className="font-medium text-card-foreground">{selectedRoute.requestedDriverId || "-"}</p>
                     </div>
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">Data e Turno</p>

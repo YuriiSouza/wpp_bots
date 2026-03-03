@@ -5,7 +5,7 @@ import { SheetsService } from '../sheets/sheets.service';
 import { RedisService } from '../redis/redis.service';
 import { normalizeVehicleType } from '../utils/normalize-vehicle';
 
-type RouteAssignmentSourceValue = 'SYNC' | 'TELEGRAM_BOT';
+type RouteAssignmentSourceValue = 'SYNC' | 'MANUAL' | 'TELEGRAM_BOT';
 
 const SYNC_LOCK_KEY = 'telegram:sync:lock';
 const SYNC_PENDING_PREFIX = 'telegram:sync:pending';
@@ -16,6 +16,32 @@ type DriverRow = Record<string, string>;
 type RouteRow = Record<string, string>;
 type OverviewRow = Record<string, string>;
 type ConvocationStats = { total: number; declined: number };
+type RouteRecordInput = {
+  atId: string;
+  routeDate: string | null;
+  shift: string | null;
+  gaiola: string | null;
+  bairro: string | null;
+  cidade: string | null;
+  requiredVehicleType: string | null;
+  requiredVehicleTypeNorm: string | null;
+  suggestionDriverDs: string | null;
+  km: string | null;
+  spr: string | null;
+  volume: string | null;
+  gg: string | null;
+  veiculoRoterizado: string | null;
+  requestedDriverId: string | null;
+  assignmentSource: RouteAssignmentSourceValue;
+  sheetRowNumber: number;
+  driverId: string | null;
+  driverName: string | null;
+  driverVehicleType: string | null;
+  driverAccuracy: string | null;
+  driverPlate: string | null;
+  status: RouteStatus;
+  assignedAt: Date | null;
+};
 export type SyncPendingType = 'all' | 'drivers';
 export type SyncSummary = {
   drivers: number;
@@ -25,6 +51,11 @@ export type SyncSummary = {
 export type SyncRoutesSummary = {
   routesAvailable: number;
   routesAssigned: number;
+};
+export type SyncRouteAssignmentsSummary = {
+  routesAvailable: number;
+  routesAssigned: number;
+  processed: number;
 };
 
 @Injectable()
@@ -430,6 +461,17 @@ export class SyncService implements OnModuleInit {
     return `'Rotas recusadas'!${start}${rowIndex}:${end}${rowIndex}`;
   }
 
+  private async runInBatches<T>(
+    items: T[],
+    batchSize: number,
+    worker: (item: T) => Promise<unknown>,
+  ) {
+    for (let index = 0; index < items.length; index += batchSize) {
+      const batch = items.slice(index, index + batchSize);
+      await Promise.all(batch.map((item) => worker(item)));
+    }
+  }
+
   private async ensureDriversExist(driverIds: string[]) {
     const uniqueIds = Array.from(new Set(driverIds.map((id) => id.trim()).filter(Boolean)));
     if (!uniqueIds.length) return;
@@ -481,31 +523,51 @@ export class SyncService implements OnModuleInit {
     if (!overviewRows.length) throw new Error('Planilha Visão Geral Atribuições vazia');
 
     const [headers, ...dataRows] = overviewRows;
-    const mappedRows: OverviewRow[] = this.mapRows(headers, dataRows);
-    const rowNumbers: number[] = [];
+    const entries: Array<{ rowNumber: number; driverId: string | null; payload: OverviewRow }> = [];
     const driverIds = new Set<string>();
 
-    for (let i = 0; i < mappedRows.length; i += 1) {
-      const row = mappedRows[i];
-      const rowNumber = i + 2;
-      rowNumbers.push(rowNumber);
-
+    for (let i = 0; i < dataRows.length; i += 1) {
       const rawRow = dataRows[i] ?? [];
+      const rowNumber = i + 2;
       const driverId = this.extractOverviewDriverId(headers, rawRow);
       if (driverId) driverIds.add(driverId);
 
-      await this.prisma.assignmentOverview.upsert({
-        where: { rowNumber },
-        update: {
-          driverId,
-          payload: row,
-        },
-        create: {
-          rowNumber,
-          driverId,
-          payload: row,
-        },
+      entries.push({
+        rowNumber,
+        driverId,
+        payload: this.mapRows(headers, [rawRow])[0] || {},
       });
+    }
+
+    const rowNumbers = entries.map((entry) => entry.rowNumber);
+    const existingRows = rowNumbers.length
+      ? await this.prisma.assignmentOverview.findMany({
+          where: { rowNumber: { in: rowNumbers } },
+          select: { rowNumber: true },
+        })
+      : [];
+    const existingSet = new Set(existingRows.map((entry) => entry.rowNumber));
+
+    const toCreate = entries.filter((entry) => !existingSet.has(entry.rowNumber));
+    const toUpdate = entries.filter((entry) => existingSet.has(entry.rowNumber));
+
+    if (toCreate.length) {
+      await this.prisma.assignmentOverview.createMany({
+        data: toCreate,
+        skipDuplicates: true,
+      });
+    }
+
+    if (toUpdate.length) {
+      await this.runInBatches(toUpdate, 50, (entry) =>
+        this.prisma.assignmentOverview.update({
+          where: { rowNumber: entry.rowNumber },
+          data: {
+            driverId: entry.driverId,
+            payload: entry.payload,
+          },
+        }),
+      );
     }
 
     if (rowNumbers.length) {
@@ -522,7 +584,7 @@ export class SyncService implements OnModuleInit {
       ),
     );
 
-    return mappedRows.length;
+    return entries.length;
   }
 
   private async syncDriversFromSheets() {
@@ -617,79 +679,35 @@ export class SyncService implements OnModuleInit {
     if (!routeRows.length) throw new Error('Planilha Visão Geral Atribuições vazia');
     const [routeHeaders, ...routeData] = routeRows;
     const prisma = this.prisma as any;
-
-    const routeIds: string[] = [];
+    const mappedRows = this.mapRouteRows(routeHeaders, routeData);
+    const entries: Array<{ routeId: string; payload: RouteRecordInput }> = [];
     const driverIds: string[] = [];
 
     for (let index = 0; index < routeData.length; index += 1) {
       const rawRow = routeData[index] ?? [];
+      const row = mappedRows[index] || {};
       const atId = String(rawRow[0] ?? '').trim();
       if (!atId) continue;
-      const routeDate = this.resolveRouteDate(routeHeaders, rawRow, selectedDate);
-      const routeShift = this.resolveRouteShift(routeHeaders, rawRow, selectedShift);
-      const routeId = this.buildPersistentRouteId(routeDate, routeShift, atId);
-      routeIds.push(routeId);
-
-      const currentDriverId = this.normalizeSheetDriverId(rawRow[9]);
-      const requestedDriverId = this.normalizeSheetDriverId(rawRow[17]);
-      if (currentDriverId) driverIds.push(currentDriverId);
-      if (requestedDriverId) driverIds.push(requestedDriverId);
-    }
-
-    await this.ensureDriversExist(driverIds);
-
-    for (let index = 0; index < routeData.length; index += 1) {
-      const rawRow = routeData[index] ?? [];
-      const row = this.mapRouteRows(routeHeaders, [rawRow])[0] || {};
-      const atId = String(rawRow[0] ?? '').trim();
-      if (!atId) continue;
-
       const routeDate = this.resolveRouteDate(routeHeaders, rawRow, selectedDate);
       if (selectedDate && routeDate && routeDate !== selectedDate) continue;
       const sheetShift = this.getSheetRouteShift(routeHeaders, rawRow);
       if (selectedShift && sheetShift && sheetShift !== selectedShift) continue;
-
       const routeShift = this.resolveRouteShift(routeHeaders, rawRow, selectedShift);
       const routeId = this.buildPersistentRouteId(routeDate, routeShift, atId);
-      const requiredVehicleType = String(rawRow[4] ?? row['Tipo de Veiculo Nescessario'] ?? '').trim() || null;
-      const requiredVehicleTypeNorm = normalizeVehicleType(requiredVehicleType ?? undefined);
       const currentDriverId = this.normalizeSheetDriverId(rawRow[9]);
       const requestedDriverId = this.normalizeSheetDriverId(rawRow[17]);
-      const effectiveDriverId = currentDriverId || requestedDriverId;
-      const status: RouteStatus = effectiveDriverId ? 'ATRIBUIDA' : 'DISPONIVEL';
+      if (currentDriverId) driverIds.push(currentDriverId);
+      if (requestedDriverId) driverIds.push(requestedDriverId);
+      const requiredVehicleType = String(rawRow[4] ?? row['Tipo de Veiculo Nescessario'] ?? '').trim() || null;
+      const requiredVehicleTypeNorm = normalizeVehicleType(requiredVehicleType ?? undefined);
+      const effectiveDriverId = currentDriverId;
+      const status: RouteStatus = currentDriverId ? 'ATRIBUIDA' : 'DISPONIVEL';
       const assignmentSource: RouteAssignmentSourceValue = requestedDriverId ? 'TELEGRAM_BOT' : 'SYNC';
       const sourceRowNumber = index + 2;
 
-      await prisma.route.upsert({
-        where: { id: routeId },
-        update: {
-          atId,
-          routeDate,
-          shift: routeShift,
-          gaiola: String(rawRow[1] ?? row['Gaiola'] ?? '').trim() || null,
-          bairro: String(rawRow[2] ?? row['Bairro'] ?? '').trim() || null,
-          cidade: String(rawRow[3] ?? row['Cidade'] ?? '').trim() || null,
-          requiredVehicleType,
-          requiredVehicleTypeNorm,
-          suggestionDriverDs: String(rawRow[5] ?? row['Sugestão [motorista ds]'] ?? '').trim() || null,
-          km: String(rawRow[6] ?? row['KM'] ?? '').trim() || null,
-          spr: String(rawRow[7] ?? row['SPR'] ?? '').trim() || null,
-          volume: String(rawRow[8] ?? row['Volume'] ?? '').trim() || null,
-          gg: String(rawRow[13] ?? row['GG'] ?? '').trim() || null,
-          veiculoRoterizado: String(row['Veiculo Roterizado'] ?? '').trim() || null,
-          requestedDriverId,
-          assignmentSource,
-          sheetRowNumber: sourceRowNumber,
-          driverId: effectiveDriverId,
-          driverName: null,
-          driverVehicleType: null,
-          driverAccuracy: null,
-          driverPlate: null,
-          status,
-          assignedAt: effectiveDriverId ? new Date() : null,
-        },
-        create: {
-          id: routeId,
+      entries.push({
+        routeId,
+        payload: {
           atId,
           routeDate,
           shift: routeShift,
@@ -718,12 +736,44 @@ export class SyncService implements OnModuleInit {
       });
     }
 
-    const availableCount = await prisma.route.count({
-      where: { status: 'DISPONIVEL' },
-    });
-    const assignedCount = await prisma.route.count({
-      where: { status: 'ATRIBUIDA' },
-    });
+    await this.ensureDriversExist(driverIds);
+
+    const routeIds = entries.map((entry) => entry.routeId);
+    const existingRoutes = routeIds.length
+      ? await prisma.route.findMany({
+          where: { id: { in: routeIds } },
+          select: { id: true },
+        })
+      : [];
+    const existingSet = new Set(existingRoutes.map((route: { id: string }) => route.id));
+    const toCreate = entries.filter((entry) => !existingSet.has(entry.routeId));
+    const toUpdate = entries.filter((entry) => existingSet.has(entry.routeId));
+
+    if (toCreate.length) {
+      await prisma.route.createMany({
+        data: toCreate.map((entry) => ({
+          id: entry.routeId,
+          ...entry.payload,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    if (toUpdate.length) {
+      await this.runInBatches(toUpdate, 25, (entry) =>
+        prisma.route.update({
+          where: { id: entry.routeId },
+          data: entry.payload,
+        }),
+      );
+    }
+
+    let availableCount = 0;
+    let assignedCount = 0;
+    for (const entry of entries) {
+      if (entry.payload.status === 'DISPONIVEL') availableCount += 1;
+      if (entry.payload.status === 'ATRIBUIDA') assignedCount += 1;
+    }
 
     return { availableCount, assignedCount };
   }
@@ -843,6 +893,130 @@ export class SyncService implements OnModuleInit {
       return {
         routesAvailable: availableCount,
         routesAssigned: assignedCount,
+      };
+    } catch (error) {
+      await this.prisma.syncLog.update({
+        where: { id: log.id },
+        data: {
+          status: 'failed',
+          finishedAt: new Date(),
+          message: (error as Error).message,
+        },
+      });
+      throw error;
+    } finally {
+      await this.unlock();
+    }
+  }
+
+  async syncRouteAssignmentsFromOverview(
+    selectedDate?: string,
+    selectedShift?: 'AM' | 'PM' | 'PM2',
+  ): Promise<SyncRouteAssignmentsSummary> {
+    await this.lock();
+    const log = await this.prisma.syncLog.create({
+      data: { status: 'running', message: 'Sincronizacao pontual de atribuicoes iniciada' },
+    });
+
+    try {
+      const overviewRows = await this.sheets.getAssignmentOverviewRows();
+      if (!overviewRows.length) {
+        throw new Error('Planilha Visão Geral Atribuições vazia');
+      }
+
+      const [, ...routeData] = overviewRows;
+      const currentAssignments = new Map<string, string | null>();
+      const assignedDriverIds: string[] = [];
+
+      for (const rawRow of routeData) {
+        const atId = String(rawRow?.[0] ?? '').trim();
+        if (!atId) continue;
+        const currentDriverId = this.normalizeSheetDriverId(rawRow?.[9]);
+        currentAssignments.set(atId, currentDriverId);
+        if (currentDriverId) assignedDriverIds.push(currentDriverId);
+      }
+
+      const atIds = Array.from(currentAssignments.keys());
+      await this.ensureDriversExist(assignedDriverIds);
+
+      const routes = await (this.prisma as any).route.findMany({
+        where: {
+          atId: { in: atIds },
+          ...(selectedDate ? { routeDate: selectedDate } : {}),
+          ...(selectedShift ? { shift: selectedShift } : {}),
+        },
+        select: {
+          id: true,
+          atId: true,
+          requestedDriverId: true,
+          assignmentSource: true,
+          assignedAt: true,
+        },
+      });
+
+      await this.runInBatches(
+        routes as Array<{
+          id: string;
+          atId: string;
+          requestedDriverId: string | null;
+          assignmentSource: RouteAssignmentSourceValue;
+          assignedAt: Date | null;
+        }>,
+        25,
+        (route) => {
+          const currentDriverId = currentAssignments.get(String(route.atId || '').trim()) || null;
+          const keepTelegramPending =
+            route.assignmentSource === 'TELEGRAM_BOT' &&
+            route.requestedDriverId &&
+            !currentDriverId;
+
+          return (this.prisma as any).route.update({
+            where: { id: route.id },
+            data: {
+              driverId: currentDriverId,
+              driverName: null,
+              driverVehicleType: null,
+              driverAccuracy: null,
+              driverPlate: null,
+              requestedDriverId: keepTelegramPending
+                ? route.requestedDriverId
+                : route.assignmentSource === 'MANUAL' && !currentDriverId
+                  ? null
+                  : route.requestedDriverId,
+              assignmentSource:
+                route.assignmentSource === 'MANUAL' && !currentDriverId
+                  ? 'SYNC'
+                  : route.assignmentSource,
+              status: currentDriverId ? 'ATRIBUIDA' : 'DISPONIVEL',
+              assignedAt: currentDriverId ? route.assignedAt || new Date() : null,
+            },
+          });
+        },
+      );
+
+      let routesAvailable = 0;
+      let routesAssigned = 0;
+      for (const route of routes) {
+        const currentDriverId = currentAssignments.get(String(route.atId || '').trim()) || null;
+        if (currentDriverId) routesAssigned += 1;
+        else routesAvailable += 1;
+      }
+
+      await this.prisma.syncLog.update({
+        where: { id: log.id },
+        data: {
+          status: 'success',
+          finishedAt: new Date(),
+          routesAvailable,
+          routesAssigned,
+          message: 'Sincronizacao pontual de atribuicoes concluida',
+        },
+      });
+
+      return {
+        routesAvailable,
+        routesAssigned,
+        processed: routes.length,
       };
     } catch (error) {
       await this.prisma.syncLog.update({

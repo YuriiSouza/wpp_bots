@@ -136,7 +136,13 @@ export default function RoutesPage() {
   const isTelegramApproved = (route: Route) =>
     route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !!route.driverId && route.status === "ATRIBUIDA"
 
-  const loadData = async (silent = false) => {
+  const loadData = async (
+    silent = false,
+    filters?: {
+      date?: string
+      shift?: "AM" | "PM" | "PM2"
+    }
+  ) => {
     if (!silent) {
       setIsLoading(true)
     }
@@ -144,8 +150,8 @@ export default function RoutesPage() {
     try {
       const [routeData, driverData] = await Promise.all([
         fetchRoutes({
-          date: dayFilter || undefined,
-          shift: shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined,
+          date: (filters?.date ?? dayFilter) || undefined,
+          shift: filters?.shift ?? (shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined),
         }),
         fetchDrivers(),
       ])
@@ -192,17 +198,24 @@ export default function RoutesPage() {
 
   const handleRefresh = async () => {
     const currentWindow = getCurrentRouteWindow()
+    const selectedDate = dayFilter || currentWindow.date
+    const selectedShift = shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined
 
     setIsRefreshing(true)
     try {
-      const syncResponse = await syncRouteAssignmentsFromOverview(currentWindow.date, currentWindow.shift)
+      const syncResponse = await syncRouteAssignmentsFromOverview(selectedDate, selectedShift)
       if (!syncResponse.ok) {
         toast.error(syncResponse.message)
         return
       }
 
-      setDayFilter(currentWindow.date)
-      await loadData(true)
+      if (!dayFilter) {
+        setDayFilter(selectedDate)
+      }
+      await loadData(true, {
+        date: selectedDate,
+        shift: selectedShift,
+      })
       toast.success("Atribuicoes das rotas atualizadas pela guia Visao Geral Atribuicoes.")
     } catch {
       toast.error("Nao foi possivel sincronizar as rotas")

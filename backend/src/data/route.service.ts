@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { normalizeVehicleType } from '../utils/normalize-vehicle';
 import { RouteStatus } from '@prisma/client';
 import { SheetsService } from '../sheets/sheets.service';
+import { RedisService } from '../redis/redis.service';
 
 const ROUTE_ASSIGNMENT_SOURCE = {
   SYNC: 'SYNC' as const,
@@ -14,7 +15,12 @@ export class RouteService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sheets: SheetsService,
+    private readonly redis: RedisService,
   ) {}
+
+  private async invalidateRoutesCache() {
+    await this.redis.client().del('cache:routes:list:v1');
+  }
 
   private getCurrentRouteWindowFallback() {
     const now = new Date();
@@ -164,6 +170,7 @@ export class RouteService {
 
     if (!assigned) return false;
     await this.sheets.updateAssignmentRequest(routeId, driverId);
+    await this.invalidateRoutesCache();
     return true;
   }
 
@@ -221,6 +228,7 @@ export class RouteService {
 
     await this.sheets.clearAssignmentRequest(route.id);
     await this.sheets.clearDriverRouteCache(driverId);
+    await this.invalidateRoutesCache();
     return { ok: true, route };
   }
 }

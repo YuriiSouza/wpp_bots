@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { ChevronDown, ChevronUp, Loader2, RefreshCw, ScanLine, Send, Sparkles, Tag, Trash2, Wand2 } from "lucide-react"
+import { ChevronDown, ChevronUp, Copy, Loader2, RefreshCw, ScanLine, Send, Sparkles, Tag, Trash2, Wand2 } from "lucide-react"
+import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { PageHeader } from "@/components/page-header"
 import { RoutePlanningMap } from "@/components/route-planning-map"
 import { StatusBadge } from "@/components/status-badge"
@@ -32,6 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   assignRoute,
   fetchRoutePlanning,
@@ -51,7 +53,31 @@ import { getCurrentRouteWindow } from "@/lib/route-window"
 import { toast } from "sonner"
 
 type ShiftFilter = "all" | "AM" | "PM" | "PM2"
-type PlanningFocus = "DS" | "VOLUME"
+type PlanningFocus = "DS" | "VOLUME" | "PM"
+
+const ANALYTICS_COLORS = [
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4, #f59e0b)",
+  "var(--color-chart-5, #14b8a6)",
+  "#ef4444",
+  "#0ea5e9",
+  "#22c55e",
+]
+
+const AVAILABILITY_STATUS_LABELS = {
+  available: "Disponivel",
+  not_available: "Indisponivel",
+  pending_confirmation: "Pendente",
+  no_schedule: "Sem agenda",
+} as const
+
+const formatDsPercent = (value: number | null | undefined) => {
+  const numeric = typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(numeric)) return "0.00%"
+  return `${(numeric * 100).toFixed(2)}%`
+}
 
 export default function RoutePlanningPage() {
   const today = new Date().toISOString().slice(0, 10)
@@ -459,6 +485,230 @@ export default function RoutePlanningPage() {
     }
   }
 
+  const availableDriversForCurrentWindow = useMemo(() => {
+    return (payload?.availableDrivers || []).filter((driver) => driver.available)
+  }, [payload])
+
+  const listedAvailabilityDrivers = useMemo(() => payload?.availableDrivers || [], [payload])
+
+  const pendingDriversForCurrentWindow = useMemo(() => {
+    return listedAvailabilityDrivers.filter((driver) => driver.availabilityStatus === "pending_confirmation")
+  }, [listedAvailabilityDrivers])
+
+  const unavailableDriversForCurrentWindow = useMemo(() => {
+    return listedAvailabilityDrivers.filter((driver) => driver.availabilityStatus === "not_available")
+  }, [listedAvailabilityDrivers])
+
+  const noScheduleDriversForCurrentWindow = useMemo(() => {
+    return listedAvailabilityDrivers.filter((driver) => driver.availabilityStatus === "no_schedule")
+  }, [listedAvailabilityDrivers])
+
+  const availableDriversWithoutCurrentRoute = useMemo(() => {
+    return availableDriversForCurrentWindow.filter((driver) => !driver.hasCurrentRoute)
+  }, [availableDriversForCurrentWindow])
+
+  const availableDriversWithoutCurrentOrPreviousRoute = useMemo(() => {
+    return availableDriversForCurrentWindow.filter((driver) => !driver.hasCurrentRoute && !driver.hasPreviousRoute)
+  }, [availableDriversForCurrentWindow])
+
+  const convocationAnalytics = useMemo(() => {
+    const availableDrivers = availableDriversForCurrentWindow
+    const withCurrentRoute = availableDrivers.filter((driver) => driver.hasCurrentRoute)
+    const withoutCurrentRoute = availableDrivers.filter((driver) => !driver.hasCurrentRoute)
+    const blockedByPreviousShift = availableDrivers.filter((driver) => driver.hasPreviousRoute)
+    const eligibleNow = availableDrivers.filter((driver) => !driver.hasCurrentRoute && !driver.hasPreviousRoute)
+    const staleDrivers = availableDrivers.filter((driver) => !driver.hasCurrentRoute && driver.turnsSinceLastRoute !== null && driver.turnsSinceLastRoute >= 3)
+    const highNoShowDrivers = availableDrivers.filter((driver) => driver.noShowTime > 0)
+
+    const dsValues = availableDrivers
+      .map((driver) => driver.ds)
+      .filter((value) => Number.isFinite(value))
+
+    const uniqueClusters = new Set(
+      availableDrivers.flatMap((driver) => driver.clusterLabels.map((cluster) => cluster.trim()).filter(Boolean)),
+    )
+
+    const uniqueNeighborhoods = new Set(
+      availableDrivers
+        .flatMap((driver) =>
+          String(driver.recentNeighborhoods || "")
+            .split(/[;,|]/)
+            .map((value) => value.trim())
+            .filter(Boolean),
+        ),
+    )
+
+    const byVehicleMap = new Map<
+      string,
+      {
+        label: string
+        total: number
+        available: number
+        pending: number
+        unavailable: number
+        noSchedule: number
+        withCurrentRoute: number
+        withoutCurrentRoute: number
+        blockedByPreviousShift: number
+        eligibleNow: number
+        highNoShow: number
+        dsValues: number[]
+      }
+    >()
+
+    for (const driver of availableDrivers) {
+      const label = String(driver.vehicleType || "Sem tipo").trim() || "Sem tipo"
+      const entry = byVehicleMap.get(label) || {
+        label,
+        total: 0,
+        available: 0,
+        pending: 0,
+        unavailable: 0,
+        noSchedule: 0,
+        withCurrentRoute: 0,
+        withoutCurrentRoute: 0,
+        blockedByPreviousShift: 0,
+        eligibleNow: 0,
+        highNoShow: 0,
+        dsValues: [],
+      }
+
+      entry.total += 1
+      if (driver.noShowTime > 0) entry.highNoShow += 1
+      entry.available += 1
+      entry.dsValues.push(driver.ds)
+      if (driver.hasCurrentRoute) entry.withCurrentRoute += 1
+      if (!driver.hasCurrentRoute) entry.withoutCurrentRoute += 1
+      if (driver.hasPreviousRoute) entry.blockedByPreviousShift += 1
+      if (!driver.hasCurrentRoute && !driver.hasPreviousRoute) entry.eligibleNow += 1
+
+      byVehicleMap.set(label, entry)
+    }
+
+    const byVehicle = Array.from(byVehicleMap.values())
+      .map((entry) => {
+        const values = entry.dsValues.filter((value) => Number.isFinite(value))
+        const averageDs = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+        const minDs = values.length ? Math.min(...values) : 0
+        const maxDs = values.length ? Math.max(...values) : 0
+
+        return {
+          ...entry,
+          averageDs,
+          minDs,
+          maxDs,
+        }
+      })
+      .sort((left, right) => {
+        if (right.available !== left.available) return right.available - left.available
+        return left.label.localeCompare(right.label)
+      })
+
+    const topClusters = Array.from(
+      availableDrivers.reduce((map, driver) => {
+        for (const cluster of driver.clusterLabels) {
+          const key = cluster.trim()
+          if (!key) continue
+          map.set(key, (map.get(key) || 0) + 1)
+        }
+        return map
+      }, new Map<string, number>()),
+    )
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 6)
+
+    return {
+      summary: {
+        listed: availableDrivers.length,
+        available: availableDrivers.length,
+        pending: 0,
+        unavailable: 0,
+        noSchedule: 0,
+        withCurrentRoute: withCurrentRoute.length,
+        withoutCurrentRoute: withoutCurrentRoute.length,
+        blockedByPreviousShift: blockedByPreviousShift.length,
+        eligibleNow: eligibleNow.length,
+        staleDrivers: staleDrivers.length,
+        highNoShow: highNoShowDrivers.length,
+        averageDs: dsValues.length ? dsValues.reduce((sum, value) => sum + value, 0) / dsValues.length : 0,
+        minDs: dsValues.length ? Math.min(...dsValues) : 0,
+        maxDs: dsValues.length ? Math.max(...dsValues) : 0,
+        clusterCount: uniqueClusters.size,
+        neighborhoodCount: uniqueNeighborhoods.size,
+      },
+      byVehicle,
+      topClusters,
+    }
+  }, [availableDriversForCurrentWindow])
+
+  const convocationCharts = useMemo(() => {
+    const vehicleMix = convocationAnalytics.byVehicle
+      .filter((item) => item.available > 0)
+      .map((item) => ({
+        name: item.label,
+        value: item.available,
+      }))
+
+    const vehicleAssignedMix = convocationAnalytics.byVehicle
+      .filter((item) => item.withCurrentRoute > 0)
+      .map((item) => ({
+        name: item.label,
+        value: item.withCurrentRoute,
+      }))
+
+    const vehicleStatus = convocationAnalytics.byVehicle.map((item) => ({
+      name: item.label,
+      convocados: item.withCurrentRoute,
+      aptos: item.eligibleNow,
+      bloqueados: item.blockedByPreviousShift,
+    }))
+
+    const dsByVehicle = convocationAnalytics.byVehicle
+      .filter((item) => item.available > 0)
+      .map((item) => ({
+        name: item.label,
+        medio: Number((item.averageDs * 100).toFixed(2)),
+        min: Number((item.minDs * 100).toFixed(2)),
+        max: Number((item.maxDs * 100).toFixed(2)),
+      }))
+
+    const clusters = convocationAnalytics.topClusters.map(([cluster, count]) => ({
+      name: cluster,
+      count,
+    }))
+
+    return {
+      vehicleMix,
+      vehicleAssignedMix,
+      vehicleStatus,
+      dsByVehicle,
+      clusters,
+    }
+  }, [convocationAnalytics])
+
+  const copyDriverPhoneList = async (
+    drivers: Array<{ phone: string | null }>,
+    emptyMessage: string,
+    successMessage: string,
+  ) => {
+    const numbers = drivers
+      .map((driver) => String(driver.phone || "").trim())
+      .filter(Boolean)
+
+    if (!numbers.length) {
+      toast.error(emptyMessage)
+      return
+    }
+
+    const copied = await copyTextToClipboard(numbers.join("\n"))
+    if (!copied) {
+      toast.error("Nao foi possivel copiar os numeros automaticamente.")
+      return
+    }
+
+    toast.success(successMessage.replace("{count}", String(numbers.length)))
+  }
+
   const handleNearbyRouteClick = async (atId: string) => {
     const copied = await copyTextToClipboard(atId)
     applyAtFilter(atId)
@@ -468,6 +718,22 @@ export default function RoutePlanningPage() {
     } else {
       toast.error("Nao foi possivel copiar a AT automaticamente.")
     }
+  }
+
+  const handleCopyAvailableWithoutRoute = async () => {
+    await copyDriverPhoneList(
+      availableDriversWithoutCurrentRoute,
+      "Nenhum motorista disponivel sem rota no periodo vigente possui numero cadastrado.",
+      "{count} numero(s) de motoristas disponiveis sem rota copiados.",
+    )
+  }
+
+  const handleCopyWithoutCurrentOrPrevious = async () => {
+    await copyDriverPhoneList(
+      availableDriversWithoutCurrentOrPreviousRoute,
+      "Nenhum motorista disponivel sem rota no periodo vigente e no turno anterior possui numero cadastrado.",
+      "{count} numero(s) de motoristas sem rota no periodo vigente e no turno anterior copiados.",
+    )
   }
 
   const handlePrintLabel = (route: RoutePlanningItem) => {
@@ -843,13 +1109,23 @@ export default function RoutePlanningPage() {
               </div>
               <div className="space-y-2">
                 <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Foco</span>
-                <Select value={focus} onValueChange={(value) => setFocus(value as PlanningFocus)}>
+                <Select
+                  value={focus}
+                  onValueChange={(value) => {
+                    const nextFocus = value as PlanningFocus
+                    setFocus(nextFocus)
+                    if (nextFocus === "PM") {
+                      setShift("PM")
+                    }
+                  }}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="DS" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="DS">DS</SelectItem>
                     <SelectItem value="VOLUME">Volume</SelectItem>
+                    <SelectItem value="PM">PM</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -882,6 +1158,14 @@ export default function RoutePlanningPage() {
         </CardContent>
       </Card>
 
+      <Tabs defaultValue="planning" className="space-y-6">
+        <TabsList className="grid w-full max-w-2xl grid-cols-3">
+          <TabsTrigger value="planning">Planejamento</TabsTrigger>
+          <TabsTrigger value="available-drivers">Disponibilidade</TabsTrigger>
+          <TabsTrigger value="convocation-analysis">Analise Convocacao</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="planning" className="space-y-6">
       <Card className="overflow-hidden">
         <CardContent className="space-y-4 p-4">
           <div className="flex items-start justify-between gap-3">
@@ -1005,7 +1289,7 @@ export default function RoutePlanningPage() {
                       <div className="flex min-w-0 flex-col">
                         <span className="truncate font-medium">{driver.name || driver.id}</span>
                         <span className="truncate text-xs text-muted-foreground">
-                          {driver.id} | {driver.vehicleType} | DS {driver.ds.toFixed(2)}
+                          {driver.id} | {driver.vehicleType} | DS {formatDsPercent(driver.ds)}
                         </span>
                       </div>
                       <span className="ml-3 shrink-0 text-xs text-muted-foreground">
@@ -1162,7 +1446,7 @@ export default function RoutePlanningPage() {
                               {route.suggestedDriverName || route.suggestedDriverId}
                             </span>
                             <span className="text-xs text-muted-foreground">
-                              {route.suggestedDriverId} | {route.suggestedDriverVehicle} | DS {route.suggestedDriverDs?.toFixed(2)} | {route.suggestedPhase}
+                              {route.suggestedDriverId} | {route.suggestedDriverVehicle} | DS {formatDsPercent(route.suggestedDriverDs)} | {route.suggestedPhase}
                             </span>
                           </div>
                         ) : (
@@ -1195,6 +1479,555 @@ export default function RoutePlanningPage() {
         </Card>
 
       </div>
+        </TabsContent>
+
+        <TabsContent value="available-drivers" className="space-y-6">
+          <Card className="overflow-hidden">
+            <CardContent className="space-y-4 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Disponibilidade do turno vigente</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Base da guia Disponibilidade para {payload?.driverWindow.shift || "AM"} em {payload?.driverWindow.date || date}.
+                    {" "}Turno anterior: {payload?.driverWindow.previousShift || "PM2"} em {payload?.driverWindow.previousDate || date}.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleCopyAvailableWithoutRoute()}
+                    disabled={!availableDriversWithoutCurrentRoute.length}
+                  >
+                    <Copy className="mr-2 h-4 w-4" />
+                    Copiar sem rota vigente
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleCopyWithoutCurrentOrPrevious()}
+                    disabled={!availableDriversWithoutCurrentOrPreviousRoute.length}
+                  >
+                    <Copy className="mr-2 h-4 w-4" />
+                    Copiar sem rota atual/anterior
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <Card className="border-dashed">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Disponiveis</p>
+                    <p className="mt-2 text-2xl font-semibold">{availableDriversForCurrentWindow.length}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border-dashed">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Pendentes</p>
+                    <p className="mt-2 text-2xl font-semibold">{pendingDriversForCurrentWindow.length}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border-dashed">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Indisponiveis</p>
+                    <p className="mt-2 text-2xl font-semibold">{unavailableDriversForCurrentWindow.length}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border-dashed">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Sem agenda</p>
+                    <p className="mt-2 text-2xl font-semibold">{noScheduleDriversForCurrentWindow.length}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border-dashed">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Aptos sem rota</p>
+                    <p className="mt-2 text-2xl font-semibold">{availableDriversWithoutCurrentOrPreviousRoute.length}</p>
+                  </CardContent>
+                </Card>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="min-w-0 overflow-hidden">
+            <CardContent className="p-0">
+              <div className="max-h-[70vh] w-full overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>ID</TableHead>
+                      <TableHead>Nome</TableHead>
+                      <TableHead>Tipo</TableHead>
+                      <TableHead>Status turno</TableHead>
+                      <TableHead>Agenda do dia</TableHead>
+                      <TableHead>No show</TableHead>
+                      <TableHead>Motivo</TableHead>
+                      <TableHead>Ultima rota</TableHead>
+                      <TableHead>DS</TableHead>
+                      <TableHead>Clusters</TableHead>
+                      <TableHead>Bairros recentes</TableHead>
+                      <TableHead>Numero</TableHead>
+                      <TableHead>Rota vigente</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {listedAvailabilityDrivers.map((driver) => (
+                      <TableRow key={driver.id}>
+                        <TableCell className="font-medium">{driver.id}</TableCell>
+                        <TableCell>{driver.name || "-"}</TableCell>
+                        <TableCell>{driver.vehicleType || "-"}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant={
+                                driver.availabilityStatus === "available"
+                                  ? "secondary"
+                                  : driver.availabilityStatus === "pending_confirmation"
+                                    ? "outline"
+                                    : "outline"
+                              }
+                            >
+                              {AVAILABILITY_STATUS_LABELS[driver.availabilityStatus]}
+                            </Badge>
+                            {driver.hasPreviousRoute ? <Badge variant="outline">Rodou no anterior</Badge> : null}
+                            {driver.hasCurrentRoute ? <Badge variant="secondary">Convocado</Badge> : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>{driver.rawAvailability || driver.status || "-"}</TableCell>
+                        <TableCell>{driver.noShowTime}</TableCell>
+                        <TableCell>{driver.reason || "-"}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span>{driver.lastTrip || driver.lastRouteAtId || "-"}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {driver.lastRouteDate ? `${driver.lastRouteDate} ${driver.lastRouteShift || ""}`.trim() : "Sem historico"}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell>{formatDsPercent(driver.ds)}</TableCell>
+                        <TableCell>{driver.clusterLabels.length ? driver.clusterLabels.join(", ") : "-"}</TableCell>
+                        <TableCell>{driver.recentNeighborhoods || "-"}</TableCell>
+                        <TableCell>{driver.phone || "-"}</TableCell>
+                        <TableCell>
+                          {driver.hasCurrentRoute ? (
+                            <div className="flex flex-col">
+                              <span className="font-medium">{driver.currentRouteAtId || "-"}</span>
+                              <span className="text-xs text-muted-foreground">{driver.currentRouteBairro || "Sem bairro"}</span>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-muted-foreground">Sem rota</span>
+                              <span className="text-xs text-muted-foreground">
+                                {driver.turnsSinceLastRoute !== null ? `${driver.turnsSinceLastRoute} turnos` : "Sem historico"}
+                              </span>
+                            </div>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!listedAvailabilityDrivers.length ? (
+                      <TableRow>
+                        <TableCell colSpan={13} className="h-24 text-center text-sm text-muted-foreground">
+                          Nenhum motorista encontrado na base de disponibilidade para o turno vigente.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="convocation-analysis" className="space-y-6">
+          <Card className="overflow-hidden">
+            <CardContent className="space-y-4 p-4">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Dashboard da convocacao</h3>
+                <p className="text-xs text-muted-foreground">
+                  Analise do turno vigente com base na guia Disponibilidade em {payload?.driverWindow.date || date}
+                  {" "}({payload?.driverWindow.shift || "AM"}).
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <Card className="border-chart-1/20 bg-gradient-to-br from-chart-1/10 via-background to-background">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Base disponivel</p>
+                    <p className="mt-2 text-2xl font-semibold text-chart-1">{convocationAnalytics.summary.listed}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Apenas motoristas disponiveis no turno vigente
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="border-chart-2/20 bg-gradient-to-br from-chart-2/10 via-background to-background">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Ja convocados</p>
+                    <p className="mt-2 text-2xl font-semibold text-chart-2">{convocationAnalytics.summary.withCurrentRoute}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {convocationAnalytics.summary.withoutCurrentRoute} sem rota no turno
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="border-chart-3/20 bg-gradient-to-br from-chart-3/10 via-background to-background">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Bloqueio turno anterior</p>
+                    <p className="mt-2 text-2xl font-semibold text-chart-3">{convocationAnalytics.summary.blockedByPreviousShift}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {convocationAnalytics.summary.eligibleNow} aptos agora
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="border-chart-4/20 bg-gradient-to-br from-chart-4/10 via-background to-background">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">DS medio</p>
+                    <p className="mt-2 text-2xl font-semibold text-chart-4">{formatDsPercent(convocationAnalytics.summary.averageDs)}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Min {formatDsPercent(convocationAnalytics.summary.minDs)} / Max {formatDsPercent(convocationAnalytics.summary.maxDs)}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="border-chart-5/20 bg-gradient-to-br from-chart-5/10 via-background to-background">
+                  <CardContent className="p-4">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Cobertura</p>
+                    <p className="mt-2 text-2xl font-semibold text-chart-5">{convocationAnalytics.summary.clusterCount}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {convocationAnalytics.summary.neighborhoodCount} bairros / {convocationAnalytics.summary.highNoShow} com no-show
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="grid gap-6 xl:grid-cols-3">
+            <Card className="overflow-hidden">
+              <CardContent className="p-0">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-foreground">Mix de veiculos disponiveis</h3>
+                  <p className="text-xs text-muted-foreground">Distribuicao da frota pronta para convocacao no turno.</p>
+                </div>
+                <div className="h-[320px] p-4">
+                  {convocationCharts.vehicleMix.length ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={convocationCharts.vehicleMix}
+                          dataKey="value"
+                          nameKey="name"
+                          innerRadius={64}
+                          outerRadius={102}
+                          paddingAngle={4}
+                          strokeWidth={0}
+                        >
+                          {convocationCharts.vehicleMix.map((entry, index) => (
+                            <Cell key={entry.name} fill={ANALYTICS_COLORS[index % ANALYTICS_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "var(--color-card)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            color: "var(--color-card-foreground)",
+                          }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: "12px" }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                      Sem veiculos disponiveis para exibir.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="overflow-hidden">
+              <CardContent className="p-0">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-foreground">Mix de veiculos escalados</h3>
+                  <p className="text-xs text-muted-foreground">Distribuicao dos motoristas que ja tem rota no turno.</p>
+                </div>
+                <div className="h-[320px] p-4">
+                  {convocationCharts.vehicleAssignedMix.length ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={convocationCharts.vehicleAssignedMix}
+                          dataKey="value"
+                          nameKey="name"
+                          innerRadius={64}
+                          outerRadius={102}
+                          paddingAngle={4}
+                          strokeWidth={0}
+                        >
+                          {convocationCharts.vehicleAssignedMix.map((entry, index) => (
+                            <Cell key={entry.name} fill={ANALYTICS_COLORS[index % ANALYTICS_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "var(--color-card)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            color: "var(--color-card-foreground)",
+                          }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: "12px" }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                      Nenhum veiculo escalado para exibir.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="overflow-hidden">
+              <CardContent className="p-0">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-foreground">Status por veiculo</h3>
+                  <p className="text-xs text-muted-foreground">Comparativo entre convocados, aptos e bloqueados por tipo.</p>
+                </div>
+                <div className="h-[320px] p-4">
+                  {convocationCharts.vehicleStatus.length ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={convocationCharts.vehicleStatus} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                        <XAxis dataKey="name" tick={{ fontSize: 11 }} className="fill-muted-foreground" />
+                        <YAxis tick={{ fontSize: 11 }} className="fill-muted-foreground" />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "var(--color-card)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            color: "var(--color-card-foreground)",
+                          }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: "12px" }} />
+                        <Bar dataKey="convocados" name="Convocados" fill="var(--color-chart-2)" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="aptos" name="Aptos Agora" fill="var(--color-chart-1)" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="bloqueados" name="Bloq. Anterior" fill="var(--color-chart-3)" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                      Sem dados suficientes para o comparativo.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card className="overflow-hidden">
+              <CardContent className="p-0">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-foreground">Faixa de DS por veiculo</h3>
+                  <p className="text-xs text-muted-foreground">Media, minimo e maximo de DS dos disponiveis em cada tipo.</p>
+                </div>
+                <div className="h-[320px] p-4">
+                  {convocationCharts.dsByVehicle.length ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={convocationCharts.dsByVehicle} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                        <XAxis dataKey="name" tick={{ fontSize: 11 }} className="fill-muted-foreground" />
+                        <YAxis tick={{ fontSize: 11 }} className="fill-muted-foreground" domain={[0, 100]} />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "var(--color-card)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            color: "var(--color-card-foreground)",
+                          }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: "12px" }} />
+                        <Line type="monotone" dataKey="medio" name="DS Medio" stroke="var(--color-chart-1)" strokeWidth={3} dot={{ r: 3 }} />
+                        <Line type="monotone" dataKey="min" name="DS Min" stroke="var(--color-chart-3)" strokeWidth={2} dot={{ r: 2 }} />
+                        <Line type="monotone" dataKey="max" name="DS Max" stroke="var(--color-chart-5)" strokeWidth={2} dot={{ r: 2 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                      Sem DS suficiente para montar a serie.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="overflow-hidden">
+              <CardContent className="p-0">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-foreground">Cobertura por cluster</h3>
+                  <p className="text-xs text-muted-foreground">Top clusters com mais motoristas disponiveis na base vigente.</p>
+                </div>
+                <div className="h-[320px] p-4">
+                  {convocationCharts.clusters.length ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={convocationCharts.clusters} layout="vertical" margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                        <XAxis type="number" tick={{ fontSize: 11 }} className="fill-muted-foreground" />
+                        <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} className="fill-muted-foreground" width={40} />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "var(--color-card)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            color: "var(--color-card-foreground)",
+                          }}
+                        />
+                        <Bar dataKey="count" name="Motoristas" fill="var(--color-chart-4)" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                      Nenhum cluster disponivel para exibir.
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+            <Card className="min-w-0 overflow-hidden">
+              <CardContent className="p-0">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-foreground">Analise por veiculo</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Quantidade por tipo, status da convocacao e estatisticas de DS dos disponiveis.
+                  </p>
+                </div>
+                <div className="max-h-[60vh] w-full overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Veiculo</TableHead>
+                        <TableHead>Base</TableHead>
+                        <TableHead>Disponiveis</TableHead>
+                        <TableHead>Convocados</TableHead>
+                        <TableHead>Sem rota</TableHead>
+                        <TableHead>Bloq. anterior</TableHead>
+                        <TableHead>Aptos agora</TableHead>
+                        <TableHead>No-show</TableHead>
+                        <TableHead>DS medio</TableHead>
+                        <TableHead>DS min</TableHead>
+                        <TableHead>DS max</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {convocationAnalytics.byVehicle.map((item) => (
+                        <TableRow key={item.label}>
+                          <TableCell className="font-medium">{item.label}</TableCell>
+                          <TableCell>{item.total}</TableCell>
+                          <TableCell>{item.available}</TableCell>
+                          <TableCell>{item.withCurrentRoute}</TableCell>
+                          <TableCell>{item.withoutCurrentRoute}</TableCell>
+                          <TableCell>{item.blockedByPreviousShift}</TableCell>
+                          <TableCell>{item.eligibleNow}</TableCell>
+                          <TableCell>{item.highNoShow}</TableCell>
+                          <TableCell>{formatDsPercent(item.averageDs)}</TableCell>
+                          <TableCell>{formatDsPercent(item.minDs)}</TableCell>
+                          <TableCell>{formatDsPercent(item.maxDs)}</TableCell>
+                        </TableRow>
+                      ))}
+                      {!convocationAnalytics.byVehicle.length ? (
+                        <TableRow>
+                          <TableCell colSpan={11} className="h-24 text-center text-sm text-muted-foreground">
+                            Nenhum dado de veiculo disponivel para o turno vigente.
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="space-y-6">
+              <Card className="overflow-hidden">
+                <CardContent className="space-y-4 p-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">Clusters com mais cobertura</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Quantidade de motoristas disponiveis por cluster informado na base.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    {convocationAnalytics.topClusters.length ? (
+                      convocationAnalytics.topClusters.map(([cluster, count]) => (
+                        <div key={cluster} className="flex items-center justify-between rounded-lg border px-3 py-2">
+                          <span className="text-sm font-medium">{cluster}</span>
+                          <Badge variant="outline">{count}</Badge>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-xs text-muted-foreground">Nenhum cluster encontrado na base vigente.</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <CardContent className="space-y-3 p-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">Leituras rapidas</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Indicadores operacionais para decidir a proxima convocacao.
+                    </p>
+                  </div>
+                  <div className="rounded-lg border px-3 py-2">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Taxa de ocupacao</p>
+                    <p className="mt-1 text-lg font-semibold">
+                      {convocationAnalytics.summary.available
+                        ? ((convocationAnalytics.summary.withCurrentRoute / convocationAnalytics.summary.available) * 100).toFixed(1)
+                        : "0.0"}
+                      %
+                    </p>
+                  </div>
+                  <div className="rounded-lg border px-3 py-2">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Taxa apta agora</p>
+                    <p className="mt-1 text-lg font-semibold">
+                      {convocationAnalytics.summary.available
+                        ? ((convocationAnalytics.summary.eligibleNow / convocationAnalytics.summary.available) * 100).toFixed(1)
+                        : "0.0"}
+                      %
+                    </p>
+                  </div>
+                  <div className="rounded-lg border px-3 py-2">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Impacto turno anterior</p>
+                    <p className="mt-1 text-lg font-semibold">
+                      {convocationAnalytics.summary.available
+                        ? ((convocationAnalytics.summary.blockedByPreviousShift / convocationAnalytics.summary.available) * 100).toFixed(1)
+                        : "0.0"}
+                      %
+                    </p>
+                  </div>
+                  <div className="rounded-lg border px-3 py-2">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Aguardando confirmacao</p>
+                    <p className="mt-1 text-lg font-semibold">{convocationAnalytics.summary.pending}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {convocationAnalytics.summary.staleDrivers} sem rodar ha 3+ turnos
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
 
       <Dialog
         open={!!selectedRoute}
@@ -1228,7 +2061,7 @@ export default function RoutePlanningPage() {
               <SelectContent>
                 {eligibleDrivers.map((driver) => (
                   <SelectItem key={driver.id} value={driver.id}>
-                    {driver.id} | {driver.vehicleType} | DS {driver.ds.toFixed(2)} | {driver.profile}
+                    {driver.id} | {driver.vehicleType} | DS {formatDsPercent(driver.ds)} | {driver.profile}
                   </SelectItem>
                 ))}
               </SelectContent>

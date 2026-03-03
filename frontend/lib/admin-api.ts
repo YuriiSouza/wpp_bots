@@ -288,7 +288,7 @@ export async function fetchRoutePlanning(params?: {
   date?: string
   shift?: "AM" | "PM" | "PM2"
   atId?: string
-  focus?: "DS" | "VOLUME"
+  focus?: "DS" | "VOLUME" | "PM"
 }) {
   const response = await api.get<RoutePlanningPayload>("/api/route-planning", {
     params,
@@ -309,7 +309,7 @@ export async function saveRoutePlanningPreferences(
 export async function runRoutePlanning(params?: {
   date?: string
   shift?: "AM" | "PM" | "PM2"
-  focus?: "DS" | "VOLUME"
+  focus?: "DS" | "VOLUME" | "PM"
 }) {
   const response = await api.post<RoutePlanningRunResult>("/api/route-planning/run", params)
   return response.data

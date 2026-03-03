@@ -68,7 +68,7 @@ export class AppController {
     @Query('date') date?: string,
     @Query('shift') shift?: 'AM' | 'PM' | 'PM2',
     @Query('atId') atId?: string,
-    @Query('focus') focus?: 'DS' | 'VOLUME',
+    @Query('focus') focus?: 'DS' | 'VOLUME' | 'PM',
   ) {
     return this.appService.getRoutePlanning(date, shift, atId, focus);
   }
@@ -77,7 +77,7 @@ export class AppController {
   async runRoutePlanning(
     @Body('date') date?: string,
     @Body('shift') shift?: 'AM' | 'PM' | 'PM2',
-    @Body('focus') focus?: 'DS' | 'VOLUME',
+    @Body('focus') focus?: 'DS' | 'VOLUME' | 'PM',
   ) {
     return this.appService.runRoutePlanning(date, shift, focus);
   }

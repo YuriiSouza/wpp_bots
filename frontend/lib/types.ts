@@ -194,10 +194,45 @@ export interface RoutePlanningPreference {
   available: boolean
 }
 
+export interface RoutePlanningAvailableDriver {
+  id: string
+  name: string
+  vehicleType: string
+  status: string
+  available: boolean
+  availabilityStatus: "available" | "not_available" | "pending_confirmation" | "no_schedule"
+  rawAvailability: string | null
+  availableShifts: Array<"AM" | "PM">
+  noShowTime: number
+  reason: string | null
+  lastTrip: string | null
+  ds: number
+  clusters: string[]
+  clusterLabels: string[]
+  recentNeighborhoods: string | null
+  phone: string | null
+  currentRouteAtId: string | null
+  currentRouteBairro: string | null
+  hasCurrentRoute: boolean
+  hasPreviousRoute: boolean
+  lastRouteAtId: string | null
+  lastRouteBairro: string | null
+  lastRouteDate: string | null
+  lastRouteShift: "AM" | "PM" | "PM2" | null
+  recentRouteCount: number
+  turnsSinceLastRoute: number | null
+}
+
 export interface RoutePlanningPayload {
   date: string
   shift: string | null
-  focus: "DS" | "VOLUME"
+  focus: "DS" | "VOLUME" | "PM"
+  driverWindow: {
+    date: string
+    shift: "AM" | "PM" | "PM2"
+    previousDate: string
+    previousShift: "AM" | "PM" | "PM2"
+  }
   totals: {
     routes: number
     noShowAvailable: number
@@ -208,13 +243,14 @@ export interface RoutePlanningPayload {
   }
   drivers: PlanningDriverOption[]
   preferredAssignments: RoutePlanningPreference[]
+  availableDrivers: RoutePlanningAvailableDriver[]
   data: RoutePlanningItem[]
 }
 
 export interface RoutePlanningRunResult {
   ok: boolean
   message: string
-  focus: "DS" | "VOLUME"
+  focus: "DS" | "VOLUME" | "PM"
   totalAssignments: number
   totalDriversUsed: number
   assignments: Array<{

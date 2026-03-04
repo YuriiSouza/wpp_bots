@@ -193,7 +193,7 @@ export default function RoutePlanningPage() {
       setShift(currentWindow.shift)
       setPayload(planning)
       setMapPayload(map)
-      toast.success("Rotas sincronizadas com a planilha e atualizadas no banco.")
+      toast.success("Rotas atualizadas a partir da guia Historico ATs.")
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel sincronizar as rotas"))
     } finally {

@@ -157,11 +157,11 @@ export class AppController {
   }
 
   @Post('api/routes/sync-overview-assignments')
-  async syncRouteAssignmentsFromOverview(
+  async refreshRoutesFromHistory(
     @Body('date') date?: string,
     @Body('shift') shift?: 'AM' | 'PM' | 'PM2',
   ) {
-    return this.appService.syncRouteAssignmentsFromOverview(date, shift);
+    return this.appService.triggerSync('routes', date, shift);
   }
 
   @Post('api/routes/:routeId/clear-no-show')

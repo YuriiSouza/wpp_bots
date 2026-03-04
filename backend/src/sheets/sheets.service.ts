@@ -69,6 +69,12 @@ export class SheetsService {
       return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
     }
 
+    const dashMatch = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+    if (dashMatch) {
+      const [, day, month, year] = dashMatch;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+
     const parsed = new Date(raw);
     if (Number.isNaN(parsed.getTime())) return '';
     return parsed.toISOString().slice(0, 10);
@@ -79,11 +85,12 @@ export class SheetsService {
     if (raw === 'AM') return 'AM';
     if (raw === 'PM' || raw === 'PM1') return 'PM';
     if (raw === 'PM2') return 'PM2';
+    if (raw === '06:00 - 09:00') return 'AM';
     return '';
   }
 
   async getCurrentCalculationWindow(): Promise<{ date: string; shift: 'AM' | 'PM' | 'PM2' } | null> {
-    const rows = await this.getRows("'Calculation Tasks'!K:AF");
+    const rows = await this.getRows("'Calculation Tasks'!K:AB");
     if (rows.length <= 1) return null;
 
     const today = new Date().toISOString().slice(0, 10);
@@ -91,8 +98,8 @@ export class SheetsService {
 
     for (const row of rows.slice(1)) {
       const date = this.normalizeCalculationDate(row[0]);
+      const shift = this.normalizeCalculationShift(row[1]);
       const atId = String(row[17] || '').trim();
-      const shift = this.normalizeCalculationShift(row[21]);
       if (!date || !atId || !shift) continue;
 
       const key = `${date}|${shift}`;

@@ -104,7 +104,7 @@ export class SheetsService {
   }
 
   async getCurrentCalculationWindow(): Promise<{ date: string; shift: 'AM' | 'PM' | 'PM2' } | null> {
-    const rows = await this.getRows("'Calculation Tasks'!K:AB");
+    const rows = await this.getRows("'Calculation Tasks'!K:AF");
     if (rows.length <= 1) return null;
 
     const today = new Date().toISOString().slice(0, 10);
@@ -112,7 +112,7 @@ export class SheetsService {
 
     for (const row of rows.slice(1)) {
       const date = this.normalizeCalculationDate(row[0]);
-      const shift = this.normalizeCalculationShift(row[1]);
+      const shift = this.normalizeCalculationShift(row[21] || row[1]);
       const atId = String(row[17] || '').trim();
       if (!date || !atId || !shift) continue;
 

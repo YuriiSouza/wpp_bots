@@ -703,32 +703,43 @@ export class SyncService implements OnModuleInit {
     const [historyRows, overviewRows, calculationRows] = await Promise.all([
       this.sheets.getRows(`'Historico ATs'!A:AL`),
       this.sheets.getAssignmentOverviewRows(),
-      this.sheets.getRows(`'Calculation Tasks'!K:AB`),
+      this.sheets.getRows(`'Calculation Tasks'!K:AF`),
     ]);
 
     if (!historyRows.length) throw new Error('Planilha Historico ATs vazia');
     if (!overviewRows.length) throw new Error('Planilha Visão Geral Atribuições vazia');
 
-    const [historyHeaders, ...historyData] = historyRows;
-    const [, ...overviewData] = overviewRows;
+    const historyHeaders = historyRows[0] ?? [];
     const prisma = this.prisma as any;
-    const mappedHistoryRows = this.mapRouteRows(historyHeaders, historyData);
     const entries: Array<{ routeId: string; payload: RouteRecordInput }> = [];
     const driverIds: string[] = [];
+
+    const taskIdIndex = this.getHeaderIndex(historyHeaders, ['Task ID']);
+    const driverIdIndex = this.getHeaderIndex(historyHeaders, ['Driver ID']);
+    const plannedVehicleTypeIndex = this.getHeaderIndex(historyHeaders, ['Planned Vehicle Type']);
+    const vehicleTypeIndex = this.getHeaderIndex(historyHeaders, ['Vehicle Type']);
+    const corridorIndex = this.getHeaderIndex(historyHeaders, ['Corridor/Cage']);
+    const neighborhoodIndex = this.getHeaderIndex(historyHeaders, ['Neighborhood']);
+    const cityIndex = this.getHeaderIndex(historyHeaders, ['City']);
+    const dsIndex = this.getHeaderIndex(historyHeaders, ['DS']);
+    const totalDistanceIndex = this.getHeaderIndex(historyHeaders, ['Total Distance']);
+    const assignedOrdersIndex = this.getHeaderIndex(historyHeaders, ['Number of assigned orders/TO']);
+    const ordersIndex = this.getHeaderIndex(historyHeaders, ['Number of order/TO']);
+    const riskTypeIndex = this.getHeaderIndex(historyHeaders, ['Risk Type']);
 
     const overviewByAt = new Map<
       string,
       { currentDriverId: string | null; requestedDriverId: string | null; sheetRowNumber: number }
     >();
-    for (let index = 0; index < overviewData.length; index += 1) {
-      const rawRow = overviewData[index] ?? [];
+    for (let index = 1; index < overviewRows.length; index += 1) {
+      const rawRow = overviewRows[index] ?? [];
       const atId = String(rawRow[0] ?? '').trim();
       if (!atId) continue;
 
       overviewByAt.set(atId, {
         currentDriverId: this.normalizeSheetDriverId(rawRow[9]),
         requestedDriverId: this.normalizeSheetDriverId(rawRow[17]),
-        sheetRowNumber: index + 2,
+        sheetRowNumber: index + 1,
       });
     }
 
@@ -736,7 +747,7 @@ export class SyncService implements OnModuleInit {
     const calculationShiftByAt = new Map<string, 'AM' | 'PM' | 'PM2'>();
     for (const row of calculationRows.slice(1)) {
       const routeDate = this.normalizeRouteDate(row[0]);
-      const timeWindow = this.normalizeCalculationTaskShift(row[1]);
+      const timeWindow = this.normalizeCalculationTaskShift(row[21] || row[1]);
       const atId = String(row[17] ?? '').trim();
       if (!atId) continue;
       if (routeDate && !calculationDateByAt.has(atId)) {
@@ -747,10 +758,11 @@ export class SyncService implements OnModuleInit {
       }
     }
 
-    for (let index = 0; index < historyData.length; index += 1) {
-      const rawRow = historyData[index] ?? [];
-      const row = mappedHistoryRows[index] || {};
-      const atId = String(row['Task ID'] ?? rawRow[0] ?? '').trim();
+    for (let index = 1; index < historyRows.length; index += 1) {
+      const rawRow = historyRows[index] ?? [];
+      const atId = String(
+        (taskIdIndex >= 0 ? rawRow[taskIdIndex] : rawRow[0]) ?? '',
+      ).trim();
       if (!atId) continue;
       const routeDate = calculationDateByAt.get(atId) || null;
       if (selectedDate && routeDate !== selectedDate) continue;
@@ -760,12 +772,20 @@ export class SyncService implements OnModuleInit {
       const overviewRoute = overviewByAt.get(atId);
       const currentDriverId =
         overviewRoute?.currentDriverId ||
-        this.normalizeSheetDriverId(row['Driver ID'] ?? rawRow[6]);
+        this.normalizeSheetDriverId(
+          (driverIdIndex >= 0 ? rawRow[driverIdIndex] : rawRow[6]) ?? null,
+        );
       const requestedDriverId = overviewRoute?.requestedDriverId || null;
       if (currentDriverId) driverIds.push(currentDriverId);
       if (requestedDriverId) driverIds.push(requestedDriverId);
       const requiredVehicleType =
-        String(row['Planned Vehicle Type'] ?? row['Vehicle Type'] ?? '').trim() || null;
+        String(
+          (
+            (plannedVehicleTypeIndex >= 0 ? rawRow[plannedVehicleTypeIndex] : undefined) ??
+            (vehicleTypeIndex >= 0 ? rawRow[vehicleTypeIndex] : undefined) ??
+            ''
+          ),
+        ).trim() || null;
       const requiredVehicleTypeNorm = normalizeVehicleType(requiredVehicleType ?? undefined);
       const effectiveDriverId = currentDriverId;
       const status: RouteStatus = currentDriverId ? 'ATRIBUIDA' : 'DISPONIVEL';
@@ -777,17 +797,23 @@ export class SyncService implements OnModuleInit {
           atId,
           routeDate,
           shift: routeShift,
-          gaiola: String(row['Corridor/Cage'] ?? '').trim() || null,
-          bairro: String(row['Neighborhood'] ?? '').trim() || null,
-          cidade: String(row['City'] ?? '').trim() || null,
+          gaiola: String((corridorIndex >= 0 ? rawRow[corridorIndex] : '') ?? '').trim() || null,
+          bairro:
+            String((neighborhoodIndex >= 0 ? rawRow[neighborhoodIndex] : '') ?? '').trim() || null,
+          cidade: String((cityIndex >= 0 ? rawRow[cityIndex] : '') ?? '').trim() || null,
           requiredVehicleType,
           requiredVehicleTypeNorm,
-          suggestionDriverDs: String(row['DS'] ?? '').trim() || null,
-          km: String(row['Total Distance'] ?? '').trim() || null,
-          spr: String(row['Number of assigned orders/TO'] ?? '').trim() || null,
-          volume: String(row['Number of order/TO'] ?? '').trim() || null,
-          gg: String(row['Risk Type'] ?? '').trim() || null,
-          veiculoRoterizado: String(row['Vehicle Type'] ?? '').trim() || null,
+          suggestionDriverDs: String((dsIndex >= 0 ? rawRow[dsIndex] : '') ?? '').trim() || null,
+          km:
+            String((totalDistanceIndex >= 0 ? rawRow[totalDistanceIndex] : '') ?? '').trim() ||
+            null,
+          spr:
+            String((assignedOrdersIndex >= 0 ? rawRow[assignedOrdersIndex] : '') ?? '').trim() ||
+            null,
+          volume: String((ordersIndex >= 0 ? rawRow[ordersIndex] : '') ?? '').trim() || null,
+          gg: String((riskTypeIndex >= 0 ? rawRow[riskTypeIndex] : '') ?? '').trim() || null,
+          veiculoRoterizado:
+            String((vehicleTypeIndex >= 0 ? rawRow[vehicleTypeIndex] : '') ?? '').trim() || null,
           requestedDriverId,
           botAvailable: requestedDriverId ? true : undefined,
           assignmentSource,

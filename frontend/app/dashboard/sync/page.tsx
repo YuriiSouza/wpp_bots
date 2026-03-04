@@ -128,7 +128,7 @@ export default function SyncPage() {
               <RefreshCw className="mr-2 h-4 w-4" /> {runningAction === "drivers" ? "Atualizando..." : "Atualizar Motoristas"}
             </Button>
             <Button onClick={() => handleRun("routes")} variant="outline" disabled={!!runningAction}>
-              <RefreshCw className="mr-2 h-4 w-4" /> {runningAction === "routes" ? "Atualizando..." : "Atualizar Rotas (Geral)"}
+              <RefreshCw className="mr-2 h-4 w-4" /> {runningAction === "routes" ? "Atualizando..." : "Atualizar Rotas (Historico ATs)"}
             </Button>
             <Button onClick={handleResetQueue} variant="outline" disabled={!!runningAction}>
               <RefreshCw className="mr-2 h-4 w-4" /> {runningAction === "queue" ? "Resetando..." : "Resetar Fila"}

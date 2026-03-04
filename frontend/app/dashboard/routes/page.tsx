@@ -46,7 +46,7 @@ import {
   markRouteNoShow,
   releaseRouteToBot as releaseRouteToBotRequest,
   releaseRoutesToBotByAt as releaseRoutesToBotByAtRequest,
-  syncRouteAssignmentsFromOverview,
+  runSync,
   unassignRoute,
 } from "@/lib/admin-api"
 import type { Driver, Route } from "@/lib/types"
@@ -203,7 +203,7 @@ export default function RoutesPage() {
 
     setIsRefreshing(true)
     try {
-      const syncResponse = await syncRouteAssignmentsFromOverview(selectedDate, selectedShift)
+      const syncResponse = await runSync("routes", selectedDate, selectedShift)
       if (!syncResponse.ok) {
         toast.error(syncResponse.message)
         return
@@ -216,7 +216,7 @@ export default function RoutesPage() {
         date: selectedDate,
         shift: selectedShift,
       })
-      toast.success("Atribuicoes das rotas atualizadas pela guia Visao Geral Atribuicoes.")
+      toast.success("Rotas atualizadas pela guia Historico ATs.")
     } catch {
       toast.error("Nao foi possivel sincronizar as rotas")
     } finally {

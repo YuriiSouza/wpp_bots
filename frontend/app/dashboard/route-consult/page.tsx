@@ -330,7 +330,7 @@ export default function RouteConsultPage() {
             ]
           : [],
       )
-      toast.success("Rotas sincronizadas com a planilha e consulta atualizada.")
+      toast.success("Rotas atualizadas pela guia Historico ATs e consulta atualizada.")
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar a consulta"))
     } finally {

@@ -4521,7 +4521,7 @@ export class AppService {
     return this.runAnalystSync(action, date, shift);
   }
 
-  async syncRouteAssignmentsFromOverview(
+  private async refreshRoutesFromHistory(
     date?: string,
     shift?: 'AM' | 'PM' | 'PM2',
   ): Promise<{ ok: boolean; message: string }> {
@@ -4539,17 +4539,17 @@ export class AppService {
         inferredWindow?.shift ||
         fallbackWindow.shift;
 
-      const summary = await this.sync.syncRouteAssignmentsFromOverview(selectedDate, selectedShift);
+      const summary = await this.sync.syncRoutesOnly(selectedDate, selectedShift);
       await this.invalidateRoutesCache();
 
       return {
         ok: true,
-        message: `Atribuicoes atualizadas pela Visão Geral para ${selectedDate} (${selectedShift}). Processadas: ${summary.processed}. Disponiveis: ${summary.routesAvailable}. Atribuidas: ${summary.routesAssigned}.`,
+        message: `Rotas atualizadas pelo Historico ATs para ${selectedDate} (${selectedShift}). Disponiveis: ${summary.routesAvailable}. Atribuidas: ${summary.routesAssigned}.`,
       };
     } catch (error) {
       return {
         ok: false,
-        message: `Erro ao sincronizar atribuicoes: ${(error as Error).message}`,
+        message: `Erro ao atualizar rotas: ${(error as Error).message}`,
       };
     }
   }
@@ -5587,21 +5587,7 @@ export class AppService {
       }
 
       if (action === 'routes') {
-        const inferredWindow = await this.sheets.getCurrentCalculationWindow();
-        const fallbackWindow = this.getCurrentRouteWindow();
-        const selectedDate =
-          String(date || '').trim() || inferredWindow?.date || fallbackWindow.date;
-        const selectedShift =
-          (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2' | '') ||
-          inferredWindow?.shift ||
-          fallbackWindow.shift;
-
-        const routes = await this.sync.syncRoutesOnly(selectedDate, selectedShift);
-        await this.invalidateRoutesCache();
-        return {
-          ok: true,
-          message: `Rotas atualizadas com sucesso para ${selectedDate} (${selectedShift}). Disponiveis: ${routes.routesAvailable}. Atribuidas: ${routes.routesAssigned}.`,
-        };
+        return this.refreshRoutesFromHistory(date, shift);
       }
 
       await this.sync.resetRedisStateManual();
@@ -5836,7 +5822,7 @@ export class AppService {
       <div class="label">Sincronizacao</div>
       <div class="actions">
         <button onclick="runSync('drivers')">Atualizar motoristas</button>
-        <button onclick="runSync('routes')">Atualizar rotas</button>
+        <button onclick="runSync('routes')">Atualizar rotas (Historico ATs)</button>
         <button onclick="runSync('all')">Resetar fila</button>
       </div>
       <div id="sync-status">Pronto.</div>

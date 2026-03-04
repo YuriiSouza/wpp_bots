@@ -684,14 +684,6 @@ export class SyncService implements OnModuleInit {
     return this.normalizeShift(raw);
   }
 
-  private resolveRouteShift(
-    atId: string,
-    calculationShiftByAt: Map<string, 'AM' | 'PM' | 'PM2'>,
-    selectedShift?: 'AM' | 'PM' | 'PM2',
-  ): 'AM' | 'PM' | 'PM2' | null {
-    return calculationShiftByAt.get(atId) || selectedShift || null;
-  }
-
   private buildPersistentRouteId(atId: string): string {
     return atId;
   }
@@ -700,10 +692,9 @@ export class SyncService implements OnModuleInit {
     selectedDate?: string,
     selectedShift?: 'AM' | 'PM' | 'PM2',
   ) {
-    const [historyRows, overviewRows, calculationRows] = await Promise.all([
-      this.sheets.getRows(`'Historico ATs'!A:AL`),
+    const [historyRows, overviewRows] = await Promise.all([
+      this.sheets.getRows(`'Historico ATs'!A:AN`),
       this.sheets.getAssignmentOverviewRows(),
-      this.sheets.getRows(`'Calculation Tasks'!K:AF`),
     ]);
 
     if (!historyRows.length) throw new Error('Planilha Historico ATs vazia');
@@ -743,31 +734,16 @@ export class SyncService implements OnModuleInit {
       });
     }
 
-    const calculationDateByAt = new Map<string, string>();
-    const calculationShiftByAt = new Map<string, 'AM' | 'PM' | 'PM2'>();
-    for (const row of calculationRows.slice(1)) {
-      const routeDate = this.normalizeRouteDate(row[0]);
-      const timeWindow = this.normalizeCalculationTaskShift(row[21] || row[1]);
-      const atId = String(row[17] ?? '').trim();
-      if (!atId) continue;
-      if (routeDate && !calculationDateByAt.has(atId)) {
-        calculationDateByAt.set(atId, routeDate);
-      }
-      if (timeWindow && !calculationShiftByAt.has(atId)) {
-        calculationShiftByAt.set(atId, timeWindow);
-      }
-    }
-
     for (let index = 1; index < historyRows.length; index += 1) {
       const rawRow = historyRows[index] ?? [];
       const atId = String(
         (taskIdIndex >= 0 ? rawRow[taskIdIndex] : rawRow[0]) ?? '',
       ).trim();
       if (!atId) continue;
-      const routeDate = calculationDateByAt.get(atId) || null;
+      const routeDate = this.normalizeRouteDate(rawRow[39]);
       if (selectedDate && routeDate !== selectedDate) continue;
-      const routeShift = this.resolveRouteShift(atId, calculationShiftByAt, selectedShift);
-      if (selectedShift && routeShift && routeShift !== selectedShift) continue;
+      const routeShift = this.normalizeCalculationTaskShift(rawRow[36]) || null;
+      if (selectedShift && routeShift !== selectedShift) continue;
       const routeId = this.buildPersistentRouteId(atId);
       const overviewRoute = overviewByAt.get(atId);
       const currentDriverId =

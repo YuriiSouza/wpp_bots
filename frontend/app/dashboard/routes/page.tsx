@@ -47,7 +47,6 @@ import {
   releaseRouteToBot as releaseRouteToBotRequest,
   releaseRoutesToBotByAt as releaseRoutesToBotByAtRequest,
   runSync,
-  unassignRoute,
 } from "@/lib/admin-api"
 import type { Driver, Route } from "@/lib/types"
 import { toast } from "sonner"
@@ -453,7 +452,7 @@ export default function RoutesPage() {
 
   const handleMakeAvailable = async (route: Route) => {
     try {
-      const response = await unassignRoute(route.id)
+      const response = await releaseRouteToBotRequest(route.id)
       if (!response.ok) {
         toast.error(response.message)
         return
@@ -470,6 +469,7 @@ export default function RoutesPage() {
                 driverName: null,
                 driverVehicleType: null,
                 assignedAt: null,
+                botAvailable: true,
               }
             : r
         )
@@ -484,6 +484,7 @@ export default function RoutesPage() {
               driverName: null,
               driverVehicleType: null,
               assignedAt: null,
+              botAvailable: true,
             }
           : prev
       )

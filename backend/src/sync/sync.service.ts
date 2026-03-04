@@ -664,11 +664,23 @@ export class SyncService implements OnModuleInit {
     const raw = String(value ?? '')
       .trim()
       .toUpperCase()
+      .replace(/[\u2012\u2013\u2014\u2015\u2212]/g, '-')
+      .replace(/\s*-\s*/g, ' - ')
       .replace(/\s+/g, ' ');
     if (!raw) return null;
     if (raw === '06:00 - 09:00') return 'AM';
     if (raw === 'PM1' || raw === 'PM') return 'PM';
     if (raw === 'PM2') return 'PM2';
+    const rangeMatch = raw.match(/^(\d{1,2}):(\d{2}) - (\d{1,2}):(\d{2})$/);
+    if (rangeMatch) {
+      const [, startHour, startMinute, endHour, endMinute] = rangeMatch;
+      const start = Number(startHour) * 60 + Number(startMinute);
+      const end = Number(endHour) * 60 + Number(endMinute);
+
+      if (end <= 10 * 60) return 'AM';
+      if (start >= 15 * 60 || end > 18 * 60) return 'PM2';
+      return 'PM';
+    }
     return this.normalizeShift(raw);
   }
 

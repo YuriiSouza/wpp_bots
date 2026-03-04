@@ -664,12 +664,8 @@ export class SyncService implements OnModuleInit {
     return this.getSheetRouteShift(headers, row) || selectedShift || null;
   }
 
-  private buildPersistentRouteId(
-    routeDate: string | null,
-    shift: string | null,
-    atId: string,
-  ): string {
-    return `${routeDate || 'sem-data'}:${shift || 'sem-turno'}:${atId}`;
+  private buildPersistentRouteId(atId: string): string {
+    return atId;
   }
 
   private async syncRoutesFromSheets(
@@ -694,7 +690,7 @@ export class SyncService implements OnModuleInit {
       const sheetShift = this.getSheetRouteShift(routeHeaders, rawRow);
       if (selectedShift && sheetShift && sheetShift !== selectedShift) continue;
       const routeShift = this.resolveRouteShift(routeHeaders, rawRow, selectedShift);
-      const routeId = this.buildPersistentRouteId(routeDate, routeShift, atId);
+      const routeId = this.buildPersistentRouteId(atId);
       const currentDriverId = this.normalizeSheetDriverId(rawRow[9]);
       const requestedDriverId = this.normalizeSheetDriverId(rawRow[17]);
       if (currentDriverId) driverIds.push(currentDriverId);
@@ -743,23 +739,30 @@ export class SyncService implements OnModuleInit {
     const routeIds = entries.map((entry) => entry.routeId);
     const existingRoutes = routeIds.length
       ? await prisma.route.findMany({
-          where: { id: { in: routeIds } },
-          select: { id: true },
+          where: {
+            OR: [{ id: { in: routeIds } }, { atId: { in: routeIds } }],
+          },
+          select: { id: true, atId: true },
         })
       : [];
-    const existingSet = new Set(existingRoutes.map((route: { id: string }) => route.id));
-    const toCreate = entries.filter((entry) => !existingSet.has(entry.routeId));
-    const toUpdate = entries.filter((entry) => existingSet.has(entry.routeId));
+    const existingByAtId = new Map(
+      existingRoutes.map((route: { id: string; atId: string | null }) => [
+        String(route.atId || route.id).trim(),
+        route.id,
+      ]),
+    );
+    const toCreate = entries.filter((entry) => !existingByAtId.has(entry.routeId));
+    const toUpdate = entries.filter((entry) => existingByAtId.has(entry.routeId));
 
     if (toCreate.length) {
       await prisma.route.createMany({
         data: toCreate.map((entry) => {
           const { botAvailable, ...payload } = entry.payload;
           return {
-          id: entry.routeId,
-          ...payload,
-          botAvailable: botAvailable ?? false,
-        };
+            id: entry.routeId,
+            ...payload,
+            botAvailable: botAvailable ?? false,
+          };
         }),
         skipDuplicates: true,
       });
@@ -769,8 +772,9 @@ export class SyncService implements OnModuleInit {
       await this.runInBatches(toUpdate, 25, (entry) => {
         const { botAvailable, ...payload } = entry.payload;
         return prisma.route.update({
-          where: { id: entry.routeId },
+          where: { id: existingByAtId.get(entry.routeId)! },
           data: {
+            id: entry.routeId,
             ...payload,
             ...(botAvailable !== undefined ? { botAvailable } : {}),
           },
@@ -1064,11 +1068,17 @@ export class SyncService implements OnModuleInit {
     if (!routeIds.length) return;
 
     const dbRoutes = await this.prisma.route.findMany({
-      where: { id: { in: routeIds } },
+      where: {
+        OR: [{ id: { in: routeIds } }, { atId: { in: routeIds } }],
+      },
       include: { driver: true },
     });
 
-    const routeMap = new Map(dbRoutes.map((route) => [route.id, route]));
+    const routeMap = new Map<string, (typeof dbRoutes)[number]>();
+    for (const route of dbRoutes) {
+      routeMap.set(route.id, route);
+      routeMap.set(String(route.atId || '').trim() || route.id, route);
+    }
 
     for (let i = 0; i < routes.length; i += 1) {
       const row = routes[i];

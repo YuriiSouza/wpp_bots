@@ -110,6 +110,7 @@ export class RouteService {
         ? {
             botAvailable: true,
             status: RouteStatus.DISPONIVEL,
+            requestedDriverId: null,
             requiredVehicleTypeNorm: 'MOTO',
             routeDate: currentWindow.date,
             shift: currentWindow.shift,
@@ -117,6 +118,7 @@ export class RouteService {
         : {
             botAvailable: true,
             status: RouteStatus.DISPONIVEL,
+            requestedDriverId: null,
             routeDate: currentWindow.date,
             shift: currentWindow.shift,
           };

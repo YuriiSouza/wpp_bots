@@ -69,6 +69,24 @@ export class SyncService implements OnModuleInit {
     private readonly redis: RedisService,
   ) {}
 
+  private memorySnapshot() {
+    const usage = process.memoryUsage();
+    const toMb = (value: number) => Math.round(value / 1024 / 1024);
+    return {
+      rssMb: toMb(usage.rss),
+      heapUsedMb: toMb(usage.heapUsed),
+      heapTotalMb: toMb(usage.heapTotal),
+    };
+  }
+
+  private logSync(message: string, meta?: Record<string, unknown>) {
+    if (!meta) {
+      this.logger.log(message);
+      return;
+    }
+    this.logger.log(`${message} ${JSON.stringify(meta)}`);
+  }
+
   onModuleInit() {
     setInterval(() => {
       void this.checkSchedule();
@@ -515,6 +533,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private async syncAssignmentOverviewFromSheets(): Promise<number> {
+    this.logSync('Sync overview: inicio');
     const overviewRows = await this.sheets.getRows(`'Visão Geral Atribuições'!A:Q`);
     if (!overviewRows.length) throw new Error('Planilha Visão Geral Atribuições vazia');
 
@@ -546,6 +565,13 @@ export class SyncService implements OnModuleInit {
 
     const toCreate = entries.filter((entry) => !existingSet.has(entry.rowNumber));
     const toUpdate = entries.filter((entry) => existingSet.has(entry.rowNumber));
+
+    this.logSync('Sync overview: linhas mapeadas', {
+      rows: entries.length,
+      create: toCreate.length,
+      update: toUpdate.length,
+      memory: this.memorySnapshot(),
+    });
 
     if (toCreate.length) {
       await this.prisma.assignmentOverview.createMany({
@@ -580,10 +606,17 @@ export class SyncService implements OnModuleInit {
       ),
     );
 
+    this.logSync('Sync overview: concluido', {
+      rows: entries.length,
+      driversCached: driverIds.size,
+      memory: this.memorySnapshot(),
+    });
+
     return entries.length;
   }
 
   private async syncDriversFromSheets() {
+    this.logSync('Sync motoristas: inicio');
     const driverRows = await this.sheets.getRows(`'Perfil de Motorista'!A:BF`);
     if (!driverRows.length) throw new Error('Planilha Perfil de Motorista vazia');
     const [driverHeaders, ...driverData] = driverRows;
@@ -614,6 +647,12 @@ export class SyncService implements OnModuleInit {
         },
       });
     }
+
+    this.logSync('Sync motoristas: concluido', {
+      rowsRead: driverRows.length - 1,
+      driversProcessed: driverCount,
+      memory: this.memorySnapshot(),
+    });
 
     return driverCount;
   }
@@ -692,6 +731,11 @@ export class SyncService implements OnModuleInit {
     selectedDate?: string,
     selectedShift?: 'AM' | 'PM' | 'PM2',
   ) {
+    this.logSync('Sync rotas: inicio', {
+      selectedDate: selectedDate || null,
+      selectedShift: selectedShift || null,
+      memory: this.memorySnapshot(),
+    });
     const [historyRows, overviewRows] = await Promise.all([
       this.sheets.getRows(`'Historico ATs'!A:AN`),
       this.sheets.getAssignmentOverviewRows(),
@@ -704,6 +748,16 @@ export class SyncService implements OnModuleInit {
     const prisma = this.prisma as any;
     const entries: Array<{ routeId: string; payload: RouteRecordInput }> = [];
     const driverIds: string[] = [];
+    let skippedMissingDate = 0;
+    let skippedMissingShift = 0;
+    let skippedByDateFilter = 0;
+    let skippedByShiftFilter = 0;
+
+    this.logSync('Sync rotas: planilhas carregadas', {
+      historyRows: Math.max(0, historyRows.length - 1),
+      overviewRows: Math.max(0, overviewRows.length - 1),
+      memory: this.memorySnapshot(),
+    });
 
     const taskIdIndex = this.getHeaderIndex(historyHeaders, ['Task ID']);
     const driverIdIndex = this.getHeaderIndex(historyHeaders, ['Driver ID']);
@@ -741,9 +795,23 @@ export class SyncService implements OnModuleInit {
       ).trim();
       if (!atId) continue;
       const routeDate = this.normalizeRouteDate(rawRow[39]);
-      if (selectedDate && routeDate !== selectedDate) continue;
+      if (!routeDate) {
+        skippedMissingDate += 1;
+        continue;
+      }
+      if (selectedDate && routeDate !== selectedDate) {
+        skippedByDateFilter += 1;
+        continue;
+      }
       const routeShift = this.normalizeCalculationTaskShift(rawRow[36]) || null;
-      if (selectedShift && routeShift !== selectedShift) continue;
+      if (!routeShift) {
+        skippedMissingShift += 1;
+        continue;
+      }
+      if (selectedShift && routeShift !== selectedShift) {
+        skippedByShiftFilter += 1;
+        continue;
+      }
       const routeId = this.buildPersistentRouteId(atId);
       const overviewRoute = overviewByAt.get(atId);
       const currentDriverId =
@@ -805,6 +873,16 @@ export class SyncService implements OnModuleInit {
       });
     }
 
+    this.logSync('Sync rotas: linhas processadas', {
+      entries: entries.length,
+      driversReferenced: driverIds.length,
+      skippedMissingDate,
+      skippedMissingShift,
+      skippedByDateFilter,
+      skippedByShiftFilter,
+      memory: this.memorySnapshot(),
+    });
+
     await this.ensureDriversExist(driverIds);
 
     const routeIds = entries.map((entry) => entry.routeId);
@@ -824,6 +902,13 @@ export class SyncService implements OnModuleInit {
     );
     const toCreate = entries.filter((entry) => !existingByAtId.has(entry.routeId));
     const toUpdate = entries.filter((entry) => existingByAtId.has(entry.routeId));
+
+    this.logSync('Sync rotas: reconciliacao banco', {
+      existingRoutes: existingRoutes.length,
+      create: toCreate.length,
+      update: toUpdate.length,
+      memory: this.memorySnapshot(),
+    });
 
     if (toCreate.length) {
       await prisma.route.createMany({
@@ -860,10 +945,18 @@ export class SyncService implements OnModuleInit {
       if (entry.payload.status === 'ATRIBUIDA') assignedCount += 1;
     }
 
+    this.logSync('Sync rotas: concluido', {
+      total: entries.length,
+      availableCount,
+      assignedCount,
+      memory: this.memorySnapshot(),
+    });
+
     return { availableCount, assignedCount };
   }
 
   async syncDriversScheduled(): Promise<number> {
+    this.logSync('Sync motoristas agendado: inicio');
     await this.lock();
     const log = await this.prisma.syncLog.create({
       data: { status: 'running', message: 'Sincronizacao de motoristas iniciada' },
@@ -881,8 +974,16 @@ export class SyncService implements OnModuleInit {
           message: 'Sincronizacao de motoristas concluida',
         },
       });
+      this.logSync('Sync motoristas agendado: sucesso', {
+        driversCount: driverCount,
+        memory: this.memorySnapshot(),
+      });
       return driverCount;
     } catch (error) {
+      this.logger.error(
+        `Sync motoristas agendado: falha ${(error as Error).message}`,
+        (error as Error).stack,
+      );
       await this.prisma.syncLog.update({
         where: { id: log.id },
         data: {
@@ -901,6 +1002,11 @@ export class SyncService implements OnModuleInit {
     selectedDate?: string,
     selectedShift?: 'AM' | 'PM' | 'PM2',
   ): Promise<SyncSummary> {
+    this.logSync('Sync completo: inicio', {
+      selectedDate: selectedDate || null,
+      selectedShift: selectedShift || null,
+      memory: this.memorySnapshot(),
+    });
     await this.lock();
     const log = await this.prisma.syncLog.create({
       data: { status: 'running', message: 'Sincronizacao iniciada' },
@@ -928,12 +1034,23 @@ export class SyncService implements OnModuleInit {
         },
       });
 
+      this.logSync('Sync completo: sucesso', {
+        drivers: driverCount,
+        routesAvailable: availableCount,
+        routesAssigned: assignedCount,
+        memory: this.memorySnapshot(),
+      });
+
       return {
         drivers: driverCount,
         routesAvailable: availableCount,
         routesAssigned: assignedCount,
       };
     } catch (error) {
+      this.logger.error(
+        `Sync completo: falha ${(error as Error).message}`,
+        (error as Error).stack,
+      );
       await this.prisma.syncLog.update({
         where: { id: log.id },
         data: {
@@ -952,6 +1069,11 @@ export class SyncService implements OnModuleInit {
     selectedDate?: string,
     selectedShift?: 'AM' | 'PM' | 'PM2',
   ): Promise<SyncRoutesSummary> {
+    this.logSync('Sync rotas manual: inicio', {
+      selectedDate: selectedDate || null,
+      selectedShift: selectedShift || null,
+      memory: this.memorySnapshot(),
+    });
     await this.lock();
     const log = await this.prisma.syncLog.create({
       data: { status: 'running', message: 'Sincronizacao de rotas iniciada' },
@@ -975,11 +1097,21 @@ export class SyncService implements OnModuleInit {
         },
       });
 
+      this.logSync('Sync rotas manual: sucesso', {
+        routesAvailable: availableCount,
+        routesAssigned: assignedCount,
+        memory: this.memorySnapshot(),
+      });
+
       return {
         routesAvailable: availableCount,
         routesAssigned: assignedCount,
       };
     } catch (error) {
+      this.logger.error(
+        `Sync rotas manual: falha ${(error as Error).message}`,
+        (error as Error).stack,
+      );
       await this.prisma.syncLog.update({
         where: { id: log.id },
         data: {

@@ -3404,6 +3404,8 @@ export class AppService {
         atId: true,
         status: true,
         botAvailable: true,
+        requestedDriverId: true,
+        driverId: true,
       },
     });
 
@@ -3411,20 +3413,23 @@ export class AppService {
       return { ok: false, message: 'Rota nao encontrada.' };
     }
 
-    if (route.status !== RouteStatus.DISPONIVEL) {
-      return { ok: false, message: 'Apenas rotas disponiveis podem ser liberadas no bot.' };
-    }
-
-    if (route.botAvailable) {
-      return { ok: true, message: 'Rota ja estava liberada no bot.' };
-    }
-
     await (this.prisma as any).route.update({
       where: { id: route.id },
       data: {
+        requestedDriverId: null,
+        assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
+        driverId: null,
+        driverName: null,
+        driverVehicleType: null,
+        driverAccuracy: null,
+        driverPlate: null,
+        assignedAt: null,
+        status: RouteStatus.DISPONIVEL,
         botAvailable: true,
       },
     });
+
+    await this.sheets.clearAssignmentRequest(route.id);
 
     await this.recordAudit({
       entityType: 'Route',
@@ -3432,7 +3437,12 @@ export class AppService {
       action: 'RELEASE_TO_BOT',
       userId: 'system',
       userName: 'System',
-      after: { botAvailable: true },
+      after: {
+        status: RouteStatus.DISPONIVEL,
+        botAvailable: true,
+        requestedDriverId: null,
+        driverId: null,
+      },
     });
 
     await Promise.all([
@@ -3464,18 +3474,40 @@ export class AppService {
         ? (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2')
         : undefined;
 
-    const result = await (this.prisma as any).route.updateMany({
+    const routesToRelease = await (this.prisma as any).route.findMany({
       where: {
         atId: { in: atIds },
-        status: RouteStatus.DISPONIVEL,
-        botAvailable: false,
         ...(selectedDate ? { routeDate: selectedDate } : {}),
         ...(selectedShift ? { shift: selectedShift } : {}),
       },
-      data: {
-        botAvailable: true,
-      },
+      select: { id: true },
     });
+
+    const routeIds = routesToRelease.map((route: { id: string }) => route.id);
+
+    const result = routeIds.length
+      ? await (this.prisma as any).route.updateMany({
+          where: {
+            id: { in: routeIds },
+          },
+          data: {
+            requestedDriverId: null,
+            assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
+            driverId: null,
+            driverName: null,
+            driverVehicleType: null,
+            driverAccuracy: null,
+            driverPlate: null,
+            assignedAt: null,
+            status: RouteStatus.DISPONIVEL,
+            botAvailable: true,
+          },
+        })
+      : { count: 0 };
+
+    if (routeIds.length) {
+      await Promise.all(routeIds.map((routeId: string) => this.sheets.clearAssignmentRequest(routeId)));
+    }
 
     await this.recordAudit({
       entityType: 'Route',
@@ -3488,6 +3520,7 @@ export class AppService {
         date: selectedDate || null,
         shift: selectedShift || null,
         releasedCount: result.count,
+        status: RouteStatus.DISPONIVEL,
       },
     });
 
@@ -3504,7 +3537,7 @@ export class AppService {
       message:
         result.count > 0
           ? `${result.count} rota(s) liberada(s) no bot.`
-          : 'Nenhuma rota disponivel correspondente foi encontrada para liberar.',
+          : 'Nenhuma rota correspondente foi encontrada para liberar.',
     };
   }
 

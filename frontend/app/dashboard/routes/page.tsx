@@ -6,6 +6,7 @@ import {
   Download,
   UserPlus,
   RefreshCw,
+  ChevronDown,
 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { getCurrentRouteWindow } from "@/lib/route-window"
@@ -30,6 +31,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -52,16 +61,52 @@ import type { Driver, Route } from "@/lib/types"
 import { toast } from "sonner"
 
 const ROUTES_FILTERS_STORAGE_KEY = "routes-page-filters"
+type RouteStatusFilter = Route["status"] | "SOLICITADA"
+
+function normalizeStoredFilter(value: unknown) {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      )
+    )
+  }
+
+  const single = String(value || "").trim()
+  if (!single || single === "all") return []
+  return [single]
+}
+
+function toggleFilterValue<T extends string>(current: T[], value: T) {
+  return current.includes(value) ? current.filter((item) => item !== value) : [...current, value]
+}
+
+function buildFilterLabel(label: string, selected: string[]) {
+  if (!selected.length) return label
+  if (selected.length === 1) return selected[0]
+  return `${label} (${selected.length})`
+}
+
+function normalizeVehicleType(value?: string | null) {
+  const raw = String(value || "").trim().toLowerCase()
+  if (!raw) return null
+  if (raw.includes("moto")) return "MOTO"
+  if (raw.includes("fiorino")) return "FIORINO"
+  if (raw.includes("passeio")) return "PASSEIO"
+  return raw.toUpperCase()
+}
 
 function getInitialRouteFilters(today: string) {
   if (typeof window === "undefined") {
     return {
       search: "",
       dayFilter: today,
-      shiftFilter: "all",
-      statusFilter: "all",
-      cityFilter: "all",
-      vehicleFilter: "all",
+      shiftFilter: [] as string[],
+      statusFilter: [] as RouteStatusFilter[],
+      cityFilter: [] as string[],
+      vehicleFilter: [] as string[],
     }
   }
 
@@ -71,38 +116,38 @@ function getInitialRouteFilters(today: string) {
       return {
         search: "",
         dayFilter: today,
-        shiftFilter: "all",
-        statusFilter: "all",
-        cityFilter: "all",
-        vehicleFilter: "all",
+        shiftFilter: [] as string[],
+        statusFilter: [] as RouteStatusFilter[],
+        cityFilter: [] as string[],
+        vehicleFilter: [] as string[],
       }
     }
 
     const parsed = JSON.parse(raw) as Partial<{
       search: string
       dayFilter: string
-      shiftFilter: string
-      statusFilter: string
-      cityFilter: string
-      vehicleFilter: string
+      shiftFilter: string | string[]
+      statusFilter: string | string[]
+      cityFilter: string | string[]
+      vehicleFilter: string | string[]
     }>
 
     return {
       search: parsed.search || "",
       dayFilter: parsed.dayFilter || today,
-      shiftFilter: parsed.shiftFilter || "all",
-      statusFilter: parsed.statusFilter || "all",
-      cityFilter: parsed.cityFilter || "all",
-      vehicleFilter: parsed.vehicleFilter || "all",
+      shiftFilter: normalizeStoredFilter(parsed.shiftFilter),
+      statusFilter: normalizeStoredFilter(parsed.statusFilter) as RouteStatusFilter[],
+      cityFilter: normalizeStoredFilter(parsed.cityFilter),
+      vehicleFilter: normalizeStoredFilter(parsed.vehicleFilter),
     }
   } catch {
     return {
       search: "",
       dayFilter: today,
-      shiftFilter: "all",
-      statusFilter: "all",
-      cityFilter: "all",
-      vehicleFilter: "all",
+      shiftFilter: [] as string[],
+      statusFilter: [] as RouteStatusFilter[],
+      cityFilter: [] as string[],
+      vehicleFilter: [] as string[],
     }
   }
 }
@@ -112,10 +157,10 @@ export default function RoutesPage() {
   const initialFilters = getInitialRouteFilters(today)
   const [search, setSearch] = useState(initialFilters.search)
   const [dayFilter, setDayFilter] = useState(initialFilters.dayFilter)
-  const [shiftFilter, setShiftFilter] = useState(initialFilters.shiftFilter)
-  const [statusFilter, setStatusFilter] = useState(initialFilters.statusFilter)
-  const [cityFilter, setCityFilter] = useState(initialFilters.cityFilter)
-  const [vehicleFilter, setVehicleFilter] = useState(initialFilters.vehicleFilter)
+  const [shiftFilter, setShiftFilter] = useState<string[]>(initialFilters.shiftFilter)
+  const [statusFilter, setStatusFilter] = useState<RouteStatusFilter[]>(initialFilters.statusFilter)
+  const [cityFilter, setCityFilter] = useState<string[]>(initialFilters.cityFilter)
+  const [vehicleFilter, setVehicleFilter] = useState<string[]>(initialFilters.vehicleFilter)
   const [routes, setRoutes] = useState<Route[]>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
   const [selectedRoute, setSelectedRoute] = useState<Route | null>(null)
@@ -150,7 +195,9 @@ export default function RoutesPage() {
       const [routeData, driverData] = await Promise.all([
         fetchRoutes({
           date: (filters?.date ?? dayFilter) || undefined,
-          shift: filters?.shift ?? (shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined),
+          shift:
+            filters?.shift ??
+            (shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined),
         }),
         fetchDrivers(),
       ])
@@ -198,7 +245,7 @@ export default function RoutesPage() {
   const handleRefresh = async () => {
     const currentWindow = getCurrentRouteWindow()
     const selectedDate = dayFilter || currentWindow.date
-    const selectedShift = shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined
+    const selectedShift = shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined
 
     setIsRefreshing(true)
     try {
@@ -241,16 +288,18 @@ export default function RoutesPage() {
       )
     }
     if (dayFilter) result = result.filter((r) => (r.routeDate || "") === dayFilter)
-    if (shiftFilter !== "all") result = result.filter((r) => (r.shift || "") === shiftFilter)
-    if (statusFilter === "SOLICITADA") {
-      result = result.filter((r) => isTelegramRequested(r))
-    } else if (statusFilter === "DISPONIVEL") {
-      result = result.filter((r) => r.status === "DISPONIVEL" && !isTelegramRequested(r))
-    } else if (statusFilter !== "all") {
-      result = result.filter((r) => r.status === statusFilter)
+    if (shiftFilter.length) result = result.filter((r) => shiftFilter.includes(r.shift || ""))
+    if (statusFilter.length) {
+      result = result.filter((r) =>
+        statusFilter.some((status) => {
+          if (status === "SOLICITADA") return isTelegramRequested(r)
+          if (status === "DISPONIVEL") return r.status === "DISPONIVEL" && !isTelegramRequested(r)
+          return r.status === status
+        })
+      )
     }
-    if (cityFilter !== "all") result = result.filter((r) => r.cidade === cityFilter)
-    if (vehicleFilter !== "all") result = result.filter((r) => r.requiredVehicleType === vehicleFilter)
+    if (cityFilter.length) result = result.filter((r) => cityFilter.includes(r.cidade || ""))
+    if (vehicleFilter.length) result = result.filter((r) => vehicleFilter.includes(r.requiredVehicleType || ""))
     return result.sort((a, b) => {
       const aPriority = a.noShow && a.status === "DISPONIVEL" ? 0 : a.noShow ? 1 : 2
       const bPriority = b.noShow && b.status === "DISPONIVEL" ? 0 : b.noShow ? 1 : 2
@@ -285,10 +334,16 @@ export default function RoutesPage() {
           r.id === assignRoute.id
             ? {
                 ...r,
+                requestedDriverId: null,
+                requestedDriverName: null,
+                assignmentSource: assignRoute.requestedDriverId ? "TELEGRAM_BOT" as const : "MANUAL" as const,
+                botAvailable: false,
                 status: "ATRIBUIDA" as const,
                 driverId: driver.id,
                 driverName: driver.name,
                 driverVehicleType: driver.vehicleType,
+                driverAccuracy: null,
+                driverPlate: null,
                 assignedAt: new Date().toISOString(),
               }
             : r
@@ -298,10 +353,16 @@ export default function RoutesPage() {
         prev?.id === assignRoute.id
           ? {
               ...prev,
+              requestedDriverId: null,
+              requestedDriverName: null,
+              assignmentSource: assignRoute.requestedDriverId ? "TELEGRAM_BOT" : "MANUAL",
+              botAvailable: false,
               status: "ATRIBUIDA",
               driverId: driver.id,
               driverName: driver.name,
               driverVehicleType: driver.vehicleType,
+              driverAccuracy: null,
+              driverPlate: null,
               assignedAt: new Date().toISOString(),
             }
           : prev
@@ -363,7 +424,7 @@ export default function RoutesPage() {
   }
 
   const handleReleaseToBot = async (route: Route) => {
-    if (route.status !== "DISPONIVEL" || isReleasedToBot(route)) {
+    if (route.status !== "DISPONIVEL" || (isReleasedToBot(route) && !isTelegramRequested(route))) {
       return
     }
 
@@ -380,6 +441,16 @@ export default function RoutesPage() {
           item.id === route.id
             ? {
                 ...item,
+                requestedDriverId: null,
+                requestedDriverName: null,
+                assignmentSource: "SYNC" as const,
+                driverId: null,
+                driverName: null,
+                driverVehicleType: null,
+                driverAccuracy: null,
+                driverPlate: null,
+                assignedAt: null,
+                status: "DISPONIVEL" as const,
                 botAvailable: true,
               }
             : item
@@ -389,6 +460,16 @@ export default function RoutesPage() {
         prev?.id === route.id
           ? {
               ...prev,
+              requestedDriverId: null,
+              requestedDriverName: null,
+              assignmentSource: "SYNC",
+              driverId: null,
+              driverName: null,
+              driverVehicleType: null,
+              driverAccuracy: null,
+              driverPlate: null,
+              assignedAt: null,
+              status: "DISPONIVEL",
               botAvailable: true,
             }
           : prev
@@ -420,7 +501,7 @@ export default function RoutesPage() {
     try {
       const response = await releaseRoutesToBotByAtRequest(atIds, {
         date: dayFilter || undefined,
-        shift: shiftFilter !== "all" ? (shiftFilter as "AM" | "PM" | "PM2") : undefined,
+        shift: shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined,
       })
       if (!response.ok) {
         toast.error(response.message)
@@ -442,7 +523,11 @@ export default function RoutesPage() {
     const q = assignDriverSearch.trim().toLowerCase()
 
     return drivers
-      .filter((d) => !assignRoute?.requiredVehicleType || d.vehicleType === assignRoute.requiredVehicleType)
+      .filter((d) => {
+        const required = normalizeVehicleType(assignRoute?.requiredVehicleType)
+        if (required !== "MOTO") return true
+        return normalizeVehicleType(d.vehicleType) === "MOTO"
+      })
       .filter((d) => {
         if (!q) return true
         return d.id.toLowerCase().includes(q) || (d.name || "").toLowerCase().includes(q)
@@ -451,6 +536,8 @@ export default function RoutesPage() {
   }, [assignDriverSearch, assignRoute, drivers])
 
   const handleMakeAvailable = async (route: Route) => {
+    const wasRequested = isTelegramRequested(route)
+
     try {
       const response = await releaseRouteToBotRequest(route.id)
       if (!response.ok) {
@@ -465,9 +552,13 @@ export default function RoutesPage() {
                 ...r,
                 status: "DISPONIVEL" as const,
                 requestedDriverId: null,
+                requestedDriverName: null,
+                assignmentSource: "SYNC" as const,
                 driverId: null,
                 driverName: null,
                 driverVehicleType: null,
+                driverAccuracy: null,
+                driverPlate: null,
                 assignedAt: null,
                 botAvailable: true,
               }
@@ -480,15 +571,23 @@ export default function RoutesPage() {
               ...prev,
               status: "DISPONIVEL",
               requestedDriverId: null,
+              requestedDriverName: null,
+              assignmentSource: "SYNC",
               driverId: null,
               driverName: null,
               driverVehicleType: null,
+              driverAccuracy: null,
+              driverPlate: null,
               assignedAt: null,
               botAvailable: true,
             }
           : prev
       )
-      toast.success(`Rota ${route.atId || route.id} liberada para o bot`)
+      toast.success(
+        wasRequested
+          ? `Solicitacao da rota ${route.atId || route.id} removida`
+          : `Rota ${route.atId || route.id} liberada para o bot`
+      )
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel liberar a rota para o bot"))
     }
@@ -576,51 +675,90 @@ export default function RoutesPage() {
               <Button variant="outline" onClick={() => setDayFilter(today)} className="w-full sm:w-auto">
                 Hoje
               </Button>
-              <Select value={shiftFilter} onValueChange={setShiftFilter}>
-                <SelectTrigger className="w-full sm:w-[140px]">
-                  <SelectValue placeholder="Turno" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos Turnos</SelectItem>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full justify-between sm:w-[140px]">
+                    {buildFilterLabel("Turnos", shiftFilter)}
+                    <ChevronDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Turnos</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
                   {shifts.map((shift) => (
-                    <SelectItem key={shift} value={shift!}>{shift}</SelectItem>
+                    <DropdownMenuCheckboxItem
+                      key={shift}
+                      checked={shiftFilter.includes(shift || "")}
+                      onCheckedChange={() => setShiftFilter((current) => toggleFilterValue(current, shift || ""))}
+                    >
+                      {shift}
+                    </DropdownMenuCheckboxItem>
                   ))}
-                </SelectContent>
-              </Select>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-full sm:w-[150px]">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos Status</SelectItem>
-                  <SelectItem value="SOLICITADA">Solicitada</SelectItem>
-                  <SelectItem value="DISPONIVEL">Disponivel</SelectItem>
-                  <SelectItem value="ATRIBUIDA">Atribuida</SelectItem>
-                  <SelectItem value="BLOQUEADA">Bloqueada</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={cityFilter} onValueChange={setCityFilter}>
-                <SelectTrigger className="w-full sm:w-[150px]">
-                  <SelectValue placeholder="Cidade" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas Cidades</SelectItem>
-                  {cities.map((c) => (
-                    <SelectItem key={c} value={c!}>{c}</SelectItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full justify-between sm:w-[150px]">
+                    {buildFilterLabel("Status", statusFilter)}
+                    <ChevronDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Status</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {(["SOLICITADA", "DISPONIVEL", "ATRIBUIDA", "BLOQUEADA"] as RouteStatusFilter[]).map((status) => (
+                    <DropdownMenuCheckboxItem
+                      key={status}
+                      checked={statusFilter.includes(status)}
+                      onCheckedChange={() => setStatusFilter((current) => toggleFilterValue(current, status))}
+                    >
+                      {status}
+                    </DropdownMenuCheckboxItem>
                   ))}
-                </SelectContent>
-              </Select>
-              <Select value={vehicleFilter} onValueChange={setVehicleFilter}>
-                <SelectTrigger className="w-full sm:w-[140px]">
-                  <SelectValue placeholder="Veiculo" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos Veiculos</SelectItem>
-                  {vehicles.map((v) => (
-                    <SelectItem key={v} value={v!}>{v}</SelectItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full justify-between sm:w-[150px]">
+                    {buildFilterLabel("Cidades", cityFilter)}
+                    <ChevronDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Cidades</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {cities.map((city) => (
+                    <DropdownMenuCheckboxItem
+                      key={city}
+                      checked={cityFilter.includes(city || "")}
+                      onCheckedChange={() => setCityFilter((current) => toggleFilterValue(current, city || ""))}
+                    >
+                      {city}
+                    </DropdownMenuCheckboxItem>
                   ))}
-                </SelectContent>
-              </Select>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="w-full justify-between sm:w-[140px]">
+                    {buildFilterLabel("Veiculos", vehicleFilter)}
+                    <ChevronDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Veiculos</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {vehicles.map((vehicle) => (
+                    <DropdownMenuCheckboxItem
+                      key={vehicle}
+                      checked={vehicleFilter.includes(vehicle || "")}
+                      onCheckedChange={() => setVehicleFilter((current) => toggleFilterValue(current, vehicle || ""))}
+                    >
+                      {vehicle}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </CardContent>
         </Card>
@@ -725,10 +863,20 @@ export default function RoutesPage() {
                                 event.stopPropagation()
                                 void handleReleaseToBot(route)
                               }}
-                              disabled={route.status !== "DISPONIVEL" || isReleasedToBot(route) || releasingRouteId === route.id}
+                              disabled={
+                                route.status !== "DISPONIVEL" ||
+                                (isReleasedToBot(route) && !isTelegramRequested(route)) ||
+                                releasingRouteId === route.id
+                              }
                               className="h-8 px-2 text-xs"
                             >
-                              {isReleasedToBot(route) ? "No Bot" : releasingRouteId === route.id ? "Liberando..." : "Liberar Bot"}
+                              {releasingRouteId === route.id
+                                ? "Liberando..."
+                                : isTelegramRequested(route)
+                                  ? "Limpar Solicit."
+                                  : isReleasedToBot(route)
+                                    ? "No Bot"
+                                    : "Liberar Bot"}
                             </Button>
                             <Button
                               variant="outline"
@@ -737,7 +885,7 @@ export default function RoutesPage() {
                                 event.stopPropagation()
                                 void handleMakeAvailable(route)
                               }}
-                              disabled={route.status === "DISPONIVEL"}
+                              disabled={route.status === "DISPONIVEL" && !isTelegramRequested(route)}
                               className="h-8 px-2 text-xs"
                             >
                               Liberar

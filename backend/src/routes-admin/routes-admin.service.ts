@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { RouteStatus } from '@prisma/client';
+import { RouteAssignmentSource, RouteStatus } from '@prisma/client';
 import { normalizeVehicleType } from '../utils/normalize-vehicle';
 import { AdminCommonService } from '../admin-common/admin-common.service';
 
@@ -45,12 +45,21 @@ export class RoutesAdminService {
       return { ok: false, message: 'O motorista nao atende o veiculo requerido para a rota.' };
     }
 
-    await this.common.prisma.route.update({
+    const assignmentSource = route.requestedDriverId
+      ? RouteAssignmentSource.TELEGRAM_BOT
+      : RouteAssignmentSource.MANUAL;
+
+    await (this.common.prisma as any).route.update({
       where: { id: routeId },
       data: {
+        requestedDriverId: null,
+        botAvailable: false,
+        assignmentSource,
         driverId: driver.id,
         driverName: driver.name,
         driverVehicleType: driver.vehicleType,
+        driverAccuracy: null,
+        driverPlate: null,
         status: RouteStatus.ATRIBUIDA,
         assignedAt: new Date(),
       },
@@ -61,7 +70,13 @@ export class RoutesAdminService {
       action: 'MANUAL_ASSIGN',
       userId: 'system',
       userName: 'System',
-      after: { driverId: driver.id, status: RouteStatus.ATRIBUIDA },
+      after: {
+        driverId: driver.id,
+        status: RouteStatus.ATRIBUIDA,
+        requestedDriverId: null,
+        botAvailable: false,
+        assignmentSource,
+      },
     });
 
     return { ok: true, message: 'Rota atribuida com sucesso.' };

@@ -53,7 +53,7 @@ import { getCurrentRouteWindow } from "@/lib/route-window"
 import { toast } from "sonner"
 
 type ShiftFilter = "all" | "AM" | "PM" | "PM2"
-type PlanningFocus = "DS" | "VOLUME" | "PM"
+type PlanningFocus = "DS" | "VOLUME" | "PM" | "SUBSTITUIR"
 
 const ANALYTICS_COLORS = [
   "var(--color-chart-1)",
@@ -1125,6 +1125,7 @@ export default function RoutePlanningPage() {
                   <SelectContent>
                     <SelectItem value="DS">DS</SelectItem>
                     <SelectItem value="VOLUME">Volume</SelectItem>
+                    <SelectItem value="SUBSTITUIR">Substituir</SelectItem>
                     <SelectItem value="PM">PM</SelectItem>
                   </SelectContent>
                 </Select>

@@ -226,7 +226,7 @@ export interface RoutePlanningAvailableDriver {
 export interface RoutePlanningPayload {
   date: string
   shift: string | null
-  focus: "DS" | "VOLUME" | "PM"
+  focus: "DS" | "VOLUME" | "PM" | "SUBSTITUIR"
   driverWindow: {
     date: string
     shift: "AM" | "PM" | "PM2"
@@ -250,7 +250,7 @@ export interface RoutePlanningPayload {
 export interface RoutePlanningRunResult {
   ok: boolean
   message: string
-  focus: "DS" | "VOLUME" | "PM"
+  focus: "DS" | "VOLUME" | "PM" | "SUBSTITUIR"
   totalAssignments: number
   totalDriversUsed: number
   assignments: Array<{

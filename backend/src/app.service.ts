@@ -68,7 +68,7 @@ interface RoutePlanningPreferenceEntry {
   driverId: string;
 }
 
-type RoutePlanningFocus = 'DS' | 'VOLUME' | 'PM';
+type RoutePlanningFocus = 'DS' | 'VOLUME' | 'PM' | 'SUBSTITUIR';
 
 type RoutePlanningShift = 'AM' | 'PM' | 'PM2';
 type RoutePlanningAvailabilitySlot = 'AM' | 'PM';
@@ -1788,7 +1788,8 @@ export class AppService {
     const selectedDate = String(date || '').trim() || new Date().toISOString().slice(0, 10);
     const requestedShift = String(shift || '').trim() || undefined;
     const selectedAtId = String(atId || '').trim() || undefined;
-    const selectedFocus: RoutePlanningFocus = focus === 'VOLUME' ? 'VOLUME' : focus === 'PM' ? 'PM' : 'DS';
+    const selectedFocus: RoutePlanningFocus =
+      focus === 'VOLUME' || focus === 'PM' || focus === 'SUBSTITUIR' ? focus : 'DS';
     const selectedShift = selectedFocus === 'PM' ? 'PM' : requestedShift;
     const driverWindow = await this.resolveRoutePlanningWindow(selectedDate, selectedShift as 'AM' | 'PM' | 'PM2' | undefined);
 
@@ -1976,7 +1977,8 @@ export class AppService {
   ) {
     const selectedDate = String(date || '').trim() || new Date().toISOString().slice(0, 10);
     const requestedShift = String(shift || '').trim() || null;
-    const selectedFocus: RoutePlanningFocus = focus === 'VOLUME' ? 'VOLUME' : focus === 'PM' ? 'PM' : 'DS';
+    const selectedFocus: RoutePlanningFocus =
+      focus === 'VOLUME' || focus === 'PM' || focus === 'SUBSTITUIR' ? focus : 'DS';
     const selectedShift = selectedFocus === 'PM' ? 'PM' : requestedShift;
     const driverWindow = await this.resolveRoutePlanningWindow(selectedDate, selectedShift as 'AM' | 'PM' | 'PM2' | undefined);
     const planning = await this.computeRoutePlanningAssignments(selectedFocus, driverWindow);
@@ -2417,6 +2419,7 @@ export class AppService {
       .map((row) => ({
         atId: String(row[0] || '').trim(),
         tipoProgRaw: String(row[8] || '').toUpperCase().trim(),
+        currentDriverId: String(row[9] || '').trim(),
         volume: this.parsePlanningNumber(row[6]),
       }))
       .filter((row) => row.atId && mapaATClusters.has(row.atId))
@@ -2425,6 +2428,38 @@ export class AppService {
     if (focus === 'PM') {
       await this.computePmPlanningAssignments({
         window: effectiveWindow,
+        routes: rotasOrdenadasBase,
+        routeClusters: mapaATClusters,
+        drivers: Array.from(mapaDrivers.values()),
+        usedRouteIds: atsUsadas,
+        usedDriverIds: motoristasUsados,
+        rowById,
+        outputK,
+        assignments,
+        logRows,
+      });
+
+      return {
+        assignments,
+        drivers: Array.from(mapaDrivers.values()),
+        preferredAssignments: savedPreferences.map((entry) => {
+          const driver = mapaDrivers.get(entry.driverId);
+          return {
+            cluster: entry.cluster,
+            clusterName: clusterLabelByCode.get(entry.cluster) || null,
+            driverId: entry.driverId,
+            driverName: driver?.name || null,
+            vehicleType: driver?.veiculo || null,
+            available: !!driver?.disponivel,
+          };
+        }),
+        outputK,
+        logRows,
+      };
+    }
+
+    if (focus === 'SUBSTITUIR') {
+      this.computeSubstituirPlanningAssignments({
         routes: rotasOrdenadasBase,
         routeClusters: mapaATClusters,
         drivers: Array.from(mapaDrivers.values()),
@@ -2613,6 +2648,177 @@ export class AppService {
       outputK,
       logRows,
     };
+  }
+
+  private computeSubstituirPlanningAssignments(params: {
+    routes: Array<{ atId: string; tipoProgRaw: string; currentDriverId: string; volume: number }>;
+    routeClusters: Map<string, string[]>;
+    drivers: PlanningDriver[];
+    usedRouteIds: Set<string>;
+    usedDriverIds: Set<string>;
+    rowById: Map<string, number>;
+    outputK: string[][];
+    assignments: PlanningAssignment[];
+    logRows: string[][];
+  }) {
+    const driversById = new Map(params.drivers.map((driver) => [driver.id, driver]));
+    const nonMotoRoutes = params.routes.filter((route) => !route.tipoProgRaw.includes('MOTO'));
+    const motoRoutes = params.routes.filter((route) => route.tipoProgRaw.includes('MOTO'));
+    const lowDsThreshold = 0.95;
+
+    const routeStateByAtId = new Map(
+      params.routes.map((route) => {
+        const currentDriver = route.currentDriverId ? driversById.get(route.currentDriverId) || null : null;
+        const currentVehicle = currentDriver?.veiculo || this.getPlanningVehicleFromRouteType(route.tipoProgRaw);
+        return [
+          route.atId,
+          {
+            ...route,
+            currentDriver,
+            currentVehicle,
+            clusterRoute: (params.routeClusters.get(route.atId) || [])[0] || '',
+          },
+        ];
+      }),
+    );
+
+    const applyAssignment = (atId: string, suggestedDriver: PlanningDriver, phase: PlanningPhase, obs: string) => {
+      const route = routeStateByAtId.get(atId);
+      if (!route) return;
+      if (params.usedRouteIds.has(atId)) return;
+      if (params.usedDriverIds.has(suggestedDriver.id)) return;
+
+      params.usedRouteIds.add(atId);
+      params.usedDriverIds.add(suggestedDriver.id);
+
+      const rowIndex = params.rowById.get(suggestedDriver.id);
+      if (typeof rowIndex === 'number' && params.outputK[rowIndex - 1]) {
+        params.outputK[rowIndex - 1][0] = atId;
+      }
+
+      const assignment = this.buildPlanningAssignment({
+        atId,
+        tipoProgRaw: route.tipoProgRaw,
+        currentDriverId: route.currentDriverId || '',
+        currentDriver: route.currentDriver,
+        suggestedDriver,
+        clusterRoute: route.clusterRoute,
+        phase,
+        obs,
+      });
+
+      params.assignments.push(assignment);
+      params.logRows.push(this.planningAssignmentToLogRow(assignment));
+
+      route.currentDriverId = suggestedDriver.id;
+      route.currentDriver = suggestedDriver;
+      route.currentVehicle = suggestedDriver.veiculo;
+    };
+
+    const pickBestAvailableDriver = (options: {
+      vehicle: string;
+      minDs: number;
+      routeClusters: string[];
+      excludeDriverId?: string;
+    }) => {
+      const baseCandidates = params.drivers
+        .filter((driver) => driver.disponivel)
+        .filter((driver) => !params.usedDriverIds.has(driver.id))
+        .filter((driver) => driver.veiculo === options.vehicle)
+        .filter((driver) => driver.ds > options.minDs)
+        .filter((driver) => (options.excludeDriverId ? driver.id !== options.excludeDriverId : true));
+
+      const byDsDesc = (left: PlanningDriver, right: PlanningDriver) => right.ds - left.ds;
+      const withCluster = baseCandidates
+        .filter((driver) => this.hasPlanningClusterIntersection(driver.clusters, options.routeClusters))
+        .sort(byDsDesc);
+      if (withCluster.length) return withCluster[0];
+
+      return baseCandidates.sort(byDsDesc)[0] || null;
+    };
+
+    // Etapa 1 e 2: alocar Fiorino disponivel nas rotas nao moto por prioridade de volume.
+    for (const route of nonMotoRoutes) {
+      const state = routeStateByAtId.get(route.atId);
+      if (!state) continue;
+      if (state.currentVehicle === 'FIORINO') continue;
+
+      const routeClusters = params.routeClusters.get(route.atId) || [];
+      const fiorino = pickBestAvailableDriver({
+        vehicle: 'FIORINO',
+        minDs: -1,
+        routeClusters,
+        excludeDriverId: state.currentDriverId || undefined,
+      });
+      if (!fiorino) continue;
+
+      applyAssignment(
+        route.atId,
+        fiorino,
+        'FASE A',
+        `SUBSTITUIR | Fiorino prioritaria | Volume: ${route.volume}`,
+      );
+    }
+
+    // Etapa 3: substituicao por desempenho em rotas nao moto (mesmo tipo de veiculo).
+    for (const route of nonMotoRoutes) {
+      if (params.usedRouteIds.has(route.atId)) continue;
+      const state = routeStateByAtId.get(route.atId);
+      if (!state || !state.currentDriver) continue;
+
+      const routeVehicle = state.currentVehicle;
+      if (!['FIORINO', 'PASSEIO', 'VAN'].includes(routeVehicle)) continue;
+      if (state.currentDriver.ds >= lowDsThreshold) continue;
+
+      const routeClusters = params.routeClusters.get(route.atId) || [];
+      const replacement = pickBestAvailableDriver({
+        vehicle: routeVehicle,
+        minDs: state.currentDriver.ds,
+        routeClusters,
+        excludeDriverId: state.currentDriverId || undefined,
+      });
+      if (!replacement) continue;
+
+      applyAssignment(
+        route.atId,
+        replacement,
+        'FASE B',
+        `SUBSTITUIR | Upgrade DS ${state.currentDriver.ds.toFixed(2)} -> ${replacement.ds.toFixed(2)} | Volume: ${route.volume}`,
+      );
+    }
+
+    // Etapa 4: substituicao por desempenho nas rotas de moto.
+    for (const route of motoRoutes) {
+      if (params.usedRouteIds.has(route.atId)) continue;
+      const state = routeStateByAtId.get(route.atId);
+      if (!state || !state.currentDriver) continue;
+      if (state.currentDriver.veiculo !== 'MOTO') continue;
+      if (state.currentDriver.ds >= lowDsThreshold) continue;
+
+      const routeClusters = params.routeClusters.get(route.atId) || [];
+      const replacement = pickBestAvailableDriver({
+        vehicle: 'MOTO',
+        minDs: state.currentDriver.ds,
+        routeClusters,
+        excludeDriverId: state.currentDriverId || undefined,
+      });
+      if (!replacement) continue;
+
+      applyAssignment(
+        route.atId,
+        replacement,
+        'FASE B',
+        `SUBSTITUIR | Moto DS ${state.currentDriver.ds.toFixed(2)} -> ${replacement.ds.toFixed(2)} | Volume: ${route.volume}`,
+      );
+    }
+  }
+
+  private getPlanningVehicleFromRouteType(tipoProgRaw: string) {
+    if (tipoProgRaw.includes('FIORINO')) return 'FIORINO';
+    if (tipoProgRaw.includes('VAN')) return 'VAN';
+    if (tipoProgRaw.includes('MOTO')) return 'MOTO';
+    if (tipoProgRaw.includes('PASSEIO')) return 'PASSEIO';
+    return '';
   }
 
   private escolherPlanejamentoCandidato(

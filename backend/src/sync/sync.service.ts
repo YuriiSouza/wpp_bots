@@ -16,10 +16,16 @@ type DriverRow = Record<string, string>;
 type RouteRow = Record<string, string>;
 type OverviewRow = Record<string, string>;
 type ConvocationStats = { total: number; declined: number };
+type AvailabilityStatusValue =
+  | 'available'
+  | 'not_available'
+  | 'pending_confirmation'
+  | 'no_schedule';
 type RouteRecordInput = {
   atId: string;
   routeDate: string | null;
   shift: string | null;
+  cluster: string | null;
   gaiola: string | null;
   bairro: string | null;
   cidade: string | null;
@@ -723,6 +729,142 @@ export class SyncService implements OnModuleInit {
     return this.normalizeShift(raw);
   }
 
+  private parseAvailabilityCell(rawValue: string): {
+    status: AvailabilityStatusValue;
+    availableAm: boolean;
+    availablePm: boolean;
+  } {
+    const normalized = String(rawValue || '').trim().toUpperCase();
+    if (!normalized || normalized === '--') {
+      return { status: 'no_schedule', availableAm: false, availablePm: false };
+    }
+    if (normalized.includes('PENDING AVAILABILITY CONFIRMATION')) {
+      return { status: 'pending_confirmation', availableAm: false, availablePm: false };
+    }
+    if (normalized.includes('NOT AVAILABLE')) {
+      return { status: 'not_available', availableAm: false, availablePm: false };
+    }
+
+    const availableAm = normalized.includes('05:30-09:00') || normalized.includes('06:00-09:00');
+    const availablePm = normalized.includes('11:15-15:00') || normalized.includes('11:00-14:30');
+    if (availableAm || availablePm) {
+      return { status: 'available', availableAm, availablePm };
+    }
+
+    return { status: 'no_schedule', availableAm: false, availablePm: false };
+  }
+
+  private async syncDriverAvailabilityFromSheet() {
+    this.logSync('Sync disponibilidade: inicio');
+    const availabilityRows = await this.sheets.getRows(`'Disponibilidade'!A:ZZ`);
+    if (!availabilityRows.length) {
+      this.logSync('Sync disponibilidade: planilha vazia');
+      return 0;
+    }
+
+    const [headers, ...rows] = availabilityRows;
+    const idIndex = this.getHeaderIndex(headers, ['Driver ID', 'ID']);
+    const nameIndex = this.getHeaderIndex(headers, ['Driver Name', 'Nome']);
+    const clusterIndex = this.getHeaderIndex(headers, ['Cluster', 'Clusters']);
+    const vehicleIndex = this.getHeaderIndex(headers, ['Vehicle Type', 'Tipo de veiculo']);
+    const noShowIndex = this.getHeaderIndex(headers, ['No Show Time', 'No Show']);
+
+    const dateColumns = headers
+      .map((header, index) => ({
+        index,
+        date: this.normalizeRouteDate(String(header || '').trim()),
+      }))
+      .filter((item): item is { index: number; date: string } => !!item.date);
+
+    if (idIndex < 0 || !dateColumns.length) {
+      this.logSync('Sync disponibilidade: sem colunas obrigatorias', {
+        idIndex,
+        dateColumns: dateColumns.length,
+      });
+      return 0;
+    }
+
+    const driverIds = new Set<string>();
+    const availabilityEntries: Array<{
+      driverId: string;
+      availabilityDate: string;
+      rawValue: string | null;
+      status: AvailabilityStatusValue;
+      availableAm: boolean;
+      availablePm: boolean;
+      clusterRaw: string | null;
+      vehicleType: string | null;
+      noShowTime: number;
+    }> = [];
+
+    for (const row of rows) {
+      const driverId = String(row[idIndex] || '').trim();
+      if (!driverId) continue;
+      driverIds.add(driverId);
+
+      const name = nameIndex >= 0 ? String(row[nameIndex] || '').trim() : '';
+      const vehicleType = vehicleIndex >= 0 ? String(row[vehicleIndex] || '').trim() || null : null;
+      const clusterRaw = clusterIndex >= 0 ? String(row[clusterIndex] || '').trim() || null : null;
+      const noShowTime = noShowIndex >= 0 ? Number(String(row[noShowIndex] || '').trim() || '0') || 0 : 0;
+
+      await this.prisma.driver.upsert({
+        where: { id: driverId },
+        update: {
+          name: name || null,
+          vehicleType,
+        },
+        create: {
+          id: driverId,
+          name: name || null,
+          vehicleType,
+        },
+      });
+
+      for (const dateColumn of dateColumns) {
+        const rawCell = String(row[dateColumn.index] || '').trim();
+        const parsed = this.parseAvailabilityCell(rawCell);
+        availabilityEntries.push({
+          driverId,
+          availabilityDate: dateColumn.date,
+          rawValue: rawCell || null,
+          status: parsed.status,
+          availableAm: parsed.availableAm,
+          availablePm: parsed.availablePm,
+          clusterRaw,
+          vehicleType,
+          noShowTime,
+        });
+      }
+    }
+
+    if (!availabilityEntries.length) {
+      this.logSync('Sync disponibilidade: sem dados para persistir');
+      return 0;
+    }
+
+    const dates = Array.from(new Set(availabilityEntries.map((entry) => entry.availabilityDate)));
+    await (this.prisma as any).driverAvailability.deleteMany({
+      where: {
+        availabilityDate: { in: dates },
+      },
+    });
+
+    await (this.prisma as any).driverAvailability.createMany({
+      data: availabilityEntries,
+      skipDuplicates: true,
+    });
+
+    this.logSync('Sync disponibilidade: concluido', {
+      rowsRead: rows.length,
+      drivers: driverIds.size,
+      entries: availabilityEntries.length,
+      dates: dates.length,
+      memory: this.memorySnapshot(),
+    });
+
+    return availabilityEntries.length;
+  }
+
   private buildPersistentRouteId(atId: string): string {
     return atId;
   }
@@ -813,6 +955,7 @@ export class SyncService implements OnModuleInit {
         continue;
       }
       const routeId = this.buildPersistentRouteId(atId);
+      const cluster = String(rawRow[23] ?? '').trim() || null;
       const overviewRoute = overviewByAt.get(atId);
       const currentDriverId =
         overviewRoute?.currentDriverId ||
@@ -841,6 +984,7 @@ export class SyncService implements OnModuleInit {
           atId,
           routeDate,
           shift: routeShift,
+          cluster,
           gaiola: String((corridorIndex >= 0 ? rawRow[corridorIndex] : '') ?? '').trim() || null,
           bairro:
             String((neighborhoodIndex >= 0 ? rawRow[neighborhoodIndex] : '') ?? '').trim() || null,
@@ -926,11 +1070,12 @@ export class SyncService implements OnModuleInit {
 
     if (toUpdate.length) {
       await this.runInBatches(toUpdate, 25, (entry) => {
-        const { driverId } = entry.payload;
+        const { driverId, cluster } = entry.payload;
         return prisma.route.update({
           where: { id: existingByAtId.get(entry.routeId)! },
           data: {
             driverId,
+            cluster,
           },
         });
       });
@@ -963,6 +1108,7 @@ export class SyncService implements OnModuleInit {
     try {
       const driverCount = await this.syncDriversFromSheets();
       await this.syncDriverPriorityMetrics();
+      await this.syncDriverAvailabilityFromSheet();
       await this.prisma.syncLog.update({
         where: { id: log.id },
         data: {
@@ -1013,6 +1159,7 @@ export class SyncService implements OnModuleInit {
     try {
       const driverCount = await this.syncDriversFromSheets();
       await this.syncDriverPriorityMetrics();
+      await this.syncDriverAvailabilityFromSheet();
       const { availableCount, assignedCount } = await this.syncRoutesFromSheets(
         selectedDate,
         selectedShift,
@@ -1078,6 +1225,7 @@ export class SyncService implements OnModuleInit {
     });
 
     try {
+      await this.syncDriverAvailabilityFromSheet();
       const { availableCount, assignedCount } = await this.syncRoutesFromSheets(
         selectedDate,
         selectedShift,

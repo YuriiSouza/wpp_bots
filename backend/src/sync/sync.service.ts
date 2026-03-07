@@ -1087,12 +1087,11 @@ export class SyncService implements OnModuleInit {
 
     if (toUpdate.length) {
       await this.runInBatches(toUpdate, 25, (entry) => {
-        const { driverId, cluster } = entry.payload;
+        const { driverId } = entry.payload;
         return prisma.route.update({
           where: { id: existingByAtId.get(entry.routeId)! },
           data: {
             driverId,
-            cluster,
           },
         });
       });

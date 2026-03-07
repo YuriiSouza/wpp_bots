@@ -1242,7 +1242,6 @@ export class SyncService implements OnModuleInit {
     });
 
     try {
-      await this.syncDriverAvailabilityFromSheet();
       const { availableCount, assignedCount } = await this.syncRoutesFromSheets(
         selectedDate,
         selectedShift,

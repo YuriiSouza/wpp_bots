@@ -1092,6 +1092,36 @@ export class SyncService implements OnModuleInit {
           where: { id: existingByAtId.get(entry.routeId)! },
           data: {
             driverId,
+            status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
+          },
+        });
+      });
+    }
+
+    // Garante que AT ja existente no banco sempre reflita o driver atual da guia
+    // "Visão Geral Atribuições", mesmo quando o Histórico ATs filtra a linha.
+    const overviewAtIds = Array.from(overviewByAt.keys());
+    if (overviewAtIds.length) {
+      const overviewExistingRoutes = await prisma.route.findMany({
+        where: {
+          atId: { in: overviewAtIds },
+        },
+        select: {
+          id: true,
+          atId: true,
+        },
+      });
+
+      await this.runInBatches(overviewExistingRoutes, 50, (route: { id: string; atId: string | null }) => {
+        const atId = String(route.atId || '').trim();
+        const overview = overviewByAt.get(atId);
+        const driverId = overview?.currentDriverId || null;
+
+        return prisma.route.update({
+          where: { id: route.id },
+          data: {
+            driverId,
+            status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
           },
         });
       });

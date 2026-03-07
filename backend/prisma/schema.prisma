@@ -227,6 +227,7 @@ enum RouteStatus {
   DISPONIVEL
   ATRIBUIDA
   BLOQUEADA
+  EXPORTADA
 }
 
 enum RouteAssignmentSource {

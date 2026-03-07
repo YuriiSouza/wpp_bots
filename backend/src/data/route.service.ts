@@ -105,23 +105,37 @@ export class RouteService {
     const normalized = normalizeVehicleType(vehicleType ?? undefined);
     const currentWindow = await this.getCurrentRouteWindow();
 
-    const where =
+    const baseWhere =
       normalized === 'MOTO'
         ? {
             botAvailable: true,
             status: RouteStatus.DISPONIVEL,
             requestedDriverId: null,
             requiredVehicleTypeNorm: 'MOTO',
-            routeDate: currentWindow.date,
-            shift: currentWindow.shift,
           }
         : {
             botAvailable: true,
             status: RouteStatus.DISPONIVEL,
             requestedDriverId: null,
-            routeDate: currentWindow.date,
-            shift: currentWindow.shift,
           };
+
+    const where = {
+      AND: [
+        baseWhere,
+        {
+          OR: [
+            {
+              routeDate: currentWindow.date,
+              shift: currentWindow.shift,
+            },
+            {
+              noShow: true,
+              driverId: null,
+            },
+          ],
+        },
+      ],
+    };
 
     const routes = await (this.prisma as any).route.findMany({
       where,

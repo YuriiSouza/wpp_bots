@@ -926,33 +926,11 @@ export class SyncService implements OnModuleInit {
 
     if (toUpdate.length) {
       await this.runInBatches(toUpdate, 25, (entry) => {
-        const {
-          requestedDriverId,
-          botAvailable,
-          assignmentSource,
-          sheetRowNumber,
-          driverId,
-          driverName,
-          driverVehicleType,
-          driverAccuracy,
-          driverPlate,
-          status,
-          assignedAt,
-        } = entry.payload;
+        const { driverId } = entry.payload;
         return prisma.route.update({
           where: { id: existingByAtId.get(entry.routeId)! },
           data: {
-            requestedDriverId,
-            assignmentSource,
-            sheetRowNumber,
             driverId,
-            driverName,
-            driverVehicleType,
-            driverAccuracy,
-            driverPlate,
-            status,
-            assignedAt,
-            ...(botAvailable !== undefined ? { botAvailable } : {}),
           },
         });
       });

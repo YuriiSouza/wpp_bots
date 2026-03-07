@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { ChevronDown, ChevronUp, Copy, Loader2, RefreshCw, ScanLine, Send, Sparkles, Tag, Trash2, Wand2 } from "lucide-react"
+import { ChevronDown, ChevronUp, Copy, Loader2, ScanLine, Send, Sparkles, Tag, Trash2, Wand2 } from "lucide-react"
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { PageHeader } from "@/components/page-header"
 import { RoutePlanningMap } from "@/components/route-planning-map"
@@ -39,7 +39,6 @@ import {
   fetchRoutePlanning,
   fetchRoutePlanningMap,
   getApiErrorMessage,
-  runSync,
   runRoutePlanning as runRoutePlanningRequest,
   saveRoutePlanningPreferences,
 } from "@/lib/admin-api"
@@ -49,7 +48,6 @@ import type {
   RoutePlanningPayload,
   RoutePlanningPreference,
 } from "@/lib/types"
-import { getCurrentRouteWindow } from "@/lib/route-window"
 import { toast } from "sonner"
 
 type ShiftFilter = "all" | "AM" | "PM" | "PM2"
@@ -103,7 +101,6 @@ export default function RoutePlanningPage() {
   const [isMapCollapsed, setIsMapCollapsed] = useState(false)
   const [isRoutesCollapsed, setIsRoutesCollapsed] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [isSavingPreferences, setIsSavingPreferences] = useState(false)
@@ -164,42 +161,6 @@ export default function RoutePlanningPage() {
       active = false
     }
   }, [date, shift, focus, atFilter, clusterFilter, brFilter])
-
-  const handleRefresh = async () => {
-    const currentWindow = getCurrentRouteWindow()
-
-    setIsRefreshing(true)
-    try {
-      const syncResponse = await runSync("routes")
-      if (!syncResponse.ok) {
-        toast.error(syncResponse.message)
-        return
-      }
-
-      const [planning, map] = await Promise.all([
-        fetchRoutePlanning({
-          date: currentWindow.date,
-          shift: currentWindow.shift,
-          atId: atFilter === "all" ? undefined : atFilter,
-          focus,
-        }),
-        fetchRoutePlanningMap({
-          cluster: clusterFilter === "all" ? undefined : clusterFilter,
-          br: brFilter || undefined,
-        }),
-      ])
-
-      setDate(currentWindow.date)
-      setShift(currentWindow.shift)
-      setPayload(planning)
-      setMapPayload(map)
-      toast.success("Rotas atualizadas a partir da guia Historico ATs.")
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel sincronizar as rotas"))
-    } finally {
-      setIsRefreshing(false)
-    }
-  }
 
   const filteredRoutes = useMemo(() => {
     const data = payload?.data || []
@@ -1076,11 +1037,7 @@ export default function RoutePlanningPage() {
               >
                 {isFiltersCollapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
               </Button>
-              <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing || isRunning}>
-                {isRefreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                Atualizar Dados
-              </Button>
-              <Button onClick={handleRunPlanning} disabled={isRunning || isRefreshing}>
+              <Button onClick={handleRunPlanning} disabled={isRunning}>
                 {isRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
                 Rodar Planejamento
               </Button>

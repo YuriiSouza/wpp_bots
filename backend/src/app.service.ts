@@ -497,118 +497,25 @@ export class AppService {
   }
 
   private async getRoutePlanningAvailableDrivers(window: RoutePlanningWindow) {
-    const [availabilityRows, driversRows] = await Promise.all([
-      this.getRowsFromAnyRange([
-        "'Disponibilidade'!A:ZZ",
-        "'disponibilidade'!A:ZZ",
-      ]),
-      this.getRowsFromAnyRange(["'Drivers Disponiveis'!A:M"]),
-    ]);
-
-    if (availabilityRows.length < 2) {
-      return this.getRoutePlanningAvailableDriversFromDriversSheet(window, driversRows);
-    }
-
     const previousWindow = this.getPreviousRoutePlanningWindow(window);
-    const [headers, ...dataRows] = availabilityRows;
-    const idIndex = this.findPlanningHeaderIndex(headers, ['Driver ID', 'ID'], 0);
-    const nameIndex = this.findPlanningHeaderIndex(headers, ['Driver Name', 'Nome'], 1);
-    const clusterIndex = this.findPlanningHeaderIndex(headers, ['Cluster', 'Clusters'], 2);
-    const vehicleIndex = this.findPlanningHeaderIndex(headers, ['Vehicle Type', 'Tipo de veiculo'], 3);
-    const noShowIndex = this.findPlanningHeaderIndex(headers, ['No Show Time', 'No Show'], 4);
-    const dateIndex = headers.findIndex((header) => String(header || '').trim() === window.date);
+    const prisma = this.prisma as any;
+    const driverRows: Array<{
+      id: string;
+      name: string | null;
+      vehicleType: string | null;
+      ds: string | null;
+      noShowCount: number | null;
+    }> = await prisma.driver.findMany({
+      select: {
+        id: true,
+        name: true,
+        vehicleType: true,
+        ds: true,
+        noShowCount: true,
+      },
+    });
 
-    if (dateIndex < 0) {
-      return this.getRoutePlanningAvailableDriversFromDriversSheet(window, driversRows);
-    }
-
-    const supportHeaders = driversRows[0] || [];
-    const supportIdIndex = this.findPlanningHeaderIndex(supportHeaders, ['ID', 'Driver ID'], 0);
-    const supportNameIndex = this.findPlanningHeaderIndex(supportHeaders, ['Nome', 'Driver Name'], 1);
-    const supportVehicleIndex = this.findPlanningHeaderIndex(supportHeaders, ['Tipo de veiculo', 'Vehicle Type'], 2);
-    const supportStatusIndex = this.findPlanningHeaderIndex(supportHeaders, ['Status', 'Disponivel'], 3);
-    const supportReasonIndex = this.findPlanningHeaderIndex(supportHeaders, ['Motivo de nao rodar', 'Motivo'], 4);
-    const supportLastTripIndex = this.findPlanningHeaderIndex(supportHeaders, ['Ultima viagem', 'Ultima rota'], 5);
-    const supportDsIndex = this.findPlanningHeaderIndex(supportHeaders, ['DS'], 6);
-    const supportClustersIndex = this.findPlanningHeaderIndex(supportHeaders, ['Clusters', 'Cluster'], 7);
-    const supportNeighborhoodsIndex = this.findPlanningHeaderIndex(supportHeaders, ['Bairros Recentes', 'Bairros'], 8);
-    const supportPhoneIndex = this.findPlanningHeaderIndex(supportHeaders, ['Numero', 'Telefone', 'Whatsapp', 'Phone'], 9);
-
-    const supportDriverById = new Map(
-      (driversRows.slice(1) || [])
-        .map((row) => {
-          const id = String(row[supportIdIndex] || '').trim();
-          if (!id) return null;
-
-          return [
-            id,
-            {
-              name: String(row[supportNameIndex] || '').trim() || null,
-              vehicleType: this.normalizePlanningVehicle(row[supportVehicleIndex]),
-              status: String(row[supportStatusIndex] || '').trim() || null,
-              reason: String(row[supportReasonIndex] || '').trim() || null,
-              lastTrip: String(row[supportLastTripIndex] || '').trim() || null,
-              ds: this.normalizePlanningDs(row[supportDsIndex]),
-              clusters: this.extractPlanningClusters(row[supportClustersIndex]),
-              clusterLabels: this.extractPlanningClusterEntries(row[supportClustersIndex]).map((entry) =>
-                entry.name ? `${entry.code} - ${entry.name}` : entry.code,
-              ),
-              recentNeighborhoods: String(row[supportNeighborhoodsIndex] || '').trim() || null,
-              phone: String(row[supportPhoneIndex] || '').trim() || null,
-            },
-          ] as const;
-        })
-        .filter(Boolean) as Array<
-        readonly [string, {
-          name: string | null;
-          vehicleType: string;
-          status: string | null;
-          reason: string | null;
-          lastTrip: string | null;
-          ds: number;
-          clusters: string[];
-          clusterLabels: string[];
-          recentNeighborhoods: string | null;
-          phone: string | null;
-        }]
-      >,
-    );
-
-    const baseDrivers = dataRows
-      .map((row) => {
-        const id = String(row[idIndex] || '').trim();
-        if (!id) return null;
-
-        const parsedAvailability = this.parseRoutePlanningAvailabilityCell(row[dateIndex], window.shift);
-        const support = supportDriverById.get(id);
-        const availabilityClusterEntries = this.extractPlanningClusterEntries(row[clusterIndex]);
-        const availabilityClusterLabels = availabilityClusterEntries.map((entry) =>
-          entry.name ? `${entry.code} - ${entry.name}` : entry.code,
-        );
-        const availabilityClusters = availabilityClusterEntries.map((entry) => entry.code);
-
-        return {
-          id,
-          name: String(row[nameIndex] || '').trim() || support?.name || id,
-          vehicleType: this.normalizePlanningVehicle(row[vehicleIndex]) || support?.vehicleType || '',
-          status: parsedAvailability.label || support?.status || 'Sem agenda',
-          available: parsedAvailability.available,
-          availabilityStatus: parsedAvailability.status,
-          rawAvailability: parsedAvailability.rawValue,
-          availableShifts: parsedAvailability.availableShifts,
-          noShowTime: this.parsePlanningNumber(row[noShowIndex]),
-          reason: support?.reason || null,
-          lastTrip: support?.lastTrip || null,
-          ds: support?.ds || 0,
-          clusters: availabilityClusters.length ? availabilityClusters : support?.clusters || [],
-          clusterLabels: availabilityClusterLabels.length ? availabilityClusterLabels : support?.clusterLabels || [],
-          recentNeighborhoods: support?.recentNeighborhoods || null,
-          phone: support?.phone || null,
-        };
-      })
-      .filter((driver): driver is NonNullable<typeof driver> => !!driver);
-
-    if (!baseDrivers.length) {
+    if (!driverRows.length) {
       return {
         window,
         previousWindow,
@@ -616,12 +523,37 @@ export class AppService {
       };
     }
 
-    const driverIds = baseDrivers.map((driver) => driver.id);
+    const driverIds = driverRows.map((driver) => driver.id);
+    const availabilityRows: Array<{
+      driverId: string;
+      rawValue: string | null;
+      status: RoutePlanningAvailabilityStatus;
+      availableAm: boolean;
+      availablePm: boolean;
+      clusterRaw: string | null;
+      noShowTime: number;
+    }> = await prisma.driverAvailability.findMany({
+      where: {
+        driverId: { in: driverIds },
+        availabilityDate: window.date,
+      },
+      select: {
+        driverId: true,
+        rawValue: true,
+        status: true,
+        availableAm: true,
+        availablePm: true,
+        clusterRaw: true,
+        noShowTime: true,
+      },
+    });
+    const availabilityByDriverId = new Map(
+      availabilityRows.map((row) => [String(row.driverId || '').trim(), row]),
+    );
     const historyThreshold = new Date(`${window.date}T12:00:00.000Z`);
     historyThreshold.setUTCDate(historyThreshold.getUTCDate() - 21);
 
-    const [routeHistory, driverMetadata] = await Promise.all([
-      (this.prisma as any).route.findMany({
+    const routeHistory = await prisma.route.findMany({
         where: {
           driverId: { in: driverIds },
           routeDate: {
@@ -644,19 +576,7 @@ export class AppService {
           { createdAt: 'desc' },
           { atId: 'asc' },
         ],
-      }),
-      (this.prisma as any).driver.findMany({
-        where: {
-          id: { in: driverIds },
-        },
-        select: {
-          id: true,
-          name: true,
-          vehicleType: true,
-          ds: true,
-        },
-      }),
-    ]);
+      });
 
     const currentRouteByDriver = new Map<string, { atId: string | null; bairro: string | null }>();
     const previousRouteDriverIds = new Set<string>();
@@ -699,28 +619,69 @@ export class AppService {
       }
     }
 
-    const driverMetadataById = new Map<string, (typeof driverMetadata)[number]>(
-      driverMetadata.map((driver) => [String(driver.id || '').trim(), driver]),
-    );
-
     return {
       window,
       previousWindow,
-      drivers: baseDrivers.map((driver) => {
+      drivers: driverRows.map((driver) => {
         const currentRoute = currentRouteByDriver.get(driver.id);
         const lastRoute = lastRouteByDriver.get(driver.id);
-        const metadata = driverMetadataById.get(driver.id);
-        const mergedDs = driver.ds || this.normalizePlanningDs(metadata?.ds);
+        const hasCurrentRoute = !!currentRoute;
+        const hasPreviousRoute = previousRouteDriverIds.has(driver.id);
+        const availability = availabilityByDriverId.get(driver.id);
+        const clusterEntries = this.extractPlanningClusterEntries(availability?.clusterRaw);
+        const clusterCodes = clusterEntries.map((entry) => entry.code);
+        const clusterLabels = clusterEntries.map((entry) =>
+          entry.name ? `${entry.code} - ${entry.name}` : entry.code,
+        );
+        const slotAvailable =
+          window.shift === 'AM'
+            ? !!availability?.availableAm
+            : window.shift === 'PM' || window.shift === 'PM2'
+              ? !!availability?.availablePm
+              : false;
+
+        const availabilityStatus = availability?.status || 'no_schedule';
+        const availableShifts: RoutePlanningAvailabilitySlot[] = [];
+        if (availability?.availableAm) availableShifts.push('AM');
+        if (availability?.availablePm) availableShifts.push('PM');
+        const availableBySheet = availabilityStatus === 'available' && slotAvailable;
+        const available = availableBySheet && !hasCurrentRoute && !hasPreviousRoute;
+        const reasonBySheet =
+          availabilityStatus === 'pending_confirmation'
+            ? 'Pendente de confirmacao de disponibilidade'
+            : availabilityStatus === 'not_available'
+              ? 'Motorista indisponivel no dia'
+              : availabilityStatus === 'no_schedule'
+                ? 'Sem agenda para o dia'
+                : !slotAvailable
+                  ? `Sem janela de disponibilidade para ${window.shift}`
+                  : null;
 
         return {
-          ...driver,
-          name: driver.name || String(metadata?.name || driver.id),
-          vehicleType: driver.vehicleType || this.normalizePlanningVehicle(metadata?.vehicleType),
-          ds: Number(mergedDs.toFixed(2)),
+          id: driver.id,
+          name: String(driver.name || driver.id),
+          vehicleType: this.normalizePlanningVehicle(driver.vehicleType),
+          status: availability?.rawValue || (available ? 'Disponivel' : 'Indisponivel'),
+          available,
+          availabilityStatus,
+          rawAvailability: availability?.rawValue || null,
+          availableShifts,
+          noShowTime: Number(availability?.noShowTime ?? driver.noShowCount ?? 0),
+          reason: hasCurrentRoute
+            ? 'Ja possui rota no turno atual'
+            : hasPreviousRoute
+              ? `Ja rodou no turno anterior (${previousWindow.shift})`
+              : reasonBySheet,
+          lastTrip: lastRoute?.atId || null,
+          ds: Number(this.normalizePlanningDs(driver.ds).toFixed(2)),
+          clusters: clusterCodes,
+          clusterLabels,
+          recentNeighborhoods: null,
+          phone: null,
           currentRouteAtId: currentRoute?.atId || null,
           currentRouteBairro: currentRoute?.bairro || null,
-          hasCurrentRoute: !!currentRoute,
-          hasPreviousRoute: previousRouteDriverIds.has(driver.id),
+          hasCurrentRoute,
+          hasPreviousRoute,
           lastRouteAtId: lastRoute?.atId || null,
           lastRouteBairro: lastRoute?.bairro || null,
           lastRouteDate: lastRoute?.routeDate || null,
@@ -2309,19 +2270,38 @@ export class AppService {
     window?: RoutePlanningWindow,
   ): Promise<RoutePlanningComputation> {
     const effectiveWindow = window || (await this.resolveRoutePlanningWindow());
-    const [driversRows, visaoRows, relatorioRows, availabilityContext] = await Promise.all([
-      this.sheets.getRows("'Drivers Disponiveis'!A:M"),
-      this.sheets.getRows("'Visão Geral Atribuições'!A:R"),
-      this.sheets.getRows("'Relatorio de Expedição'!A:AC"),
+    const prisma = this.prisma as any;
+    const [availabilityContext, routesForPlanning] = await Promise.all([
       this.getRoutePlanningAvailableDrivers(window || effectiveWindow),
+      prisma.route.findMany({
+        where: {
+          AND: [
+            { shift: effectiveWindow.shift },
+            {
+              OR: [
+                { routeDate: effectiveWindow.date },
+                { noShow: true, status: RouteStatus.DISPONIVEL },
+              ],
+            },
+          ],
+        },
+        select: {
+          atId: true,
+          cluster: true,
+          requiredVehicleType: true,
+          requiredVehicleTypeNorm: true,
+          volume: true,
+          driverId: true,
+        },
+      }),
     ]);
 
-    if (visaoRows.length < 2 || relatorioRows.length < 2) {
+    if (!routesForPlanning.length) {
       return {
         assignments: [],
         drivers: [],
         preferredAssignments: [],
-        outputK: Array.from({ length: Math.max(0, driversRows.length - 1) }, () => ['']),
+        outputK: [],
         logRows: [
           [
             'AT',
@@ -2344,26 +2324,18 @@ export class AppService {
     }
 
     const mapaATClusters = new Map<string, string[]>();
-    for (const row of relatorioRows.slice(1)) {
-      const atId = String(row[1] || '').trim();
-      const rawClusters = row[28];
-      if (!atId || !rawClusters) continue;
-
-      const clusters = this.extractPlanningClusters(rawClusters);
-      if (clusters.length) mapaATClusters.set(atId, clusters);
+    for (const route of routesForPlanning as Array<{ atId?: string | null; cluster?: string | null }>) {
+      const atId = String(route.atId || '').trim();
+      const clusters = this.extractPlanningClusters(route.cluster);
+      if (!atId || !clusters.length) continue;
+      mapaATClusters.set(atId, clusters);
     }
 
     const mapaDrivers = new Map<string, PlanningDriver>();
     const rowById = new Map<string, number>();
-    const profileById = new Map<string, string>();
-
-    for (let index = 1; index < driversRows.length; index += 1) {
-      const row = driversRows[index] || [];
-      const id = String(row[0] || '').trim();
-      if (!id) continue;
-      rowById.set(id, index);
-      profileById.set(id, this.normalizePlanningProfile(row[12]));
-    }
+    availabilityContext.drivers.forEach((driver, index) => {
+      rowById.set(driver.id, index + 1);
+    });
 
     for (const availableDriver of availabilityContext.drivers) {
       const inferredProfile =
@@ -2377,21 +2349,18 @@ export class AppService {
         disponivel: availableDriver.available,
         ds: availableDriver.ds,
         clusters: availableDriver.clusters,
-        perfil: profileById.get(availableDriver.id) || inferredProfile,
+        perfil: inferredProfile,
         rowIndex,
       };
 
       mapaDrivers.set(driver.id, driver);
     }
 
-    const clusterLabelByCode = this.buildPlanningClusterLabelMap([
-      ...relatorioRows.slice(1).map((row) => row?.[28]),
-      ...driversRows.slice(1).map((row) => row?.[7]),
-    ]);
+    const clusterLabelByCode = new Map<string, string>();
 
     const savedPreferences = await this.getRoutePlanningPreferences();
 
-    const outputK = Array.from({ length: Math.max(0, driversRows.length - 1) }, () => ['']);
+    const outputK = Array.from({ length: availabilityContext.drivers.length }, () => ['']);
     const atsUsadas = new Set<string>();
     const motoristasUsados = new Set<string>();
     const assignments: PlanningAssignment[] = [];
@@ -2414,15 +2383,23 @@ export class AppService {
       ],
     ];
 
-    const rotasOrdenadasBase = visaoRows
-      .slice(1)
-      .map((row) => ({
-        atId: String(row[0] || '').trim(),
-        tipoProgRaw: String(row[8] || '').toUpperCase().trim(),
-        currentDriverId: String(row[9] || '').trim(),
-        volume: this.parsePlanningNumber(row[6]),
+    const rotasOrdenadasBase = routesForPlanning
+      .map((route: {
+        atId?: string | null;
+        cluster?: string | null;
+        requiredVehicleType?: string | null;
+        requiredVehicleTypeNorm?: string | null;
+        volume?: string | null;
+        driverId?: string | null;
+      }) => ({
+        atId: String(route.atId || '').trim(),
+        tipoProgRaw: String(route.requiredVehicleTypeNorm || route.requiredVehicleType || '')
+          .toUpperCase()
+          .trim(),
+        currentDriverId: String(route.driverId || '').trim(),
+        volume: this.parsePlanningNumber(route.volume),
       }))
-      .filter((row) => row.atId && mapaATClusters.has(row.atId))
+      .filter((row) => row.atId)
       .sort((a, b) => b.volume - a.volume);
 
     if (focus === 'PM') {
@@ -2516,15 +2493,14 @@ export class AppService {
       logRows,
     });
 
-    for (let index = 1; index < visaoRows.length; index += 1) {
-      const row = visaoRows[index] || [];
-      const atId = String(row[0] || '').trim();
-      const tipoProgRaw = String(row[8] || '').toUpperCase().trim();
-      const motoristaAtual = String(row[9] || '').trim();
-      const volume = this.parsePlanningNumber(row[6]);
+    for (let index = 0; index < rotasOrdenadasBase.length; index += 1) {
+      const row = rotasOrdenadasBase[index];
+      const atId = String(row.atId || '').trim();
+      const tipoProgRaw = String(row.tipoProgRaw || '').toUpperCase().trim();
+      const motoristaAtual = String(row.currentDriverId || '').trim();
+      const volume = this.parsePlanningNumber(row.volume);
 
       if (!atId || !motoristaAtual) continue;
-      if (!mapaATClusters.has(atId)) continue;
       if (atsUsadas.has(atId)) continue;
 
       const infoAtual = mapaDrivers.get(motoristaAtual);
@@ -3321,7 +3297,8 @@ export class AppService {
   }
 
   private hasPlanningClusterIntersection(driverClusters: string[], routeClusters: string[]) {
-    if (!driverClusters.length || !routeClusters.length) return false;
+    if (!routeClusters.length) return true;
+    if (!driverClusters.length) return false;
     const routePrimaryCluster = routeClusters[0];
     return driverClusters.includes(routePrimaryCluster);
   }

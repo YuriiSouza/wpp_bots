@@ -1,5 +1,5 @@
 // ===== Enums =====
-export type RouteStatus = "DISPONIVEL" | "ATRIBUIDA" | "BLOQUEADA"
+export type RouteStatus = "DISPONIVEL" | "ATRIBUIDA" | "BLOQUEADA" | "EXPORTADA"
 export type BlocklistStatus = "BLOCKED" | "UNBLOCKED"
 export type UserRole = "ADMIN" | "ANALISTA" | "SUPERVISOR"
 export type RouteAssignmentSource = "SYNC" | "MANUAL" | "TELEGRAM_BOT"

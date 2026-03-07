@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Loader2, Map as MapIcon, RefreshCw, Tag } from "lucide-react"
+import { Loader2, Map as MapIcon, Tag } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { RoutePlanningMap } from "@/components/route-planning-map"
 import { Badge } from "@/components/ui/badge"
@@ -9,9 +9,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { fetchRoutePlanning, fetchRoutePlanningMap, getApiErrorMessage, runSync } from "@/lib/admin-api"
+import { fetchRoutePlanning, fetchRoutePlanningMap, getApiErrorMessage } from "@/lib/admin-api"
 import type { RoutePlanningItem, RoutePlanningMapPayload, RoutePlanningPayload } from "@/lib/types"
-import { getCurrentRouteWindow } from "@/lib/route-window"
 import { toast } from "sonner"
 
 type ShiftFilter = "all" | "AM" | "PM" | "PM2"
@@ -33,7 +32,6 @@ export default function RouteConsultPage() {
   const [mapPayload, setMapPayload] = useState<RoutePlanningMapPayload | null>(null)
   const [brResults, setBrResults] = useState<BrSearchResult[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
 
   const searchedBr = useMemo(() => brInput.trim().toUpperCase(), [brInput])
 
@@ -292,52 +290,6 @@ export default function RouteConsultPage() {
     labelWindow.document.close()
   }
 
-  const handleRefresh = async () => {
-    const currentWindow = getCurrentRouteWindow()
-
-    setIsRefreshing(true)
-    try {
-      const syncResponse = await runSync("routes")
-      if (!syncResponse.ok) {
-        toast.error(syncResponse.message)
-        return
-      }
-
-      const planningPromise = fetchRoutePlanning({
-        date: currentWindow.date,
-        shift: currentWindow.shift,
-        focus: "DS",
-      })
-
-      const mapResponse = await fetchRoutePlanningMap({
-        cluster: clusterFilter === "all" ? undefined : clusterFilter,
-        br: searchedBr || undefined,
-      })
-      const planning = await planningPromise
-
-      setDate(currentWindow.date)
-      setShift(currentWindow.shift)
-      setPlanningPayload(planning)
-      setMapPayload(mapResponse)
-      setBrResults(
-        searchedBr
-          ? [
-              {
-                br: searchedBr,
-                searchedBr: mapResponse.searchedBr,
-                nearbyRoutes: mapResponse.nearbyRoutes,
-              },
-            ]
-          : [],
-      )
-      toast.success("Rotas atualizadas pela guia Historico ATs e consulta atualizada.")
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar a consulta"))
-    } finally {
-      setIsRefreshing(false)
-    }
-  }
-
   return (
     <div className="min-w-0 space-y-6 p-4 md:p-6">
       <PageHeader title="Realocacao de volumoso" breadcrumbs={[{ label: "Realocacao de volumoso" }]} />
@@ -345,16 +297,12 @@ export default function RouteConsultPage() {
       <Card className="overflow-hidden">
         <CardContent className="space-y-4 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <h2 className="text-2xl font-bold text-foreground">Realocacao de volumoso</h2>
-              <p className="text-sm text-muted-foreground">
-                Consulte um BR por vez, veja as ATs mais proximas e filtre visualmente a rota no mapa.
-              </p>
-            </div>
-            <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing}>
-              {isRefreshing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-              Atualizar
-            </Button>
+          <div>
+            <h2 className="text-2xl font-bold text-foreground">Realocacao de volumoso</h2>
+            <p className="text-sm text-muted-foreground">
+              Consulte um BR por vez, veja as ATs mais proximas e filtre visualmente a rota no mapa.
+            </p>
+          </div>
           </div>
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">

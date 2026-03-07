@@ -9,7 +9,6 @@ import {
   ChevronDown,
 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
-import { getCurrentRouteWindow } from "@/lib/route-window"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -55,7 +54,6 @@ import {
   markRouteNoShow,
   releaseRouteToBot as releaseRouteToBotRequest,
   releaseRoutesToBotByAt as releaseRoutesToBotByAtRequest,
-  runSync,
 } from "@/lib/admin-api"
 import type { Driver, Route } from "@/lib/types"
 import { toast } from "sonner"
@@ -172,7 +170,6 @@ export default function RoutesPage() {
   const [isBulkReleasing, setIsBulkReleasing] = useState(false)
   const [releasingRouteId, setReleasingRouteId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const isTelegramRequested = (route: Route) =>
     route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !route.driverId
   const isReleasedToBot = (route: Route) =>
@@ -241,34 +238,6 @@ export default function RoutesPage() {
       })
     )
   }, [search, dayFilter, shiftFilter, statusFilter, cityFilter, vehicleFilter])
-
-  const handleRefresh = async () => {
-    const currentWindow = getCurrentRouteWindow()
-    const selectedDate = dayFilter || currentWindow.date
-    const selectedShift = shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined
-
-    setIsRefreshing(true)
-    try {
-      const syncResponse = await runSync("routes", selectedDate, selectedShift)
-      if (!syncResponse.ok) {
-        toast.error(syncResponse.message)
-        return
-      }
-
-      if (!dayFilter) {
-        setDayFilter(selectedDate)
-      }
-      await loadData(true, {
-        date: selectedDate,
-        shift: selectedShift,
-      })
-      toast.success("Rotas atualizadas pela guia Historico ATs.")
-    } catch {
-      toast.error("Nao foi possivel sincronizar as rotas")
-    } finally {
-      setIsRefreshing(false)
-    }
-  }
 
   const cities = useMemo(() => [...new Set(routes.map((r) => r.cidade).filter(Boolean))], [routes])
   const shifts = useMemo(() => [...new Set(routes.map((r) => r.shift).filter(Boolean))], [routes])
@@ -626,10 +595,6 @@ export default function RoutesPage() {
             <p className="text-sm text-muted-foreground">{filtered.length} rotas encontradas</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing} className="w-full sm:w-auto">
-              <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-              Atualizar Rotas
-            </Button>
             <Button variant="outline" onClick={handleExportCsv} className="w-full sm:w-auto">
               <Download className="mr-2 h-4 w-4" />
               Exportar CSV
@@ -706,7 +671,7 @@ export default function RoutesPage() {
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>Status</DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  {(["SOLICITADA", "DISPONIVEL", "ATRIBUIDA", "BLOQUEADA"] as RouteStatusFilter[]).map((status) => (
+                  {(["SOLICITADA", "DISPONIVEL", "ATRIBUIDA", "BLOQUEADA", "EXPORTADA"] as RouteStatusFilter[]).map((status) => (
                     <DropdownMenuCheckboxItem
                       key={status}
                       checked={statusFilter.includes(status)}

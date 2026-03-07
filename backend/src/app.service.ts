@@ -3335,6 +3335,9 @@ export class AppService {
     const routeDate = String(date || '').trim() || undefined;
     const routes = await (this.prisma as any).route.findMany({
       where: {
+        status: {
+          not: 'EXPORTADA',
+        },
         OR: [
           {
             assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
@@ -3349,6 +3352,7 @@ export class AppService {
       },
       orderBy: [{ routeDate: 'asc' }, { shift: 'asc' }, { atId: 'asc' }],
       select: {
+        id: true,
         atId: true,
         requestedDriverId: true,
         driverId: true,
@@ -3369,6 +3373,7 @@ export class AppService {
 
     const header = ['AT', 'ID Motorista', 'Data', 'Turno', 'Origem', 'Situacao'];
     const rows = routes.map((route: {
+      id: string;
       atId: string;
       requestedDriverId: string | null;
       driverId: string | null;
@@ -3388,6 +3393,22 @@ export class AppService {
         .map(escapeCsv)
         .join(','),
     );
+
+    const exportedRouteIds = routes
+      .map((route: { id: string }) => String(route.id || '').trim())
+      .filter(Boolean);
+
+    if (exportedRouteIds.length) {
+      await (this.prisma as any).route.updateMany({
+        where: {
+          id: { in: exportedRouteIds },
+        },
+        data: {
+          status: 'EXPORTADA',
+        },
+      });
+      await this.invalidateRoutesCache();
+    }
 
     return [header.join(','), ...rows].join('\n');
   }
@@ -3683,8 +3704,6 @@ export class AppService {
     const routesToRelease = await (this.prisma as any).route.findMany({
       where: {
         atId: { in: atIds },
-        ...(selectedDate ? { routeDate: selectedDate } : {}),
-        ...(selectedShift ? { shift: selectedShift } : {}),
       },
       select: { id: true },
     });

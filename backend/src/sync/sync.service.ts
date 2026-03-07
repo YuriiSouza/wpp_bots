@@ -756,7 +756,17 @@ export class SyncService implements OnModuleInit {
 
   private async syncDriverAvailabilityFromSheet() {
     this.logSync('Sync disponibilidade: inicio');
-    const availabilityRows = await this.sheets.getRows(`'Disponibilidade'!A:ZZ`);
+    let availabilityRows: any[][] = [];
+    try {
+      availabilityRows = await this.sheets.getRows(`'Disponibilidade'!A:ZZ`);
+    } catch {
+      try {
+        availabilityRows = await this.sheets.getRows(`'disponibilidade'!A:ZZ`);
+      } catch {
+        this.logSync('Sync disponibilidade: guia nao encontrada, pulando etapa');
+        return 0;
+      }
+    }
     if (!availabilityRows.length) {
       this.logSync('Sync disponibilidade: planilha vazia');
       return 0;
@@ -843,16 +853,23 @@ export class SyncService implements OnModuleInit {
     }
 
     const dates = Array.from(new Set(availabilityEntries.map((entry) => entry.availabilityDate)));
-    await (this.prisma as any).driverAvailability.deleteMany({
-      where: {
-        availabilityDate: { in: dates },
-      },
-    });
+    try {
+      await (this.prisma as any).driverAvailability.deleteMany({
+        where: {
+          availabilityDate: { in: dates },
+        },
+      });
 
-    await (this.prisma as any).driverAvailability.createMany({
-      data: availabilityEntries,
-      skipDuplicates: true,
-    });
+      await (this.prisma as any).driverAvailability.createMany({
+        data: availabilityEntries,
+        skipDuplicates: true,
+      });
+    } catch (error) {
+      this.logSync('Sync disponibilidade: tabela indisponivel, etapa ignorada', {
+        error: (error as Error).message,
+      });
+      return 0;
+    }
 
     this.logSync('Sync disponibilidade: concluido', {
       rowsRead: rows.length,

@@ -524,7 +524,7 @@ export class AppService {
     }
 
     const driverIds = driverRows.map((driver) => driver.id);
-    const availabilityRows: Array<{
+    let availabilityRows: Array<{
       driverId: string;
       rawValue: string | null;
       status: RoutePlanningAvailabilityStatus;
@@ -532,21 +532,26 @@ export class AppService {
       availablePm: boolean;
       clusterRaw: string | null;
       noShowTime: number;
-    }> = await prisma.driverAvailability.findMany({
-      where: {
-        driverId: { in: driverIds },
-        availabilityDate: window.date,
-      },
-      select: {
-        driverId: true,
-        rawValue: true,
-        status: true,
-        availableAm: true,
-        availablePm: true,
-        clusterRaw: true,
-        noShowTime: true,
-      },
-    });
+    }> = [];
+    try {
+      availabilityRows = await prisma.driverAvailability.findMany({
+        where: {
+          driverId: { in: driverIds },
+          availabilityDate: window.date,
+        },
+        select: {
+          driverId: true,
+          rawValue: true,
+          status: true,
+          availableAm: true,
+          availablePm: true,
+          clusterRaw: true,
+          noShowTime: true,
+        },
+      });
+    } catch {
+      availabilityRows = [];
+    }
     const availabilityByDriverId = new Map(
       availabilityRows.map((row) => [String(row.driverId || '').trim(), row]),
     );

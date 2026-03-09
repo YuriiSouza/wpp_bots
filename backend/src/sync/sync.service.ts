@@ -895,10 +895,13 @@ export class SyncService implements OnModuleInit {
       selectedShift: selectedShift || null,
       memory: this.memorySnapshot(),
     });
-    const historyRows = await this.sheets.getRows(`'Historico ATs'!A:AN`);
-    const overviewRows = await this.sheets.getAssignmentOverviewRows().catch(() => []);
+    const [historyRows, overviewRows] = await Promise.all([
+      this.sheets.getRows(`'Historico ATs'!A:AN`),
+      this.sheets.getAssignmentOverviewRows(),
+    ]);
 
     if (!historyRows.length) throw new Error('Planilha Historico ATs vazia');
+    if (!overviewRows.length) throw new Error('Planilha Visão Geral Atribuições vazia');
 
     const historyHeaders = historyRows[0] ?? [];
     const prisma = this.prisma as any;
@@ -952,9 +955,11 @@ export class SyncService implements OnModuleInit {
       ).trim();
       if (!atId) continue;
       const overviewRoute = overviewByAt.get(atId);
-      const currentDriverId = this.normalizeSheetDriverId(
-        (driverIdIndex >= 0 ? rawRow[driverIdIndex] : rawRow[6]) ?? null,
-      );
+      const currentDriverId =
+        overviewRoute?.currentDriverId ||
+        this.normalizeSheetDriverId(
+          (driverIdIndex >= 0 ? rawRow[driverIdIndex] : rawRow[6]) ?? null,
+        );
       historyDriverByAt.set(atId, currentDriverId || null);
       if (currentDriverId) driverIds.push(currentDriverId);
 
@@ -1044,38 +1049,6 @@ export class SyncService implements OnModuleInit {
 
     await this.ensureDriversExist(driverIds);
 
-    const historyAtIds = Array.from(historyDriverByAt.keys());
-    let updatedFromHistory = 0;
-    let updateErrorsIgnored = 0;
-    if (historyAtIds.length) {
-      const historyExistingRoutes = await prisma.route.findMany({
-        where: {
-          atId: { in: historyAtIds },
-        },
-        select: {
-          id: true,
-          atId: true,
-        },
-      });
-
-      await this.runInBatches(historyExistingRoutes, 50, async (route: { id: string; atId: string | null }) => {
-        const atId = String(route.atId || '').trim();
-        const driverId = historyDriverByAt.get(atId) || null;
-        try {
-          await prisma.route.update({
-            where: { id: route.id },
-            data: {
-              driverId,
-              status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
-            },
-          });
-          updatedFromHistory += 1;
-        } catch (error) {
-          updateErrorsIgnored += 1;
-        }
-      });
-    }
-
     const routeIds = entries.map((entry) => entry.routeId);
     const existingRoutes = routeIds.length
       ? await prisma.route.findMany({
@@ -1092,12 +1065,12 @@ export class SyncService implements OnModuleInit {
       ]),
     );
     const toCreate = entries.filter((entry) => !existingByAtId.has(entry.routeId));
+    const toUpdate = entries.filter((entry) => existingByAtId.has(entry.routeId));
 
     this.logSync('Sync rotas: reconciliacao banco', {
       existingRoutes: existingRoutes.length,
       create: toCreate.length,
-      updateFromHistory: updatedFromHistory,
-      updateErrorsIgnored,
+      update: toUpdate.length,
       memory: this.memorySnapshot(),
     });
 
@@ -1112,6 +1085,76 @@ export class SyncService implements OnModuleInit {
           };
         }),
         skipDuplicates: true,
+      });
+    }
+
+    if (toUpdate.length) {
+      await this.runInBatches(toUpdate, 25, (entry) => {
+        const { driverId } = entry.payload;
+        return prisma.route.update({
+          where: { id: existingByAtId.get(entry.routeId)! },
+          data: {
+            driverId,
+            status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
+          },
+        });
+      });
+    }
+
+    // Garante que AT ja existente no banco sempre reflita o driver atual da guia
+    // "Visão Geral Atribuições", mesmo quando o Histórico ATs filtra a linha.
+    const overviewAtIds = Array.from(overviewByAt.keys());
+    if (overviewAtIds.length) {
+      const overviewExistingRoutes = await prisma.route.findMany({
+        where: {
+          atId: { in: overviewAtIds },
+        },
+        select: {
+          id: true,
+          atId: true,
+        },
+      });
+
+      await this.runInBatches(overviewExistingRoutes, 50, (route: { id: string; atId: string | null }) => {
+        const atId = String(route.atId || '').trim();
+        const overview = overviewByAt.get(atId);
+        const driverId = overview?.currentDriverId || null;
+
+        return prisma.route.update({
+          where: { id: route.id },
+          data: {
+            driverId,
+            status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
+          },
+        });
+      });
+    }
+
+    // Garante que toda AT presente no Historico ATs atualize driverId no banco
+    // mesmo quando a linha nao possui data/turno validos para create/filter.
+    const historyAtIds = Array.from(historyDriverByAt.keys());
+    if (historyAtIds.length) {
+      const historyExistingRoutes = await prisma.route.findMany({
+        where: {
+          atId: { in: historyAtIds },
+        },
+        select: {
+          id: true,
+          atId: true,
+        },
+      });
+
+      await this.runInBatches(historyExistingRoutes, 50, (route: { id: string; atId: string | null }) => {
+        const atId = String(route.atId || '').trim();
+        const driverId = historyDriverByAt.get(atId) || null;
+
+        return prisma.route.update({
+          where: { id: route.id },
+          data: {
+            driverId,
+            status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
+          },
+        });
       });
     }
 

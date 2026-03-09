@@ -3461,6 +3461,7 @@ export class AppService {
       data: {
         requestedDriverId: driver.id,
         assignmentSource: nextAssignmentSource,
+        botAvailable: false,
         driverId: driver.id,
         driverName: driver.name,
         driverVehicleType: driver.vehicleType,
@@ -3498,6 +3499,7 @@ export class AppService {
         requestedDriverId: null,
         assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
         noShow: markNoShow,
+        botAvailable: markNoShow ? true : false,
         driverId: null,
         driverName: null,
         driverVehicleType: null,
@@ -3576,6 +3578,7 @@ export class AppService {
       where: { id: routeId },
       data: {
         noShow: true,
+        botAvailable: true,
         ...(makeAvailable
           ? {
               requestedDriverId: null,

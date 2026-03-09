@@ -322,13 +322,13 @@ export class SyncService implements OnModuleInit {
           lastActivatedAt: new Date(),
         },
       });
-      await this.redis.client().set(`telegram:blocklist:cache:driver:${driverId}`, '1', 'EX', 3600);
+      await this.redis.set(`telegram:blocklist:cache:driver:${driverId}`, true, 3600);
       return true;
     }
 
     const currentStatus = String(existing.status || '');
     if (currentStatus === 'BLOCKED' || currentStatus === 'ACTIVE') {
-      await this.redis.client().set(`telegram:blocklist:cache:driver:${driverId}`, '1', 'EX', 3600);
+      await this.redis.set(`telegram:blocklist:cache:driver:${driverId}`, true, 3600);
       return false;
     }
 
@@ -340,7 +340,7 @@ export class SyncService implements OnModuleInit {
         lastActivatedAt: new Date(),
       },
     });
-    await this.redis.client().set(`telegram:blocklist:cache:driver:${driverId}`, '1', 'EX', 3600);
+    await this.redis.set(`telegram:blocklist:cache:driver:${driverId}`, true, 3600);
     return true;
   }
 
@@ -1020,7 +1020,7 @@ export class SyncService implements OnModuleInit {
           veiculoRoterizado:
             String((vehicleTypeIndex >= 0 ? rawRow[vehicleTypeIndex] : '') ?? '').trim() || null,
           requestedDriverId,
-          botAvailable: requestedDriverId ? true : undefined,
+          botAvailable: false,
           assignmentSource,
           sheetRowNumber: overviewRoute?.sheetRowNumber ?? null,
           driverId: effectiveDriverId,

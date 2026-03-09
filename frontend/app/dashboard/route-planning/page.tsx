@@ -170,6 +170,7 @@ export default function RoutePlanningPage() {
     return data.filter((route) => {
       return [
         route.atId,
+        route.gaiola,
         route.bairro,
         route.cidade,
         route.driverId,

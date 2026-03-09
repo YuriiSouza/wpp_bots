@@ -59,7 +59,7 @@ import type { Driver, Route } from "@/lib/types"
 import { toast } from "sonner"
 
 const ROUTES_FILTERS_STORAGE_KEY = "routes-page-filters"
-type RouteStatusFilter = Route["status"] | "SOLICITADA"
+type RouteStatusFilter = Route["status"] | "SOLICITADA" | "NO_BOT"
 
 function normalizeStoredFilter(value: unknown) {
   if (Array.isArray(value)) {
@@ -100,7 +100,8 @@ function getInitialRouteFilters(today: string) {
   if (typeof window === "undefined") {
     return {
       search: "",
-      dayFilter: today,
+      dayFromFilter: today,
+      dayToFilter: today,
       shiftFilter: [] as string[],
       statusFilter: [] as RouteStatusFilter[],
       cityFilter: [] as string[],
@@ -113,7 +114,8 @@ function getInitialRouteFilters(today: string) {
     if (!raw) {
       return {
         search: "",
-        dayFilter: today,
+        dayFromFilter: today,
+        dayToFilter: today,
         shiftFilter: [] as string[],
         statusFilter: [] as RouteStatusFilter[],
         cityFilter: [] as string[],
@@ -124,15 +126,20 @@ function getInitialRouteFilters(today: string) {
     const parsed = JSON.parse(raw) as Partial<{
       search: string
       dayFilter: string
+      dayFromFilter: string
+      dayToFilter: string
       shiftFilter: string | string[]
       statusFilter: string | string[]
       cityFilter: string | string[]
       vehicleFilter: string | string[]
     }>
 
+    const fallbackDay = parsed.dayFilter || today
+
     return {
       search: parsed.search || "",
-      dayFilter: parsed.dayFilter || today,
+      dayFromFilter: parsed.dayFromFilter || fallbackDay,
+      dayToFilter: parsed.dayToFilter || fallbackDay,
       shiftFilter: normalizeStoredFilter(parsed.shiftFilter),
       statusFilter: normalizeStoredFilter(parsed.statusFilter) as RouteStatusFilter[],
       cityFilter: normalizeStoredFilter(parsed.cityFilter),
@@ -141,7 +148,8 @@ function getInitialRouteFilters(today: string) {
   } catch {
     return {
       search: "",
-      dayFilter: today,
+      dayFromFilter: today,
+      dayToFilter: today,
       shiftFilter: [] as string[],
       statusFilter: [] as RouteStatusFilter[],
       cityFilter: [] as string[],
@@ -154,7 +162,8 @@ export default function RoutesPage() {
   const today = new Date().toISOString().slice(0, 10)
   const initialFilters = getInitialRouteFilters(today)
   const [search, setSearch] = useState(initialFilters.search)
-  const [dayFilter, setDayFilter] = useState(initialFilters.dayFilter)
+  const [dayFromFilter, setDayFromFilter] = useState(initialFilters.dayFromFilter)
+  const [dayToFilter, setDayToFilter] = useState(initialFilters.dayToFilter)
   const [shiftFilter, setShiftFilter] = useState<string[]>(initialFilters.shiftFilter)
   const [statusFilter, setStatusFilter] = useState<RouteStatusFilter[]>(initialFilters.statusFilter)
   const [cityFilter, setCityFilter] = useState<string[]>(initialFilters.cityFilter)
@@ -180,7 +189,8 @@ export default function RoutesPage() {
   const loadData = async (
     silent = false,
     filters?: {
-      date?: string
+      dateFrom?: string
+      dateTo?: string
       shift?: "AM" | "PM" | "PM2"
     }
   ) => {
@@ -191,7 +201,8 @@ export default function RoutesPage() {
     try {
       const [routeData, driverData] = await Promise.all([
         fetchRoutes({
-          date: (filters?.date ?? dayFilter) || undefined,
+          dateFrom: (filters?.dateFrom ?? dayFromFilter) || undefined,
+          dateTo: (filters?.dateTo ?? dayToFilter) || undefined,
           shift:
             filters?.shift ??
             (shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined),
@@ -223,21 +234,22 @@ export default function RoutesPage() {
     return () => {
       window.clearInterval(interval)
     }
-  }, [dayFilter, shiftFilter])
+  }, [dayFromFilter, dayToFilter, shiftFilter])
 
   useEffect(() => {
     window.localStorage.setItem(
       ROUTES_FILTERS_STORAGE_KEY,
       JSON.stringify({
         search,
-        dayFilter,
+        dayFromFilter,
+        dayToFilter,
         shiftFilter,
         statusFilter,
         cityFilter,
         vehicleFilter,
       })
     )
-  }, [search, dayFilter, shiftFilter, statusFilter, cityFilter, vehicleFilter])
+  }, [search, dayFromFilter, dayToFilter, shiftFilter, statusFilter, cityFilter, vehicleFilter])
 
   const cities = useMemo(() => [...new Set(routes.map((r) => r.cidade).filter(Boolean))], [routes])
   const shifts = useMemo(() => [...new Set(routes.map((r) => r.shift).filter(Boolean))], [routes])
@@ -251,16 +263,17 @@ export default function RoutesPage() {
         (r) =>
           r.id.toLowerCase().includes(q) ||
           r.atId?.toLowerCase().includes(q) ||
+          r.gaiola?.toLowerCase().includes(q) ||
           r.bairro?.toLowerCase().includes(q) ||
           r.driverName?.toLowerCase().includes(q) ||
           r.requestedDriverName?.toLowerCase().includes(q)
       )
     }
-    if (dayFilter) result = result.filter((r) => (r.routeDate || "") === dayFilter)
     if (shiftFilter.length) result = result.filter((r) => shiftFilter.includes(r.shift || ""))
     if (statusFilter.length) {
       result = result.filter((r) =>
         statusFilter.some((status) => {
+          if (status === "NO_BOT") return isReleasedToBot(r)
           if (status === "SOLICITADA") return isTelegramRequested(r)
           if (status === "DISPONIVEL") return r.status === "DISPONIVEL" && !isTelegramRequested(r)
           return r.status === status
@@ -275,7 +288,7 @@ export default function RoutesPage() {
       if (aPriority !== bPriority) return aPriority - bPriority
       return (b.routeDate || "").localeCompare(a.routeDate || "")
     })
-  }, [routes, search, dayFilter, shiftFilter, statusFilter, cityFilter, vehicleFilter])
+  }, [routes, search, shiftFilter, statusFilter, cityFilter, vehicleFilter])
 
   const statusCounts = useMemo(() => ({
     total: routes.length,
@@ -468,8 +481,10 @@ export default function RoutesPage() {
 
     setIsBulkReleasing(true)
     try {
+      const singleDayForActions =
+        dayFromFilter && dayToFilter && dayFromFilter === dayToFilter ? dayFromFilter : undefined
       const response = await releaseRoutesToBotByAtRequest(atIds, {
-        date: dayFilter || undefined,
+        date: singleDayForActions,
         shift: shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined,
       })
       if (!response.ok) {
@@ -564,11 +579,13 @@ export default function RoutesPage() {
 
   const handleExportCsv = async () => {
     try {
-      const csvBlob = await exportBotAssignedRoutesCsv(dayFilter || undefined)
+      const singleDayForActions =
+        dayFromFilter && dayToFilter && dayFromFilter === dayToFilter ? dayFromFilter : undefined
+      const csvBlob = await exportBotAssignedRoutesCsv(singleDayForActions)
       const blob = new Blob([csvBlob], { type: "text/csv;charset=utf-8;" })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement("a")
-      const suffix = dayFilter ? `-${dayFilter}` : ""
+      const suffix = singleDayForActions ? `-${singleDayForActions}` : ""
 
       link.href = url
       link.download = `rotas-atribuidas${suffix}.csv`
@@ -625,7 +642,7 @@ export default function RoutesPage() {
               <div className="relative min-w-0 flex-1 basis-full lg:basis-[280px]">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
-                  placeholder="Buscar por ID, bairro ou motorista..."
+                  placeholder="Buscar por ID, AT, gaiola, bairro ou motorista..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   className="pl-9"
@@ -633,11 +650,24 @@ export default function RoutesPage() {
               </div>
               <Input
                 type="date"
-                value={dayFilter}
-                onChange={(e) => setDayFilter(e.target.value)}
+                value={dayFromFilter}
+                onChange={(e) => setDayFromFilter(e.target.value)}
                 className="w-full sm:w-[160px]"
               />
-              <Button variant="outline" onClick={() => setDayFilter(today)} className="w-full sm:w-auto">
+              <Input
+                type="date"
+                value={dayToFilter}
+                onChange={(e) => setDayToFilter(e.target.value)}
+                className="w-full sm:w-[160px]"
+              />
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDayFromFilter(today)
+                  setDayToFilter(today)
+                }}
+                className="w-full sm:w-auto"
+              >
                 Hoje
               </Button>
               <DropdownMenu>
@@ -671,13 +701,13 @@ export default function RoutesPage() {
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>Status</DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  {(["SOLICITADA", "DISPONIVEL", "ATRIBUIDA", "BLOQUEADA", "EXPORTADA"] as RouteStatusFilter[]).map((status) => (
+                  {(["NO_BOT", "SOLICITADA", "DISPONIVEL", "ATRIBUIDA", "BLOQUEADA", "EXPORTADA"] as RouteStatusFilter[]).map((status) => (
                     <DropdownMenuCheckboxItem
                       key={status}
                       checked={statusFilter.includes(status)}
                       onCheckedChange={() => setStatusFilter((current) => toggleFilterValue(current, status))}
                     >
-                      {status}
+                      {status === "NO_BOT" ? "NO BOT" : status}
                     </DropdownMenuCheckboxItem>
                   ))}
                 </DropdownMenuContent>

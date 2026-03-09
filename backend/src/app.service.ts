@@ -1659,16 +1659,34 @@ export class AppService {
     return { ok: true, message: 'No-show resetado com sucesso.' };
   }
 
-  async getRoutes(date?: string, shift?: 'AM' | 'PM' | 'PM2') {
+  async getRoutes(
+    date?: string,
+    shift?: 'AM' | 'PM' | 'PM2',
+    dateFrom?: string,
+    dateTo?: string,
+  ) {
     const effectiveWindow = await this.getEffectiveRouteWindow();
+    const isValidDate = (value?: string) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim());
     const selectedDate = String(date || '').trim() || effectiveWindow.date;
+    let selectedDateFrom = isValidDate(dateFrom) ? String(dateFrom).trim() : '';
+    let selectedDateTo = isValidDate(dateTo) ? String(dateTo).trim() : '';
+    if (selectedDateFrom && selectedDateTo && selectedDateFrom > selectedDateTo) {
+      [selectedDateFrom, selectedDateTo] = [selectedDateTo, selectedDateFrom];
+    }
+    const hasDateRange = Boolean(selectedDateFrom && selectedDateTo);
+    const routeDateFilter = hasDateRange
+      ? { gte: selectedDateFrom, lte: selectedDateTo }
+      : selectedDate;
+    const dateRouteCondition = hasDateRange
+      ? { routeDate: routeDateFilter }
+      : { routeDate: selectedDate };
     const selectedShift =
       String(shift || '').trim().toUpperCase() === 'AM' ||
       String(shift || '').trim().toUpperCase() === 'PM' ||
       String(shift || '').trim().toUpperCase() === 'PM2'
         ? (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2')
         : undefined;
-    const cacheKey = `${this.ROUTES_CACHE_PREFIX}:v2:${selectedDate}:${selectedShift || 'all'}`;
+    const cacheKey = `${this.ROUTES_CACHE_PREFIX}:v3:${hasDateRange ? `${selectedDateFrom}:${selectedDateTo}` : selectedDate}:${selectedShift || 'all'}`;
     const cached = await this.redisService.get<any[]>(cacheKey);
     if (cached) {
       return cached;
@@ -1692,7 +1710,7 @@ export class AppService {
           selectedShift ? { shift: selectedShift } : {},
           {
             OR: [
-              { routeDate: selectedDate },
+              dateRouteCondition,
               { noShow: true, status: RouteStatus.DISPONIVEL },
             ],
           },

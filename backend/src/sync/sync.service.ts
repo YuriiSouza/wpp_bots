@@ -906,6 +906,7 @@ export class SyncService implements OnModuleInit {
     const historyHeaders = historyRows[0] ?? [];
     const prisma = this.prisma as any;
     const entries: Array<{ routeId: string; payload: RouteRecordInput }> = [];
+    const historyDriverByAt = new Map<string, string | null>();
     const driverIds: string[] = [];
     let skippedMissingDate = 0;
     let skippedMissingShift = 0;
@@ -953,6 +954,15 @@ export class SyncService implements OnModuleInit {
         (taskIdIndex >= 0 ? rawRow[taskIdIndex] : rawRow[0]) ?? '',
       ).trim();
       if (!atId) continue;
+      const overviewRoute = overviewByAt.get(atId);
+      const currentDriverId =
+        overviewRoute?.currentDriverId ||
+        this.normalizeSheetDriverId(
+          (driverIdIndex >= 0 ? rawRow[driverIdIndex] : rawRow[6]) ?? null,
+        );
+      historyDriverByAt.set(atId, currentDriverId || null);
+      if (currentDriverId) driverIds.push(currentDriverId);
+
       const routeDate = this.normalizeRouteDate(rawRow[39]);
       if (!routeDate) {
         skippedMissingDate += 1;
@@ -973,14 +983,7 @@ export class SyncService implements OnModuleInit {
       }
       const routeId = this.buildPersistentRouteId(atId);
       const cluster = String(rawRow[23] ?? '').trim() || null;
-      const overviewRoute = overviewByAt.get(atId);
-      const currentDriverId =
-        overviewRoute?.currentDriverId ||
-        this.normalizeSheetDriverId(
-          (driverIdIndex >= 0 ? rawRow[driverIdIndex] : rawRow[6]) ?? null,
-        );
       const requestedDriverId = overviewRoute?.requestedDriverId || null;
-      if (currentDriverId) driverIds.push(currentDriverId);
       if (requestedDriverId) driverIds.push(requestedDriverId);
       const requiredVehicleType =
         String(
@@ -1116,6 +1119,34 @@ export class SyncService implements OnModuleInit {
         const atId = String(route.atId || '').trim();
         const overview = overviewByAt.get(atId);
         const driverId = overview?.currentDriverId || null;
+
+        return prisma.route.update({
+          where: { id: route.id },
+          data: {
+            driverId,
+            status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
+          },
+        });
+      });
+    }
+
+    // Garante que toda AT presente no Historico ATs atualize driverId no banco
+    // mesmo quando a linha nao possui data/turno validos para create/filter.
+    const historyAtIds = Array.from(historyDriverByAt.keys());
+    if (historyAtIds.length) {
+      const historyExistingRoutes = await prisma.route.findMany({
+        where: {
+          atId: { in: historyAtIds },
+        },
+        select: {
+          id: true,
+          atId: true,
+        },
+      });
+
+      await this.runInBatches(historyExistingRoutes, 50, (route: { id: string; atId: string | null }) => {
+        const atId = String(route.atId || '').trim();
+        const driverId = historyDriverByAt.get(atId) || null;
 
         return prisma.route.update({
           where: { id: route.id },

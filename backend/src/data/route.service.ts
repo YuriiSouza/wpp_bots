@@ -178,6 +178,7 @@ export class RouteService {
         data: {
           requestedDriverId: driverId,
           assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
+          botAvailable: false,
           driverId: null,
           driverName: null,
           driverVehicleType: null,
@@ -233,6 +234,7 @@ export class RouteService {
         data: {
           requestedDriverId: null,
           assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
+          botAvailable: true,
           driverId: null,
           driverName: null,
           driverVehicleType: null,

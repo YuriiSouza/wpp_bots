@@ -276,6 +276,8 @@ export async function resetDriverNoShow(driverId: string) {
 
 export async function fetchRoutes(params?: {
   date?: string
+  dateFrom?: string
+  dateTo?: string
   shift?: "AM" | "PM" | "PM2"
 }) {
   const response = await api.get<Route[]>("/api/routes", {

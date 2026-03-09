@@ -58,9 +58,11 @@ export class AppController {
   @Get('api/routes')
   async getRoutes(
     @Query('date') date?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
     @Query('shift') shift?: 'AM' | 'PM' | 'PM2',
   ) {
-    return this.appService.getRoutes(date, shift);
+    return this.appService.getRoutes(date, shift, dateFrom, dateTo);
   }
 
   @Get('api/route-planning')

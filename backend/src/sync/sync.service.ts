@@ -910,8 +910,6 @@ export class SyncService implements OnModuleInit {
     const driverIds: string[] = [];
     let skippedMissingDate = 0;
     let skippedMissingShift = 0;
-    let skippedByDateFilter = 0;
-    let skippedByShiftFilter = 0;
 
     this.logSync('Sync rotas: planilhas carregadas', {
       historyRows: Math.max(0, historyRows.length - 1),
@@ -964,20 +962,10 @@ export class SyncService implements OnModuleInit {
       const routeDate = this.normalizeRouteDate(rawRow[39]);
       if (!routeDate) {
         skippedMissingDate += 1;
-        continue;
-      }
-      if (selectedDate && routeDate !== selectedDate) {
-        skippedByDateFilter += 1;
-        continue;
       }
       const routeShift = this.normalizeCalculationTaskShift(rawRow[36]) || null;
       if (!routeShift) {
         skippedMissingShift += 1;
-        continue;
-      }
-      if (selectedShift && routeShift !== selectedShift) {
-        skippedByShiftFilter += 1;
-        continue;
       }
       const routeId = this.buildPersistentRouteId(atId);
       const cluster = String(rawRow[23] ?? '').trim() || null;
@@ -1040,18 +1028,17 @@ export class SyncService implements OnModuleInit {
       driversReferenced: driverIds.length,
       skippedMissingDate,
       skippedMissingShift,
-      skippedByDateFilter,
-      skippedByShiftFilter,
       memory: this.memorySnapshot(),
     });
 
     await this.ensureDriversExist(driverIds);
 
     const historyAtIds = Array.from(historyDriverByAt.keys());
+    const entryByAtId = new Map(entries.map((entry) => [entry.routeId, entry.payload]));
     let updatedFromHistory = 0;
     let updateErrorsIgnored = 0;
 
-    // 1) UPDATE primeiro, por AT (coluna A) e Driver ID (coluna G), ignorando erros por linha.
+    // 1) UPDATE primeiro, reaplicando o payload completo da planilha nas ATs existentes.
     if (historyAtIds.length) {
       const historyExistingRoutes = await prisma.route.findMany({
         where: {
@@ -1062,6 +1049,10 @@ export class SyncService implements OnModuleInit {
           atId: true,
           requestedDriverId: true,
           botAvailable: true,
+          driverName: true,
+          driverVehicleType: true,
+          driverAccuracy: true,
+          driverPlate: true,
         },
       });
 
@@ -1073,17 +1064,47 @@ export class SyncService implements OnModuleInit {
           atId: string | null;
           requestedDriverId: string | null;
           botAvailable: boolean | null;
+          driverName: string | null;
+          driverVehicleType: string | null;
+          driverAccuracy: string | null;
+          driverPlate: string | null;
         }) => {
           const atId = String(route.atId || '').trim();
-          const driverId = historyDriverByAt.get(atId) || null;
+          const payload = entryByAtId.get(atId);
+          if (!payload) return;
+
+          const keepDriverMeta = Boolean(payload.driverId);
           try {
             await prisma.route.update({
               where: { id: route.id },
               data: {
-                driverId,
-                status: driverId ? 'ATRIBUIDA' : 'DISPONIVEL',
+                atId: payload.atId,
+                routeDate: payload.routeDate,
+                shift: payload.shift,
+                cluster: payload.cluster,
+                gaiola: payload.gaiola,
+                bairro: payload.bairro,
+                cidade: payload.cidade,
+                requiredVehicleType: payload.requiredVehicleType,
+                requiredVehicleTypeNorm: payload.requiredVehicleTypeNorm,
+                suggestionDriverDs: payload.suggestionDriverDs,
+                km: payload.km,
+                spr: payload.spr,
+                volume: payload.volume,
+                gg: payload.gg,
+                veiculoRoterizado: payload.veiculoRoterizado,
+                requestedDriverId: payload.requestedDriverId,
+                assignmentSource: payload.assignmentSource,
+                sheetRowNumber: payload.sheetRowNumber,
+                driverId: payload.driverId,
+                driverName: keepDriverMeta ? route.driverName : null,
+                driverVehicleType: keepDriverMeta ? route.driverVehicleType : null,
+                driverAccuracy: keepDriverMeta ? route.driverAccuracy : null,
+                driverPlate: keepDriverMeta ? route.driverPlate : null,
+                status: payload.status,
+                assignedAt: payload.assignedAt,
                 botAvailable:
-                  driverId || route.requestedDriverId
+                  payload.driverId || payload.requestedDriverId
                     ? false
                     : Boolean(route.botAvailable),
               },

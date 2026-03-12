@@ -5,7 +5,6 @@ import type {
   ManagedUser,
   User,
   AuditLog,
-  ConversationState,
   DashboardStats,
   Driver,
   DriverBlocklist,
@@ -178,7 +177,6 @@ export interface BotHealthPayload {
   activeConversations: number
   totalUsers: number
   recentErrors: number
-  conversations: ConversationState[]
   queue: Array<{
     chatId: string
     position: number

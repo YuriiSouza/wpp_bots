@@ -1,14 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { PageHeader } from "@/components/page-header"
 import { KpiCards } from "@/components/dashboard/kpi-cards"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
   BreakdownBarChart,
   BreakdownPieChart,
@@ -20,9 +16,7 @@ import {
 } from "@/components/dashboard/dashboard-charts"
 import {
   fetchDashboard,
-  fetchOperationContext,
   getApiErrorMessage,
-  updateOperationContext,
   type DashboardPayload,
 } from "@/lib/admin-api"
 import { toast } from "sonner"
@@ -30,29 +24,15 @@ import { toast } from "sonner"
 export default function DashboardPage() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [shift, setShift] = useState<"AM" | "PM" | "PM2">("AM")
-  const [isSavingShift, setIsSavingShift] = useState(false)
-  const [showShiftReminder, setShowShiftReminder] = useState(false)
-  const today = new Date().toISOString().slice(0, 10)
-  const hour = new Date().getHours()
-  const expectedShift = useMemo<"AM" | "PM" | "PM2">(() => {
-    if (hour >= 15) return "PM2"
-    if (hour >= 8) return "PM"
-    return "AM"
-  }, [hour])
 
   useEffect(() => {
     let active = true
 
     const loadDashboard = async () => {
       try {
-        const [data, context] = await Promise.all([
-          fetchDashboard(),
-          fetchOperationContext(),
-        ])
+        const data = await fetchDashboard()
         if (active) {
           setDashboard(data)
-          setShift(context.shift)
         }
       } catch (error) {
         toast.error(getApiErrorMessage(error, "Nao foi possivel carregar o dashboard"))
@@ -70,35 +50,6 @@ export default function DashboardPage() {
     }
   }, [])
 
-  useEffect(() => {
-    if ((hour >= 8 && hour < 15 && shift === "AM") || (hour >= 15 && (shift === "AM" || shift === "PM"))) {
-      setShowShiftReminder(true)
-    } else {
-      setShowShiftReminder(false)
-    }
-  }, [hour, shift])
-
-  const handleShiftChange = async (value: "AM" | "PM" | "PM2") => {
-    setShift(value)
-    setIsSavingShift(true)
-    try {
-      const response = await updateOperationContext({
-        date: today,
-        shift: value,
-      })
-      if (!response.ok) {
-        toast.error(response.message)
-        return
-      }
-      setShift(response.context.shift)
-      toast.success("Turno vigente atualizado.")
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar o turno vigente"))
-    } finally {
-      setIsSavingShift(false)
-    }
-  }
-
   return (
     <div className="flex flex-col">
       <PageHeader title="Dashboard" />
@@ -107,34 +58,6 @@ export default function DashboardPage() {
           <h2 className="text-2xl font-bold text-foreground">Dashboard Executivo</h2>
           <p className="text-sm text-muted-foreground">Visao geral operacional em tempo real</p>
         </div>
-
-        <Card>
-          <CardContent className="flex flex-col gap-4 p-4 md:flex-row md:items-end md:justify-between">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Data vigente</Label>
-                <div className="rounded-md border bg-muted px-3 py-2 text-sm text-card-foreground">{today}</div>
-              </div>
-              <div className="space-y-2">
-                <Label>Turno vigente</Label>
-                <Select value={shift} onValueChange={(value: "AM" | "PM" | "PM2") => void handleShiftChange(value)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="AM">AM</SelectItem>
-                    <SelectItem value="PM">PM1</SelectItem>
-                    <SelectItem value="PM2">PM2</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Janela operacional usada pelo bot para validar rota ativa no dia atual.
-              {isSavingShift ? " Salvando..." : ""}
-            </p>
-          </CardContent>
-        </Card>
 
         {isLoading || !dashboard ? (
           <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">
@@ -158,25 +81,6 @@ export default function DashboardPage() {
           </>
         )}
       </div>
-
-      <Dialog open={showShiftReminder} onOpenChange={setShowShiftReminder}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Atualize o turno vigente</DialogTitle>
-            <DialogDescription>
-              Agora são {hour}:00 e o turno selecionado ainda é {shift === "PM" ? "PM1" : shift}. O turno esperado para este horário é {expectedShift === "PM" ? "PM1" : expectedShift}.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowShiftReminder(false)}>
-              Lembrar depois
-            </Button>
-            <Button onClick={() => void handleShiftChange(expectedShift)}>
-              Mudar para {expectedShift === "PM" ? "PM1" : expectedShift}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

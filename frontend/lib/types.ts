@@ -93,14 +93,6 @@ export interface FaqItem {
   updatedAt: string
 }
 
-export interface ConversationState {
-  phone: string
-  step: string
-  lastDriverId: string | null
-  updatedAt: string
-  createdAt: string
-}
-
 export interface AuditLog {
   id: string
   entityType: string

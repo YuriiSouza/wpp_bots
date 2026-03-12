@@ -16,6 +16,7 @@ export interface DriverSession {
   priorityScore?: number;
   availableRoutes?: AvailableRoute[];
   inQueue?: boolean;
+  blockedQueueApproved?: boolean;
   queueGroup?: 'moto' | 'general';
   supportTicketId?: string;
 }

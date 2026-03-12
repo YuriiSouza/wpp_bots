@@ -1,0 +1,2 @@
+ALTER TABLE "DriverBlocklist"
+ADD COLUMN IF NOT EXISTS "reason" TEXT;

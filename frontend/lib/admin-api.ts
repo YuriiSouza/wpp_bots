@@ -6,6 +6,7 @@ import type {
   User,
   AuditLog,
   DashboardStats,
+  BlockedQueueRequest,
   Driver,
   DriverBlocklist,
   FaqItem,
@@ -16,6 +17,7 @@ import type {
   RoutePlanningPayload,
   RoutePlanningRunResult,
   SyncLog,
+  PendingRouteRequest,
 } from "./types"
 import type {
   Analyst,
@@ -33,7 +35,7 @@ import type {
 
 export interface DashboardPayload {
   stats: DashboardStats
-  routesPerDay: { date: string; atribuidas: number; disponiveis: number; bloqueadas: number }[]
+  routesPerDay: { date: string; atribuidas: number; disponiveis: number; noshow: number }[]
   routeDistribution: { status: string; count: number; fill: string }[]
   topDrivers: { name: string; score: number; routes: number }[]
   noShow: {
@@ -129,6 +131,10 @@ export interface DriversAnalyticsPayload {
     label: string
     count: number
   }>
+  byStatus: Array<{
+    label: string
+    count: number
+  }>
   topScore: Array<{
     id: string
     name: string | null
@@ -168,6 +174,11 @@ export interface OverviewPayload {
     chosenRoute: string | null
     chosenAt: string | null
   }>
+}
+
+export interface RouteRequestsBoardPayload {
+  routeRequests: PendingRouteRequest[]
+  blockedQueueRequests: BlockedQueueRequest[]
 }
 
 export interface BotHealthPayload {
@@ -284,6 +295,11 @@ export async function fetchRoutes(params?: {
   return response.data
 }
 
+export async function fetchRouteRequestsBoard() {
+  const response = await api.get<RouteRequestsBoardPayload>("/api/routes/requests-board")
+  return response.data
+}
+
 export async function fetchRoutePlanning(params?: {
   date?: string
   shift?: "AM" | "PM" | "PM2"
@@ -331,6 +347,16 @@ export async function assignRoute(routeId: string, driverId: string) {
   return response.data
 }
 
+export async function approveRouteRequest(routeId: string) {
+  const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/approve-request`)
+  return response.data
+}
+
+export async function rejectRouteRequest(routeId: string) {
+  const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/reject-request`)
+  return response.data
+}
+
 export async function unassignRoute(routeId: string, markNoShow = false) {
   const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/unassign`, { markNoShow })
   return response.data
@@ -370,6 +396,20 @@ export async function clearRouteNoShow(routeId: string) {
   return response.data
 }
 
+export async function approveBlockedQueueRequest(driverId: string) {
+  const response = await api.post<ApiActionResponse>(
+    `/api/routes/blocked-queue-requests/${driverId}/approve`
+  )
+  return response.data
+}
+
+export async function rejectBlockedQueueRequest(driverId: string) {
+  const response = await api.post<ApiActionResponse>(
+    `/api/routes/blocked-queue-requests/${driverId}/reject`
+  )
+  return response.data
+}
+
 export async function exportBotAssignedRoutesCsv(date?: string) {
   const response = await api.get<Blob>("/api/routes/export/bot-csv", {
     params: date ? { date } : undefined,
@@ -383,8 +423,8 @@ export async function fetchBlocklist() {
   return response.data
 }
 
-export async function addBlocklistDriver(driverId: string) {
-  const response = await api.post<ApiActionResponse>("/acess/analist/blocklist/add", { driverId })
+export async function addBlocklistDriver(driverId: string, reason: string) {
+  const response = await api.post<ApiActionResponse>("/acess/analist/blocklist/add", { driverId, reason })
   return response.data
 }
 

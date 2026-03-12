@@ -20,7 +20,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface RoutesChartProps {
-  data: { date: string; atribuidas: number; disponiveis: number; bloqueadas: number }[]
+  data: { date: string; atribuidas: number; disponiveis: number; noshow: number }[]
 }
 
 export function RoutesPerDayChart({ data }: RoutesChartProps) {
@@ -59,7 +59,7 @@ export function RoutesPerDayChart({ data }: RoutesChartProps) {
               <Legend wrapperStyle={{ fontSize: "12px" }} />
               <Area type="monotone" dataKey="atribuidas" name="Atribuidas" stroke="var(--color-chart-1)" fill="url(#fillAtribuidas)" strokeWidth={2} />
               <Area type="monotone" dataKey="disponiveis" name="Disponiveis" stroke="var(--color-chart-2)" fill="url(#fillDisponiveis)" strokeWidth={2} />
-              <Area type="monotone" dataKey="bloqueadas" name="Bloqueadas" stroke="var(--color-chart-3)" fill="var(--color-chart-3)" fillOpacity={0.1} strokeWidth={2} />
+              <Area type="monotone" dataKey="noshow" name="No-Show" stroke="var(--color-chart-3)" fill="var(--color-chart-3)" fillOpacity={0.1} strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </div>

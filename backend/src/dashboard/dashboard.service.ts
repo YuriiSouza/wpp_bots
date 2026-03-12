@@ -37,7 +37,7 @@ export class DashboardService {
     ] = await Promise.all([
       prisma.driver.count(),
       prisma.route.count({ where: { status: RouteStatus.DISPONIVEL } }),
-      prisma.route.count({ where: { status: RouteStatus.ATRIBUIDA } }),
+      prisma.route.count({ where: { status: { in: [RouteStatus.ATRIBUIDA, 'APROVADA' as any] } } }),
       prisma.route.count({ where: { status: RouteStatus.BLOQUEADA } }),
       prisma.driverBlocklist.count({ where: { status: 'BLOCKED' as any } }),
       prisma.driver.aggregate({ _avg: { declineRate: true } }),
@@ -52,7 +52,7 @@ export class DashboardService {
           _count: {
             select: {
               routes: {
-                where: { status: RouteStatus.ATRIBUIDA },
+                where: { status: { in: [RouteStatus.ATRIBUIDA, 'APROVADA' as any] } },
               },
             },
           },
@@ -78,6 +78,7 @@ export class DashboardService {
           routeDate: true,
           createdAt: true,
           status: true,
+          noShow: true,
         },
         orderBy: [{ routeDate: 'asc' }, { createdAt: 'asc' }],
       }),
@@ -86,7 +87,7 @@ export class DashboardService {
     const totalRoutes = routesAvailable + routesAssigned + routesBlocked;
     const historyMap = new Map<
       string,
-      { date: string; atribuidas: number; disponiveis: number; bloqueadas: number }
+      { date: string; atribuidas: number; disponiveis: number; noshow: number }
     >();
 
     for (let offset = 13; offset >= 0; offset -= 1) {
@@ -98,7 +99,7 @@ export class DashboardService {
         date: `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`,
         atribuidas: 0,
         disponiveis: 0,
-        bloqueadas: 0,
+        noshow: 0,
       });
     }
 
@@ -106,9 +107,9 @@ export class DashboardService {
       const key = this.resolveRouteReferenceDate(route).toISOString().slice(0, 10);
       const bucket = historyMap.get(key);
       if (!bucket) return;
-      if (route.status === RouteStatus.ATRIBUIDA) bucket.atribuidas += 1;
+      if (route.status === RouteStatus.ATRIBUIDA || String(route.status) === 'APROVADA') bucket.atribuidas += 1;
       if (route.status === RouteStatus.DISPONIVEL) bucket.disponiveis += 1;
-      if (route.status === RouteStatus.BLOQUEADA) bucket.bloqueadas += 1;
+      if (route.noShow) bucket.noshow += 1;
     });
 
     const topDrivers = topDriversRaw.map((driver) => ({

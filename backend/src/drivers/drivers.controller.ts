@@ -30,8 +30,11 @@ export class DriversController {
 
   @Post('acess/analist/blocklist/add')
   @Post('acess/analist/blacklist/add')
-  async addBlocklistDriver(@Body('driverId') driverId: string) {
-    return this.driversService.addBlocklistDriver(driverId);
+  async addBlocklistDriver(
+    @Body('driverId') driverId: string,
+    @Body('reason') reason?: string,
+  ) {
+    return this.driversService.addBlocklistDriver(driverId, reason);
   }
 
   @Post('acess/analist/blocklist/remove')

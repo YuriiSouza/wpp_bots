@@ -25,6 +25,7 @@ const bairros = ["Centro", "Jardins", "Mooca", "Pinheiros", "Lapa", "Bela Vista"
 export const mockDrivers: Driver[] = driverNames.map((name, i) => ({
   id: `DRV${String(i + 1).padStart(4, "0")}`,
   name,
+  status: ["Active", "Inactive", "Onboarding", "Suspended"][i % 4],
   vehicleType: vehicleTypes[i % vehicleTypes.length],
   ds: dsValues[i % dsValues.length],
   noShowCount: Math.floor(Math.random() * 8),
@@ -103,6 +104,7 @@ export const mockOverviews: AssignmentOverview[] = Array.from({ length: 15 }, (_
 export const mockBlocklist: DriverBlocklist[] = mockDrivers.slice(0, 6).map((d, i) => ({
   driverId: d.id,
   status: i < 4 ? "BLOCKED" as const : "UNBLOCKED" as const,
+  reason: i < 2 ? "Score baixo" : i < 4 ? "Sem DS (novato)" : null,
   timesListed: Math.floor(Math.random() * 5 + 1),
   lastActivatedAt: new Date(Date.now() - Math.random() * 7 * 86400000).toISOString(),
   lastInactivatedAt: i >= 4 ? new Date(Date.now() - Math.random() * 3 * 86400000).toISOString() : null,
@@ -152,7 +154,7 @@ export const mockRoutesPerDay = Array.from({ length: 14 }, (_, i) => {
     date: date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
     atribuidas: Math.floor(Math.random() * 15 + 5),
     disponiveis: Math.floor(Math.random() * 10 + 3),
-    bloqueadas: Math.floor(Math.random() * 5),
+    noshow: Math.floor(Math.random() * 5),
   }
 })
 

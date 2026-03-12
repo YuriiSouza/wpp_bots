@@ -5,6 +5,7 @@ import { normalizeVehicleType } from './utils/normalize-vehicle';
 import { createConnection } from 'net';
 import { SyncService } from './sync/sync.service';
 import { SheetsService } from './sheets/sheets.service';
+import { TelegramService } from './telegram/telegram.service';
 import {
   Prisma,
   RouteStatus,
@@ -131,6 +132,8 @@ export class AppService {
   private readonly LOG_PREFIX = 'telegram:log';
   private readonly ROUTES_NOTE_KEY = 'telegram:routes:note';
   private readonly BLOCKLIST_CACHE_PREFIX = 'telegram:blocklist:cache:driver';
+  private readonly QUEUE_WAIT_NOTICE_PREFIX = 'telegram:queue:wait-notice';
+  private readonly BLOCKED_QUEUE_COOLDOWN_MINUTES = 40;
   private readonly ROUTE_PLANNING_PREFERENCES_KEY = 'routePlanningPreferences';
 
   constructor(
@@ -138,6 +141,7 @@ export class AppService {
     private readonly prisma: PrismaService,
     private readonly sync: SyncService,
     private readonly sheets: SheetsService,
+    private readonly telegram: TelegramService,
   ) {}
 
   getHello(): string {
@@ -146,6 +150,97 @@ export class AppService {
 
   private toIsoString(value?: Date | null): string | null {
     return value ? value.toISOString() : null;
+  }
+
+  private stateKey(chatId: string) {
+    return `telegram:state:${chatId}`;
+  }
+
+  private queueMarker(chatId: string) {
+    return `telegram:queue:member:${chatId}`;
+  }
+
+  private queueWaitNoticeKey(chatId: string) {
+    return `${this.QUEUE_WAIT_NOTICE_PREFIX}:${chatId}`;
+  }
+
+  private isFiorino(vehicleType?: string | null) {
+    return String(vehicleType || '').toLowerCase().includes('fiorino');
+  }
+
+  private queueGroupFromVehicle(vehicleType?: string | null) {
+    return normalizeVehicleType(vehicleType ?? undefined) === 'MOTO' ? 'moto' : 'general';
+  }
+
+  private queueListKey(group: 'moto' | 'general') {
+    return group === 'moto' ? this.QUEUE_LIST_KEY_MOTO : this.QUEUE_LIST_KEY_GENERAL;
+  }
+
+  private queueActiveKey(group: 'moto' | 'general') {
+    return group === 'moto' ? this.QUEUE_ACTIVE_KEY_MOTO : this.QUEUE_ACTIVE_KEY_GENERAL;
+  }
+
+  private async resolveQueuePriorityScore(driverId?: string | null, currentScore?: number | null) {
+    if (typeof currentScore === 'number' && Number.isFinite(currentScore)) {
+      return currentScore;
+    }
+    const normalizedDriverId = String(driverId || '').trim();
+    if (!normalizedDriverId) return 0;
+    const driver = await this.prisma.driver.findUnique({
+      where: { id: normalizedDriverId },
+      select: { priorityScore: true },
+    });
+    return Number(driver?.priorityScore || 0);
+  }
+
+  private async enqueueApprovedBlockedDriver(input: {
+    chatId: string;
+    driverId: string;
+    vehicleType?: string | null;
+    priorityScore?: number | null;
+  }) {
+    const client = this.redisService.client();
+    const group = this.queueGroupFromVehicle(input.vehicleType);
+    const queueKey = this.queueListKey(group);
+    const marker = this.queueMarker(input.chatId);
+    const queue = await client.lrange(queueKey, 0, -1);
+    const filtered = queue.filter((chatId) => chatId !== input.chatId);
+    const rankedQueue = await Promise.all(
+      filtered.map(async (chatId, index) => {
+        const state = await this.redisService.get<any>(this.stateKey(chatId));
+        return {
+          chatId,
+          index,
+          isFiorino: this.isFiorino(state?.vehicleType),
+          score: await this.resolveQueuePriorityScore(state?.driverId, state?.priorityScore),
+        };
+      }),
+    );
+
+    rankedQueue.push({
+      chatId: input.chatId,
+      index: Number.MAX_SAFE_INTEGER,
+      isFiorino: this.isFiorino(input.vehicleType),
+      score: await this.resolveQueuePriorityScore(input.driverId, input.priorityScore),
+    });
+
+    rankedQueue.sort((a, b) => {
+      if (a.isFiorino !== b.isFiorino) return a.isFiorino ? -1 : 1;
+      if (a.score !== b.score) return b.score - a.score;
+      return a.index - b.index;
+    });
+
+    await client.del(queueKey);
+    if (rankedQueue.length) {
+      await client.rpush(queueKey, ...rankedQueue.map((entry) => entry.chatId));
+    }
+    await client.set(marker, '1', 'EX', 30);
+    await client.del(this.queueWaitNoticeKey(input.chatId));
+
+    return {
+      group,
+      hasActive: Boolean(await client.get(this.queueActiveKey(group))),
+    };
   }
 
   private getCurrentRouteWindow() {
@@ -790,6 +885,19 @@ export class AppService {
     }
   }
 
+  private async resolveAuthenticatedAnalyst(authorization?: string | null) {
+    const prisma = this.prisma as any;
+    const analystId = this.resolveAuthenticatedUserId(authorization);
+    const analyst = await prisma.analyst.findUnique({
+      where: { id: analystId },
+      select: { id: true, name: true },
+    });
+    if (!analyst) {
+      throw new UnauthorizedException('Sessao invalida');
+    }
+    return analyst;
+  }
+
   private resolveRouteReferenceDate(route: { routeDate?: string | null; createdAt: Date }) {
     const rawDate = String(route.routeDate || '').trim();
     if (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
@@ -925,7 +1033,7 @@ export class AppService {
     ] = await Promise.all([
       this.prisma.driver.count(),
       this.prisma.route.count({ where: { status: RouteStatus.DISPONIVEL } }),
-      this.prisma.route.count({ where: { status: RouteStatus.ATRIBUIDA } }),
+      this.prisma.route.count({ where: { status: { in: [RouteStatus.ATRIBUIDA, 'APROVADA' as any] } } }),
       this.prisma.route.count({ where: { status: RouteStatus.BLOQUEADA } }),
       this.prisma.driverBlocklist.findMany({
         select: { status: true },
@@ -946,7 +1054,7 @@ export class AppService {
           _count: {
             select: {
               routes: {
-                where: { status: RouteStatus.ATRIBUIDA },
+                where: { status: { in: [RouteStatus.ATRIBUIDA, 'APROVADA' as any] } },
               },
             },
           },
@@ -972,6 +1080,7 @@ export class AppService {
           routeDate: true,
           createdAt: true,
           status: true,
+          noShow: true,
         },
         orderBy: [{ routeDate: 'asc' }, { createdAt: 'asc' }],
       }),
@@ -983,7 +1092,7 @@ export class AppService {
     const lastSync = lastSuccessfulSync || lastSyncAttempt;
 
     const totalRoutes = routesAvailable + routesAssigned + routesBlocked;
-    const historyMap = new Map<string, { date: string; atribuidas: number; disponiveis: number; bloqueadas: number }>();
+    const historyMap = new Map<string, { date: string; atribuidas: number; disponiveis: number; noshow: number }>();
 
     for (let offset = 13; offset >= 0; offset -= 1) {
       const date = new Date();
@@ -994,7 +1103,7 @@ export class AppService {
         date: this.formatDayLabel(date),
         atribuidas: 0,
         disponiveis: 0,
-        bloqueadas: 0,
+        noshow: 0,
       });
     }
 
@@ -1002,9 +1111,9 @@ export class AppService {
       const key = this.formatIsoDate(this.resolveRouteReferenceDate(route));
       const bucket = historyMap.get(key);
       if (!bucket) return;
-      if (route.status === RouteStatus.ATRIBUIDA) bucket.atribuidas += 1;
+      if (route.status === RouteStatus.ATRIBUIDA || String(route.status) === 'APROVADA') bucket.atribuidas += 1;
       if (route.status === RouteStatus.DISPONIVEL) bucket.disponiveis += 1;
-      if (route.status === RouteStatus.BLOQUEADA) bucket.bloqueadas += 1;
+      if (route.noShow) bucket.noshow += 1;
     });
 
     const payload = {
@@ -1341,7 +1450,7 @@ export class AppService {
   }
 
   async getDriversAnalytics() {
-    const cacheKey = `${this.DRIVERS_ANALYTICS_CACHE_PREFIX}:v1`;
+    const cacheKey = `${this.DRIVERS_ANALYTICS_CACHE_PREFIX}:v2`;
     const cached = await this.redisService.get<any>(cacheKey);
     if (cached) {
       return cached;
@@ -1381,7 +1490,7 @@ export class AppService {
       END
     `;
 
-    const [summaryRows, blockedRows, byVehicleRows, topScoreRows, topRiskRows, filterRows, dsSummaryRows, dsByVehicleRows, topDsRows, lowDsRows] =
+    const [summaryRows, blockedRows, byVehicleRows, byStatusRows, topScoreRows, topRiskRows, filterRows, dsSummaryRows, dsByVehicleRows, topDsRows, lowDsRows] =
       await Promise.all([
         this.prisma.$queryRaw<Array<{
           totalactivedrivers: bigint | number;
@@ -1413,6 +1522,16 @@ export class AppService {
           GROUP BY 1
           ORDER BY COUNT(*) DESC, 1 ASC
           LIMIT 5
+        `),
+        this.prisma.$queryRaw<Array<{ label: string; count: bigint | number }>>(Prisma.sql`
+          ${activeDriversSql}
+          SELECT
+            COALESCE(NULLIF(TRIM(ad."status"), ''), 'Sem status') AS "label",
+            COUNT(*) AS "count"
+          FROM active_drivers ad
+          GROUP BY 1
+          ORDER BY COUNT(*) DESC, 1 ASC
+          LIMIT 10
         `),
         this.prisma.$queryRaw<Array<{
           id: string;
@@ -1605,6 +1724,10 @@ export class AppService {
         label: row.label,
         count: Number(row.count || 0),
       })),
+      byStatus: byStatusRows.map((row) => ({
+        label: row.label,
+        count: Number(row.count || 0),
+      })),
       topScore: topScoreRows.map(normalizeDriverRow),
       topRisk: topRiskRows.map(normalizeDriverRow),
       filterOptions: {
@@ -1792,6 +1915,362 @@ export class AppService {
     );
 
     return payload;
+  }
+
+  async getRouteRequestsBoard() {
+    const prisma = this.prisma as any;
+    const [pendingRouteRequests, blockedQueueRequests] = await Promise.all([
+      prisma.route.findMany({
+        where: {
+          requestedDriverId: { not: null },
+          assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
+          driverId: null,
+        },
+        orderBy: [{ updatedAt: 'desc' }],
+        select: {
+          id: true,
+          atId: true,
+          routeDate: true,
+          shift: true,
+          cluster: true,
+          cidade: true,
+          bairro: true,
+          requiredVehicleType: true,
+          requestedDriverId: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.blockedQueueRequest.findMany({
+        where: {
+          OR: [
+            { status: 'PENDING' },
+            {
+              status: 'REJECTED',
+              cooldownUntil: {
+                gt: new Date(),
+              },
+            },
+          ],
+        },
+        orderBy: [{ requestedAt: 'desc' }],
+      }),
+    ]);
+
+    const requestedDriverIds = Array.from(
+      new Set(
+        pendingRouteRequests
+          .map((route: { requestedDriverId?: string | null }) => String(route.requestedDriverId || '').trim())
+          .filter(Boolean),
+      ),
+    );
+    const allDriverIds = Array.from(
+      new Set([
+        ...requestedDriverIds,
+        ...blockedQueueRequests.map((request: { driverId: string }) => request.driverId),
+      ]),
+    );
+    const [requestedDrivers, blockedDrivers, blocklistRows] = await Promise.all([
+      requestedDriverIds.length
+        ? prisma.driver.findMany({
+            where: { id: { in: requestedDriverIds } },
+            select: {
+              id: true,
+              name: true,
+              vehicleType: true,
+              ds: true,
+              priorityScore: true,
+            },
+          })
+        : [],
+      blockedQueueRequests.length
+        ? prisma.driver.findMany({
+            where: {
+              id: {
+                in: blockedQueueRequests.map((request: { driverId: string }) => request.driverId),
+              },
+            },
+            select: {
+              id: true,
+              name: true,
+              ds: true,
+              priorityScore: true,
+            },
+          })
+        : [],
+      allDriverIds.length
+        ? prisma.driverBlocklist.findMany({
+            where: {
+              driverId: { in: allDriverIds },
+            },
+            select: {
+              driverId: true,
+              reason: true,
+              status: true,
+            },
+          })
+        : [],
+    ]);
+
+    const requestedDriverById = new Map<string, {
+      id: string;
+      name: string | null;
+      vehicleType: string | null;
+      ds: string | null;
+      priorityScore: number;
+    }>(
+      requestedDrivers.map((driver: {
+        id: string;
+        name: string | null;
+        vehicleType: string | null;
+        ds: string | null;
+        priorityScore: number;
+      }) => [
+        driver.id,
+        driver,
+      ]),
+    );
+    const blockedDriverById = new Map<string, {
+      id: string;
+      name: string | null;
+      ds: string | null;
+      priorityScore: number;
+    }>(
+      blockedDrivers.map((driver: {
+        id: string;
+        name: string | null;
+        ds: string | null;
+        priorityScore: number;
+      }) => [driver.id, driver]),
+    );
+    const blockReasonByDriverId = new Map<string, string | null>(
+      blocklistRows.map((row: { driverId: string; reason: string | null; status: string }) => [
+        row.driverId,
+        String(row.status || '') === 'BLOCKED' ? row.reason || null : null,
+      ]),
+    );
+
+    return {
+      routeRequests: pendingRouteRequests.map(
+        (route: {
+          id: string;
+          atId: string | null;
+          routeDate: string | null;
+          shift: string | null;
+          cluster: string | null;
+          cidade: string | null;
+          bairro: string | null;
+          requiredVehicleType: string | null;
+          requestedDriverId: string | null;
+          updatedAt: Date;
+        }) => {
+          const requestedDriver = requestedDriverById.get(String(route.requestedDriverId || '').trim());
+          return {
+            routeId: route.id,
+            atId: route.atId || route.id,
+            routeDate: route.routeDate,
+            shift: route.shift,
+            cluster: route.cluster,
+            cidade: route.cidade,
+            bairro: route.bairro,
+            requiredVehicleType: route.requiredVehicleType,
+            requestedDriverId: route.requestedDriverId,
+            requestedDriverName: requestedDriver?.name || route.requestedDriverId || null,
+            requestedDriverVehicleType: requestedDriver?.vehicleType || null,
+            requestedDriverDs: requestedDriver?.ds || null,
+            requestedDriverPriorityScore: requestedDriver?.priorityScore ?? 0,
+            blockReason: blockReasonByDriverId.get(String(route.requestedDriverId || '').trim()) || null,
+            requestedAt: this.toIsoString(route.updatedAt),
+          };
+        },
+      ),
+      blockedQueueRequests: blockedQueueRequests.map(
+        (request: {
+          driverId: string;
+          chatId: string | null;
+          driverName: string | null;
+          vehicleType: string | null;
+          blockReason: string | null;
+          cooldownUntil: Date | null;
+          requestedAt: Date;
+          updatedAt: Date;
+        }) => ({
+          driverId: request.driverId,
+          chatId: request.chatId,
+          driverName:
+            request.driverName || blockedDriverById.get(request.driverId)?.name || request.driverId,
+          vehicleType: request.vehicleType,
+          ds: blockedDriverById.get(request.driverId)?.ds || null,
+          priorityScore: blockedDriverById.get(request.driverId)?.priorityScore ?? 0,
+          status: String((request as { status?: string }).status || 'PENDING'),
+          blockReason: request.blockReason,
+          cooldownUntil: this.toIsoString(request.cooldownUntil),
+          requestedAt: this.toIsoString(request.requestedAt),
+          updatedAt: this.toIsoString(request.updatedAt),
+        }),
+      ),
+    };
+  }
+
+  async approveBlockedQueueRequest(
+    driverIdRaw: string,
+    authorization?: string,
+  ): Promise<{ ok: boolean; message: string }> {
+    const prisma = this.prisma as any;
+    const driverId = this.normalizeDriverId(driverIdRaw);
+    if (!driverId) {
+      return { ok: false, message: 'Informe um Driver ID valido.' };
+    }
+
+    const analyst = await this.resolveAuthenticatedAnalyst(authorization);
+    const request = await prisma.blockedQueueRequest.findUnique({
+      where: { driverId },
+    });
+
+    if (!request || String(request.status || '') !== 'PENDING') {
+      return { ok: false, message: 'Nao existe solicitacao pendente para esse motorista.' };
+    }
+
+    const chatId = String(request.chatId || '').trim();
+    const state = chatId ? await this.redisService.get<any>(this.stateKey(chatId)) : null;
+    await prisma.blockedQueueRequest.update({
+      where: { driverId },
+      data: {
+        status: 'APPROVED',
+        cooldownUntil: null,
+        approvedById: analyst.id,
+        approvedByName: analyst.name,
+        resolvedAt: new Date(),
+      },
+    });
+
+    if (chatId) {
+      await this.redisService.set(
+        this.stateKey(chatId),
+        {
+          ...(state || {}),
+          driverId,
+          driverName: state?.driverName || request.driverName || null,
+          vehicleType: state?.vehicleType || request.vehicleType || null,
+          priorityScore: state?.priorityScore ?? null,
+          blockedQueueApproved: true,
+          inQueue: true,
+          queueGroup: this.queueGroupFromVehicle(state?.vehicleType || request.vehicleType || null),
+        },
+        10800,
+      );
+
+      await this.enqueueApprovedBlockedDriver({
+        chatId,
+        driverId,
+        vehicleType: state?.vehicleType || request.vehicleType || null,
+        priorityScore: state?.priorityScore ?? null,
+      });
+
+      const approvalMessage =
+        'Sua solicitacao foi aprovada. Voce entrou na fila de atendimento. Aguarde...';
+      const numericChatId = Number(chatId);
+      if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
+        await this.telegram.sendMessage(numericChatId, approvalMessage);
+      }
+    }
+
+    await this.recordAudit({
+      entityType: 'BLOCKED_QUEUE_REQUEST',
+      entityId: driverId,
+      action: 'APPROVED',
+      userId: analyst.id,
+      userName: analyst.name,
+      before: {
+        status: request.status,
+        requestedAt: this.toIsoString(request.requestedAt),
+      },
+      after: {
+        status: 'APPROVED',
+        approvedById: analyst.id,
+        approvedByName: analyst.name,
+      },
+    });
+
+    return {
+      ok: true,
+      message: `Solicitacao do motorista ${driverId} aprovada para entrar na fila.`,
+    };
+  }
+
+  async rejectBlockedQueueRequest(
+    driverIdRaw: string,
+    authorization?: string,
+  ): Promise<{ ok: boolean; message: string }> {
+    const prisma = this.prisma as any;
+    const driverId = this.normalizeDriverId(driverIdRaw);
+    if (!driverId) {
+      return { ok: false, message: 'Informe um Driver ID valido.' };
+    }
+
+    const analyst = await this.resolveAuthenticatedAnalyst(authorization);
+    const request = await prisma.blockedQueueRequest.findUnique({
+      where: { driverId },
+    });
+
+    if (!request || String(request.status || '') !== 'PENDING') {
+      return { ok: false, message: 'Nao existe solicitacao pendente para esse motorista.' };
+    }
+
+    const cooldownUntil = new Date(Date.now() + this.BLOCKED_QUEUE_COOLDOWN_MINUTES * 60 * 1000);
+    await prisma.blockedQueueRequest.update({
+      where: { driverId },
+      data: {
+        status: 'REJECTED',
+        cooldownUntil,
+        approvedById: analyst.id,
+        approvedByName: analyst.name,
+        resolvedAt: new Date(),
+      },
+    });
+
+    const chatId = String(request.chatId || '').trim();
+    if (chatId) {
+      const state = await this.redisService.get<any>(this.stateKey(chatId));
+      await this.redisService.set(
+        this.stateKey(chatId),
+        {
+          ...(state || {}),
+          blockedQueueApproved: false,
+          inQueue: false,
+        },
+        10800,
+      );
+      const numericChatId = Number(chatId);
+      if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
+        await this.telegram.sendMessage(
+          numericChatId,
+          'Sua solicitacao nao foi liberada neste momento. Para verificar a tratativa, fale com um dos analistas.',
+        );
+      }
+    }
+
+    await this.recordAudit({
+      entityType: 'BLOCKED_QUEUE_REQUEST',
+      entityId: driverId,
+      action: 'REJECTED',
+      userId: analyst.id,
+      userName: analyst.name,
+      before: {
+        status: request.status,
+        requestedAt: this.toIsoString(request.requestedAt),
+      },
+      after: {
+        status: 'REJECTED',
+        cooldownUntil: this.toIsoString(cooldownUntil),
+        approvedById: analyst.id,
+        approvedByName: analyst.name,
+      },
+    });
+
+    return {
+      ok: true,
+      message: `Solicitacao do motorista ${driverId} reprovada por 40 minutos.`,
+    };
   }
 
   async getRoutePlanning(
@@ -3372,7 +3851,7 @@ export class AppService {
         OR: [
           {
             assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
-            requestedDriverId: { not: null },
+            status: 'APROVADA' as any,
           },
           {
             assignmentSource: ROUTE_ASSIGNMENT_SOURCE.MANUAL,
@@ -3419,7 +3898,7 @@ export class AppService {
         route.routeDate,
         route.shift,
         route.assignmentSource,
-        route.status === RouteStatus.ATRIBUIDA ? 'ATRIBUIDA' : 'SOLICITADA',
+        String(route.status) === 'APROVADA' ? 'APROVADA' : 'ATRIBUIDA',
       ]
         .map(escapeCsv)
         .join(','),
@@ -3457,7 +3936,7 @@ export class AppService {
       prisma.route.findUnique({ where: { id: routeId } }),
       this.prisma.driver.findUnique({ where: { id: driverId } }),
       prisma.route.findFirst({
-        where: { driverId, status: RouteStatus.ATRIBUIDA },
+        where: { driverId, status: { in: [RouteStatus.ATRIBUIDA, 'APROVADA' as any] } },
         select: { id: true },
       }),
     ]);
@@ -3486,6 +3965,10 @@ export class AppService {
       route.requestedDriverId === driver.id
         ? ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT
         : ROUTE_ASSIGNMENT_SOURCE.MANUAL;
+    const nextStatus =
+      nextAssignmentSource === ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT
+        ? ('APROVADA' as any)
+        : RouteStatus.ATRIBUIDA;
 
     await prisma.route.update({
       where: { id: routeId },
@@ -3496,7 +3979,7 @@ export class AppService {
         driverId: driver.id,
         driverName: driver.name,
         driverVehicleType: driver.vehicleType,
-        status: RouteStatus.ATRIBUIDA,
+        status: nextStatus,
         assignedAt: new Date(),
       },
     });
@@ -3507,7 +3990,7 @@ export class AppService {
       action: 'MANUAL_ASSIGN',
       userId: 'system',
       userName: 'System',
-      after: { driverId: driver.id, status: RouteStatus.ATRIBUIDA },
+      after: { driverId: driver.id, status: nextStatus },
     });
 
     await Promise.all([
@@ -3517,7 +4000,182 @@ export class AppService {
       this.invalidateRoutesCache(),
     ]);
 
-    return { ok: true, message: 'Rota atribuida com sucesso.' };
+    return {
+      ok: true,
+      message:
+        nextAssignmentSource === ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT
+          ? 'Solicitacao aprovada e rota vinculada ao motorista.'
+          : 'Rota atribuida com sucesso.',
+    };
+  }
+
+  async approveRouteRequest(routeIdRaw: string) {
+    const routeId = String(routeIdRaw || '').trim();
+    if (!routeId) return { ok: false, message: 'Rota invalida.' };
+
+    const prisma = this.prisma as any;
+    const route = await prisma.route.findUnique({
+      where: { id: routeId },
+      select: {
+        id: true,
+        atId: true,
+        requestedDriverId: true,
+        assignmentSource: true,
+        status: true,
+      },
+    });
+
+    if (!route) {
+      return { ok: false, message: 'Rota nao encontrada.' };
+    }
+
+    if (
+      String(route.assignmentSource || '') !== ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT ||
+      !route.requestedDriverId ||
+      String(route.status || '') === 'APROVADA'
+    ) {
+      return { ok: false, message: 'Nao existe solicitacao de rota pendente para aprovar.' };
+    }
+
+    await prisma.route.update({
+      where: { id: route.id },
+      data: {
+        botAvailable: false,
+        driverId: route.requestedDriverId,
+        status: 'APROVADA' as any,
+        assignedAt: new Date(),
+      },
+    });
+
+    await this.sheets.updateAssignmentRequest(route.id, route.requestedDriverId);
+    await this.recordAudit({
+      entityType: 'Route',
+      entityId: route.id,
+      action: 'APPROVE_REQUEST',
+      userId: 'system',
+      userName: 'System',
+      before: {
+        requestedDriverId: route.requestedDriverId,
+        assignmentSource: route.assignmentSource,
+        status: route.status,
+      },
+      after: {
+        requestedDriverId: route.requestedDriverId,
+        assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
+        driverId: route.requestedDriverId,
+        status: 'APROVADA',
+      },
+    });
+
+    const chatId = await this.redisService.client().get(
+      `telegram:driver:chat:${String(route.requestedDriverId).trim()}`,
+    );
+    const numericChatId = Number(chatId);
+    if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
+      await this.telegram.sendMessage(
+        numericChatId,
+        `Sua solicitacao da rota ${route.atId || route.id} foi aprovada.`,
+      );
+    }
+
+    await Promise.all([
+      this.invalidateExecutiveDashboardCache(),
+      this.invalidateNoShowDashboardCache(),
+      this.invalidateDriversCaches(),
+      this.invalidateRoutesCache(),
+      this.invalidateOverviewRouteRequestsCache(),
+    ]);
+
+    return {
+      ok: true,
+      message: `Solicitacao da rota ${route.atId || route.id} aprovada com sucesso.`,
+    };
+  }
+
+  async rejectRouteRequest(routeIdRaw: string) {
+    const routeId = String(routeIdRaw || '').trim();
+    if (!routeId) return { ok: false, message: 'Rota invalida.' };
+
+    const prisma = this.prisma as any;
+    const route = await prisma.route.findUnique({
+      where: { id: routeId },
+      select: {
+        id: true,
+        atId: true,
+        requestedDriverId: true,
+        assignmentSource: true,
+        status: true,
+      },
+    });
+
+    if (!route) {
+      return { ok: false, message: 'Rota nao encontrada.' };
+    }
+
+    if (
+      String(route.assignmentSource || '') !== ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT ||
+      !route.requestedDriverId ||
+      route.status === RouteStatus.ATRIBUIDA ||
+      String(route.status || '') === 'APROVADA'
+    ) {
+      return { ok: false, message: 'Nao existe solicitacao de rota pendente para recusar.' };
+    }
+
+    await prisma.route.update({
+      where: { id: route.id },
+      data: {
+        requestedDriverId: null,
+        assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
+        botAvailable: true,
+        driverId: null,
+        driverName: null,
+        driverVehicleType: null,
+        driverAccuracy: null,
+        driverPlate: null,
+        status: RouteStatus.DISPONIVEL,
+        assignedAt: null,
+      },
+    });
+
+    await this.sheets.clearAssignmentRequest(route.id);
+    await this.recordAudit({
+      entityType: 'Route',
+      entityId: route.id,
+      action: 'REJECT_REQUEST',
+      userId: 'system',
+      userName: 'System',
+      before: {
+        requestedDriverId: route.requestedDriverId,
+        assignmentSource: route.assignmentSource,
+        status: route.status,
+      },
+      after: {
+        requestedDriverId: null,
+        assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
+        status: RouteStatus.DISPONIVEL,
+      },
+    });
+
+    const chatId = await this.redisService.client().get(
+      `telegram:driver:chat:${String(route.requestedDriverId).trim()}`,
+    );
+    const numericChatId = Number(chatId);
+    if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
+      await this.telegram.sendMessage(
+        numericChatId,
+        `Sua solicitacao da rota ${route.atId || route.id} foi recusada.`,
+      );
+    }
+
+    await Promise.all([
+      this.invalidateRoutesCache(),
+      this.invalidateOverviewRouteRequestsCache(),
+    ]);
+
+    return {
+      ok: true,
+      message: `Solicitacao da rota ${route.atId || route.id} recusada com sucesso.`,
+    };
   }
 
   async unassignRoute(routeIdRaw: string, markNoShow = false) {
@@ -3832,7 +4490,7 @@ export class AppService {
   }
 
   async getBlocklist() {
-    const cacheKey = `${this.BLOCKLIST_LIST_CACHE_PREFIX}:v1`;
+    const cacheKey = `${this.BLOCKLIST_LIST_CACHE_PREFIX}:v2`;
     const cached = await this.redisService.get<any[]>(cacheKey);
     if (cached) {
       return cached;
@@ -5188,7 +5846,9 @@ export class AppService {
       }),
     ]);
 
-    const activeRoute = lastRoutes.find((route) => route.status === RouteStatus.ATRIBUIDA);
+    const activeRoute = lastRoutes.find(
+      (route) => route.status === RouteStatus.ATRIBUIDA || String(route.status) === 'APROVADA',
+    );
     return {
       driverId: ticket.driver.id,
       driverName: ticket.driver.name || ticket.driver.id,
@@ -5468,10 +6128,6 @@ export class AppService {
     return `${this.LOG_PREFIX}:${y}-${m}-${d}`;
   }
 
-  private stateKey(chatId: string) {
-    return `telegram:state:${chatId}`;
-  }
-
   private async checkRedis(): Promise<string> {
     try {
       const pong = await this.redisService.client().ping();
@@ -5540,27 +6196,58 @@ export class AppService {
   }
 
   private normalizeDriverId(value: string): string {
-    return String(value || '')
-      .trim()
-      .replace(/\D/g, '');
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    const compact = raw.replace(/\s+/g, '');
+    const scientific = compact.replace(',', '.');
+    if (/^[+-]?\d+(?:\.\d+)?e[+-]?\d+$/i.test(scientific)) {
+      const parsed = Number(scientific);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return String(Math.round(parsed));
+      }
+    }
+
+    if (/^\d+(?:[.,]\d+)?$/.test(compact)) {
+      const parsed = Number(compact.replace(',', '.'));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return String(Math.round(parsed));
+      }
+    }
+
+    return compact.replace(/\D/g, '');
   }
 
-  async addBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
+  async addBlocklistDriver(driverIdRaw: string, reasonRaw?: string): Promise<{ ok: boolean; message: string }> {
+    const prisma = this.prisma as any;
     const driverId = this.normalizeDriverId(driverIdRaw);
+    const reason = String(reasonRaw || '').trim();
     if (!driverId) return { ok: false, message: 'Informe um Driver ID valido.' };
+    if (!reason) return { ok: false, message: 'Informe a justificativa do bloqueio.' };
 
-    const existing = await this.prisma.driverBlocklist.findUnique({
+    const existing = await prisma.driverBlocklist.findUnique({
       where: { driverId },
-      select: { status: true },
+      select: { status: true, reason: true },
     });
 
     if (!existing) {
-      await this.prisma.driverBlocklist.create({
+      await prisma.driverBlocklist.create({
         data: {
           driverId,
           status: 'BLOCKED' as any,
+          reason,
           timesListed: 1,
           lastActivatedAt: new Date(),
+        },
+      });
+      await prisma.blockedQueueRequest.updateMany({
+        where: { driverId },
+        data: {
+          status: 'REJECTED',
+          cooldownUntil: null,
+          resolvedAt: new Date(),
+          approvedById: null,
+          approvedByName: null,
         },
       });
       await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
@@ -5577,12 +6264,23 @@ export class AppService {
       return { ok: true, message: `Motorista ${driverId} ja esta bloqueado na lista de bloqueio.` };
     }
 
-    await this.prisma.driverBlocklist.update({
+    await prisma.driverBlocklist.update({
       where: { driverId },
       data: {
         status: 'BLOCKED' as any,
+        reason,
         timesListed: { increment: 1 },
         lastActivatedAt: new Date(),
+      },
+    });
+    await prisma.blockedQueueRequest.updateMany({
+      where: { driverId },
+      data: {
+        status: 'REJECTED',
+        cooldownUntil: null,
+        resolvedAt: new Date(),
+        approvedById: null,
+        approvedByName: null,
       },
     });
     await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, true, 3600);
@@ -5595,10 +6293,11 @@ export class AppService {
   }
 
   async removeBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
+    const prisma = this.prisma as any;
     const driverId = this.normalizeDriverId(driverIdRaw);
     if (!driverId) return { ok: false, message: 'Informe um Driver ID valido.' };
 
-    const existing = await this.prisma.driverBlocklist.findUnique({
+    const existing = await prisma.driverBlocklist.findUnique({
       where: { driverId },
       select: { status: true },
     });
@@ -5612,11 +6311,20 @@ export class AppService {
       return { ok: true, message: `Motorista ${driverId} ja esta desbloqueado na lista de bloqueio.` };
     }
 
-    await this.prisma.driverBlocklist.update({
+    await prisma.driverBlocklist.update({
       where: { driverId },
       data: {
         status: 'UNBLOCKED' as any,
+        reason: null,
         lastInactivatedAt: new Date(),
+      },
+    });
+    await prisma.blockedQueueRequest.updateMany({
+      where: { driverId },
+      data: {
+        status: 'CONSUMED',
+        cooldownUntil: null,
+        resolvedAt: new Date(),
       },
     });
     await this.redisService.set(`${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`, false, 3600);
@@ -5868,7 +6576,7 @@ export class AppService {
       return { ok: false, message: 'Acao invalida.' };
     }
 
-    if (await this.sync.isLocked()) {
+    if (action !== 'drivers' && await this.sync.isLocked()) {
       return { ok: false, message: 'Ja existe uma sincronizacao em andamento.' };
     }
 

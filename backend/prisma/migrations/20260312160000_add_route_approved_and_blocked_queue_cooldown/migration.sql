@@ -1,0 +1,4 @@
+ALTER TYPE "RouteStatus" ADD VALUE IF NOT EXISTS 'APROVADA';
+
+ALTER TABLE "BlockedQueueRequest"
+ADD COLUMN "cooldownUntil" TIMESTAMP(3);

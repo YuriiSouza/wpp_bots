@@ -151,7 +151,9 @@ export class SupportService {
       }),
     ]);
 
-    const activeRoute = lastRoutes.find((route) => route.status === RouteStatus.ATRIBUIDA);
+    const activeRoute = lastRoutes.find(
+      (route) => route.status === RouteStatus.ATRIBUIDA || String(route.status) === 'APROVADA',
+    );
     const chatId = await this.resolveTicketChatId(ticket.id, ticket.driverId);
     return {
       driverId: ticket.driver.id,

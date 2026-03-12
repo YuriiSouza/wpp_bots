@@ -19,6 +19,7 @@ model Driver {
   id                           String   @id
   name                         String?
   hubId                        String?
+  status                       String?
   vehicleType                  String?
   ds                           String?
   noShowCount                  Int      @default(0)
@@ -215,6 +216,7 @@ model SystemConfig {
 model DriverBlocklist {
   driverId           String          @id
   status             BlocklistStatus @default(BLOCKED)
+  reason             String?
   timesListed        Int             @default(1)
   lastActivatedAt    DateTime?
   lastInactivatedAt  DateTime?
@@ -222,6 +224,25 @@ model DriverBlocklist {
   updatedAt          DateTime        @updatedAt
 
   @@index([status])
+  @@index([updatedAt])
+}
+
+model BlockedQueueRequest {
+  driverId         String                    @id
+  chatId           String?
+  driverName       String?
+  vehicleType      String?
+  blockReason      String?
+  status           BlockedQueueRequestStatus @default(PENDING)
+  requestedAt      DateTime                  @default(now())
+  cooldownUntil    DateTime?
+  approvedById     String?
+  approvedByName   String?
+  resolvedAt       DateTime?
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+
+  @@index([status, requestedAt])
   @@index([updatedAt])
 }
 
@@ -240,6 +261,7 @@ model FaqItem {
 enum RouteStatus {
   DISPONIVEL
   ATRIBUIDA
+  APROVADA
   BLOQUEADA
   EXPORTADA
 }
@@ -253,6 +275,13 @@ enum RouteAssignmentSource {
 enum BlocklistStatus {
   BLOCKED
   UNBLOCKED
+}
+
+enum BlockedQueueRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CONSUMED
 }
 
 enum AnalystRole {

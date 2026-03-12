@@ -170,6 +170,5 @@ PM: 11:15 às 13:15
 📞 Contato dos analistas:
 Yuri – +55 62 3190-1283  
 Raísa – +55 62 3190-1165  
-Wanderson – +55 11 91375-7926  
-Breno – +55 11 91533-4965
+Wanderson – +55 11 91375-7926
 `;

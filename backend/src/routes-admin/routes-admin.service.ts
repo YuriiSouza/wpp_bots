@@ -25,7 +25,7 @@ export class RoutesAdminService {
       this.common.prisma.route.findUnique({ where: { id: routeId } }),
       this.common.prisma.driver.findUnique({ where: { id: driverId } }),
       this.common.prisma.route.findFirst({
-        where: { driverId, status: RouteStatus.ATRIBUIDA },
+        where: { driverId, status: { in: [RouteStatus.ATRIBUIDA, 'APROVADA' as any] } },
         select: { id: true },
       }),
     ]);
@@ -48,11 +48,16 @@ export class RoutesAdminService {
     const assignmentSource = route.requestedDriverId
       ? RouteAssignmentSource.TELEGRAM_BOT
       : RouteAssignmentSource.MANUAL;
+    const nextStatus =
+      assignmentSource === RouteAssignmentSource.TELEGRAM_BOT
+        ? ('APROVADA' as any)
+        : RouteStatus.ATRIBUIDA;
 
     await (this.common.prisma as any).route.update({
       where: { id: routeId },
       data: {
-        requestedDriverId: null,
+        requestedDriverId:
+          assignmentSource === RouteAssignmentSource.TELEGRAM_BOT ? driver.id : null,
         botAvailable: false,
         assignmentSource,
         driverId: driver.id,
@@ -60,7 +65,7 @@ export class RoutesAdminService {
         driverVehicleType: driver.vehicleType,
         driverAccuracy: null,
         driverPlate: null,
-        status: RouteStatus.ATRIBUIDA,
+        status: nextStatus,
         assignedAt: new Date(),
       },
     });
@@ -72,8 +77,9 @@ export class RoutesAdminService {
       userName: 'System',
       after: {
         driverId: driver.id,
-        status: RouteStatus.ATRIBUIDA,
-        requestedDriverId: null,
+        status: nextStatus,
+        requestedDriverId:
+          assignmentSource === RouteAssignmentSource.TELEGRAM_BOT ? driver.id : null,
         botAvailable: false,
         assignmentSource,
       },

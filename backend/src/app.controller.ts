@@ -65,6 +65,11 @@ export class AppController {
     return this.appService.getRoutes(date, shift, dateFrom, dateTo);
   }
 
+  @Get('api/routes/requests-board')
+  async getRouteRequestsBoard() {
+    return this.appService.getRouteRequestsBoard();
+  }
+
   @Get('api/route-planning')
   async getRoutePlanning(
     @Query('date') date?: string,
@@ -123,6 +128,16 @@ export class AppController {
     return this.appService.assignRoute(routeId, driverId);
   }
 
+  @Post('api/routes/:routeId/approve-request')
+  async approveRouteRequest(@Param('routeId') routeId: string) {
+    return this.appService.approveRouteRequest(routeId);
+  }
+
+  @Post('api/routes/:routeId/reject-request')
+  async rejectRouteRequest(@Param('routeId') routeId: string) {
+    return this.appService.rejectRouteRequest(routeId);
+  }
+
   @Post('api/routes/:routeId/unassign')
   async unassignRoute(
     @Param('routeId') routeId: string,
@@ -169,6 +184,22 @@ export class AppController {
   @Post('api/routes/:routeId/clear-no-show')
   async clearRouteNoShow(@Param('routeId') routeId: string) {
     return this.appService.clearRouteNoShow(routeId);
+  }
+
+  @Post('api/routes/blocked-queue-requests/:driverId/approve')
+  async approveBlockedQueueRequest(
+    @Param('driverId') driverId: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    return this.appService.approveBlockedQueueRequest(driverId, authorization);
+  }
+
+  @Post('api/routes/blocked-queue-requests/:driverId/reject')
+  async rejectBlockedQueueRequest(
+    @Param('driverId') driverId: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    return this.appService.rejectBlockedQueueRequest(driverId, authorization);
   }
 
   @Get('api/blocklist')
@@ -323,8 +354,9 @@ export class AppController {
   @Post('acess/analist/blacklist/add')
   async addBlocklistDriver(
     @Body('driverId') driverId: string,
+    @Body('reason') reason?: string,
   ): Promise<{ ok: boolean; message: string }> {
-    return this.appService.addBlocklistDriver(driverId);
+    return this.appService.addBlocklistDriver(driverId, reason);
   }
 
   @Post('acess/analist/blocklist/remove')

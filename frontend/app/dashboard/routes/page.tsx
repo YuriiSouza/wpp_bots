@@ -46,16 +46,21 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
+  approveRouteRequest as approveRouteRequestApi,
+  approveBlockedQueueRequest as approveBlockedQueueRequestApi,
   assignRoute as assignRouteRequest,
   exportBotAssignedRoutesCsv,
   fetchDrivers,
+  fetchRouteRequestsBoard,
   fetchRoutes,
   getApiErrorMessage,
   markRouteNoShow,
+  rejectRouteRequest as rejectRouteRequestApi,
+  rejectBlockedQueueRequest as rejectBlockedQueueRequestApi,
   releaseRouteToBot as releaseRouteToBotRequest,
   releaseRoutesToBotByAt as releaseRoutesToBotByAtRequest,
 } from "@/lib/admin-api"
-import type { Driver, Route } from "@/lib/types"
+import type { BlockedQueueRequest, Driver, PendingRouteRequest, Route } from "@/lib/types"
 import { toast } from "sonner"
 
 const ROUTES_FILTERS_STORAGE_KEY = "routes-page-filters"
@@ -94,6 +99,117 @@ function normalizeVehicleType(value?: string | null) {
   if (raw.includes("fiorino")) return "FIORINO"
   if (raw.includes("passeio")) return "PASSEIO"
   return raw.toUpperCase()
+}
+
+function formatRequestTimestamp(value?: string | null) {
+  if (!value) return "-"
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+function getBlockedQueueStatusMeta(status?: string, cooldownUntil?: string | null) {
+  if (status === "REJECTED") {
+    return {
+      label: cooldownUntil ? `Cooldown ate ${formatRequestTimestamp(cooldownUntil)}` : "Reprovada",
+      className: "border-red-500/30 bg-red-500/10 text-red-700",
+    }
+  }
+
+  return {
+    label: "Pendente",
+    className: "border-amber-500/30 bg-amber-500/10 text-amber-700",
+  }
+}
+
+function getBusinessBlockReasonLabel(reason?: string | null) {
+  const normalized = String(reason || "").trim().toLowerCase()
+  if (normalized.includes("novato") || normalized.includes("sem ds")) {
+    return "Acompanhamento das primeiras rotas"
+  }
+  if (!normalized) {
+    return "Nao informado"
+  }
+  return "Acompanhamento de performance"
+}
+
+function parseDsValue(value?: string | null) {
+  if (!value) return null
+  const normalized = String(value).replace(",", ".").replace("%", "").trim()
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function getDsMeta(value?: string | null) {
+  const ds = parseDsValue(value)
+  if (ds === null) {
+    return {
+      label: "DS sem dado",
+      valueLabel: "-",
+      className: "border-slate-400/30 bg-slate-500/10 text-slate-700",
+    }
+  }
+
+  if (ds < 10) {
+    return {
+      label: "Ultra critico",
+      valueLabel: `${ds.toFixed(0)}%`,
+      className: "border-rose-700/30 bg-rose-700/15 text-rose-800",
+    }
+  }
+  if (ds < 30) {
+    return {
+      label: "Critico",
+      valueLabel: `${ds.toFixed(0)}%`,
+      className: "border-red-600/30 bg-red-600/15 text-red-700",
+    }
+  }
+  if (ds < 50) {
+    return {
+      label: "Muito ruim",
+      valueLabel: `${ds.toFixed(0)}%`,
+      className: "border-orange-600/30 bg-orange-600/15 text-orange-700",
+    }
+  }
+  if (ds < 70) {
+    return {
+      label: "Ruim",
+      valueLabel: `${ds.toFixed(0)}%`,
+      className: "border-amber-600/30 bg-amber-500/15 text-amber-700",
+    }
+  }
+  if (ds < 80) {
+    return {
+      label: "Mediano",
+      valueLabel: `${ds.toFixed(0)}%`,
+      className: "border-yellow-600/30 bg-yellow-500/15 text-yellow-700",
+    }
+  }
+  if (ds < 90) {
+    return {
+      label: "Bom",
+      valueLabel: `${ds.toFixed(0)}%`,
+      className: "border-lime-600/30 bg-lime-500/15 text-lime-700",
+    }
+  }
+  if (ds < 98) {
+    return {
+      label: "Muito bom",
+      valueLabel: `${ds.toFixed(0)}%`,
+      className: "border-emerald-600/30 bg-emerald-500/15 text-emerald-700",
+    }
+  }
+
+  return {
+    label: "Excelente",
+    valueLabel: `${ds.toFixed(0)}%`,
+    className: "border-teal-600/30 bg-teal-500/15 text-teal-700",
+  }
 }
 
 function getInitialRouteFilters(today: string) {
@@ -170,6 +286,8 @@ export default function RoutesPage() {
   const [vehicleFilter, setVehicleFilter] = useState<string[]>(initialFilters.vehicleFilter)
   const [routes, setRoutes] = useState<Route[]>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
+  const [routeRequests, setRouteRequests] = useState<PendingRouteRequest[]>([])
+  const [blockedQueueRequests, setBlockedQueueRequests] = useState<BlockedQueueRequest[]>([])
   const [selectedRoute, setSelectedRoute] = useState<Route | null>(null)
   const [assignRoute, setAssignRoute] = useState<Route | null>(null)
   const [selectedDriver, setSelectedDriver] = useState("")
@@ -178,13 +296,17 @@ export default function RoutesPage() {
   const [bulkAtInput, setBulkAtInput] = useState("")
   const [isBulkReleasing, setIsBulkReleasing] = useState(false)
   const [releasingRouteId, setReleasingRouteId] = useState<string | null>(null)
+  const [approvingBlockedDriverId, setApprovingBlockedDriverId] = useState<string | null>(null)
+  const [rejectingBlockedDriverId, setRejectingBlockedDriverId] = useState<string | null>(null)
+  const [approvingRouteRequestId, setApprovingRouteRequestId] = useState<string | null>(null)
+  const [rejectingRouteRequestId, setRejectingRouteRequestId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const isTelegramRequested = (route: Route) =>
     route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !route.driverId
   const isReleasedToBot = (route: Route) =>
     Boolean(route.botAvailable) || isTelegramRequested(route)
   const isTelegramApproved = (route: Route) =>
-    route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !!route.driverId && route.status === "ATRIBUIDA"
+    route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !!route.driverId && route.status === "APROVADA"
 
   const loadData = async (
     silent = false,
@@ -199,7 +321,7 @@ export default function RoutesPage() {
     }
 
     try {
-      const [routeData, driverData] = await Promise.all([
+      const [routeData, driverData, requestBoard] = await Promise.all([
         fetchRoutes({
           dateFrom: (filters?.dateFrom ?? dayFromFilter) || undefined,
           dateTo: (filters?.dateTo ?? dayToFilter) || undefined,
@@ -208,9 +330,12 @@ export default function RoutesPage() {
             (shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined),
         }),
         fetchDrivers(),
+        fetchRouteRequestsBoard(),
       ])
       setRoutes(routeData)
       setDrivers(driverData)
+      setRouteRequests(requestBoard.routeRequests)
+      setBlockedQueueRequests(requestBoard.blockedQueueRequests)
       setSelectedRoute((current) =>
         current ? routeData.find((route) => route.id === current.id) || null : null
       )
@@ -294,9 +419,179 @@ export default function RoutesPage() {
     total: routes.length,
     SOLICITADA: routes.filter((r) => isTelegramRequested(r)).length,
     DISPONIVEL: routes.filter((r) => r.status === "DISPONIVEL" && !isTelegramRequested(r)).length,
+    APROVADA: routes.filter((r) => r.status === "APROVADA").length,
     ATRIBUIDA: routes.filter((r) => r.status === "ATRIBUIDA").length,
     BLOQUEADA: routes.filter((r) => r.status === "BLOQUEADA").length,
   }), [routes])
+
+  const visibleRouteRequests = useMemo(() => {
+    const visibleRouteIds = new Set(filtered.map((route) => route.id))
+    return routeRequests.filter((request) => visibleRouteIds.has(request.routeId))
+  }, [filtered, routeRequests])
+
+  const handleApproveRouteRequest = async (request: PendingRouteRequest) => {
+    const route = routes.find((item) => item.id === request.routeId)
+    if (!route) {
+      toast.error("A rota solicitada nao esta carregada na lista atual")
+      return
+    }
+
+    setApprovingRouteRequestId(request.routeId)
+    try {
+      const response = await approveRouteRequestApi(request.routeId)
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setRoutes((prev) =>
+        prev.map((item) =>
+          item.id === request.routeId
+            ? {
+                ...item,
+                requestedDriverId: request.requestedDriverId,
+                requestedDriverName: request.requestedDriverName,
+                assignmentSource: "TELEGRAM_BOT" as const,
+                botAvailable: false,
+                status: "APROVADA" as const,
+                driverId: request.requestedDriverId,
+                driverName: request.requestedDriverName,
+                driverVehicleType: request.requestedDriverVehicleType,
+                driverAccuracy: null,
+                driverPlate: null,
+                assignedAt: new Date().toISOString(),
+              }
+            : item
+        )
+      )
+      setSelectedRoute((current) =>
+        current?.id === request.routeId
+          ? {
+              ...current,
+              requestedDriverId: request.requestedDriverId,
+              requestedDriverName: request.requestedDriverName,
+              assignmentSource: "TELEGRAM_BOT",
+              botAvailable: false,
+              status: "APROVADA",
+              driverId: request.requestedDriverId,
+              driverName: request.requestedDriverName,
+              driverVehicleType: request.requestedDriverVehicleType,
+              driverAccuracy: null,
+              driverPlate: null,
+              assignedAt: new Date().toISOString(),
+            }
+          : current
+      )
+      setRouteRequests((prev) => prev.filter((item) => item.routeId !== request.routeId))
+      setAssignRoute((current) => (current?.id === request.routeId ? null : current))
+      setSelectedDriver((current) => (assignRoute?.id === request.routeId ? "" : current))
+      toast.success(`Solicitacao da rota ${request.atId || request.routeId} aprovada`)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel aprovar a solicitacao da rota"))
+    } finally {
+      setApprovingRouteRequestId(null)
+    }
+  }
+
+  const handleApproveBlockedQueue = async (request: BlockedQueueRequest) => {
+    setApprovingBlockedDriverId(request.driverId)
+    try {
+      const response = await approveBlockedQueueRequestApi(request.driverId)
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setBlockedQueueRequests((current) =>
+        current.filter((item) => item.driverId !== request.driverId)
+      )
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel aprovar a entrada na fila"))
+    } finally {
+      setApprovingBlockedDriverId(null)
+    }
+  }
+
+  const handleRejectBlockedQueue = async (request: BlockedQueueRequest) => {
+    setRejectingBlockedDriverId(request.driverId)
+    try {
+      const response = await rejectBlockedQueueRequestApi(request.driverId)
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setBlockedQueueRequests((current) =>
+        current.filter((item) => item.driverId !== request.driverId)
+      )
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel reprovar a entrada na fila"))
+    } finally {
+      setRejectingBlockedDriverId(null)
+    }
+  }
+
+  const handleRejectRouteRequest = async (request: PendingRouteRequest) => {
+    setRejectingRouteRequestId(request.routeId)
+    try {
+      const response = await rejectRouteRequestApi(request.routeId)
+      if (!response.ok) {
+        toast.error(response.message)
+        return
+      }
+
+      setRouteRequests((current) => current.filter((item) => item.routeId !== request.routeId))
+      setRoutes((current) =>
+        current.map((route) =>
+          route.id === request.routeId
+            ? {
+                ...route,
+                requestedDriverId: null,
+                requestedDriverName: null,
+                assignmentSource: "SYNC" as const,
+                botAvailable: true,
+                driverId: null,
+                driverName: null,
+                driverVehicleType: null,
+                driverAccuracy: null,
+                driverPlate: null,
+                status: "DISPONIVEL" as const,
+                assignedAt: null,
+              }
+            : route
+        )
+      )
+      setSelectedRoute((current) =>
+        current?.id === request.routeId
+          ? {
+              ...current,
+              requestedDriverId: null,
+              requestedDriverName: null,
+              assignmentSource: "SYNC",
+              botAvailable: true,
+              driverId: null,
+              driverName: null,
+              driverVehicleType: null,
+              driverAccuracy: null,
+              driverPlate: null,
+              status: "DISPONIVEL",
+              assignedAt: null,
+            }
+          : current
+      )
+      setAssignRoute((current) => (current?.id === request.routeId ? null : current))
+      setSelectedDriver((current) =>
+        assignRoute?.id === request.routeId ? "" : current
+      )
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel recusar a solicitacao da rota"))
+    } finally {
+      setRejectingRouteRequestId(null)
+    }
+  }
 
   const handleAssign = async () => {
     if (!assignRoute) return
@@ -316,11 +611,11 @@ export default function RoutesPage() {
           r.id === assignRoute.id
             ? {
                 ...r,
-                requestedDriverId: null,
-                requestedDriverName: null,
+                requestedDriverId: assignRoute.requestedDriverId ? driver.id : null,
+                requestedDriverName: assignRoute.requestedDriverId ? driver.name : null,
                 assignmentSource: assignRoute.requestedDriverId ? "TELEGRAM_BOT" as const : "MANUAL" as const,
                 botAvailable: false,
-                status: "ATRIBUIDA" as const,
+                status: assignRoute.requestedDriverId ? ("APROVADA" as const) : ("ATRIBUIDA" as const),
                 driverId: driver.id,
                 driverName: driver.name,
                 driverVehicleType: driver.vehicleType,
@@ -335,11 +630,11 @@ export default function RoutesPage() {
         prev?.id === assignRoute.id
           ? {
               ...prev,
-              requestedDriverId: null,
-              requestedDriverName: null,
+              requestedDriverId: assignRoute.requestedDriverId ? driver.id : null,
+              requestedDriverName: assignRoute.requestedDriverId ? driver.name : null,
               assignmentSource: assignRoute.requestedDriverId ? "TELEGRAM_BOT" : "MANUAL",
               botAvailable: false,
-              status: "ATRIBUIDA",
+              status: assignRoute.requestedDriverId ? "APROVADA" : "ATRIBUIDA",
               driverId: driver.id,
               driverName: driver.name,
               driverVehicleType: driver.vehicleType,
@@ -349,6 +644,7 @@ export default function RoutesPage() {
             }
           : prev
       )
+      setRouteRequests((prev) => prev.filter((item) => item.routeId !== assignRoute.id))
       toast.success(
         isTelegramRequested(assignRoute)
           ? `Solicitacao da rota ${assignRoute.atId || assignRoute.id} aprovada para ${driver.name}`
@@ -456,6 +752,7 @@ export default function RoutesPage() {
             }
           : prev
       )
+      setRouteRequests((prev) => prev.filter((item) => item.routeId !== route.id))
       toast.success(response.message)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel liberar a rota no bot"))
@@ -567,6 +864,7 @@ export default function RoutesPage() {
             }
           : prev
       )
+      setRouteRequests((prev) => prev.filter((item) => item.routeId !== route.id))
       toast.success(
         wasRequested
           ? `Solicitacao da rota ${route.atId || route.id} removida`
@@ -627,6 +925,9 @@ export default function RoutesPage() {
               {statusCounts.DISPONIVEL} Disponiveis
             </Badge>
             <Badge variant="outline" className="bg-chart-1/10 text-chart-1 border-chart-1/30">
+              {statusCounts.APROVADA} Aprovadas
+            </Badge>
+            <Badge variant="outline" className="bg-emerald-500/10 text-emerald-700 border-emerald-500/30">
               {statusCounts.ATRIBUIDA} Atribuidas
             </Badge>
             <Badge variant="outline" className="bg-chart-3/10 text-chart-3 border-chart-3/30">
@@ -701,7 +1002,7 @@ export default function RoutesPage() {
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>Status</DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  {(["NO_BOT", "SOLICITADA", "DISPONIVEL", "ATRIBUIDA", "BLOQUEADA", "EXPORTADA"] as RouteStatusFilter[]).map((status) => (
+                  {(["NO_BOT", "SOLICITADA", "DISPONIVEL", "APROVADA", "ATRIBUIDA", "BLOQUEADA", "EXPORTADA"] as RouteStatusFilter[]).map((status) => (
                     <DropdownMenuCheckboxItem
                       key={status}
                       checked={statusFilter.includes(status)}
@@ -758,6 +1059,184 @@ export default function RoutesPage() {
           </CardContent>
         </Card>
 
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <CardContent className="flex h-[420px] flex-col p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Solicitacoes de bloqueados</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Motoristas bloqueados aguardando aprovacao para entrar na fila
+                  </p>
+                </div>
+                <Badge variant="outline" className="border-destructive/30 bg-destructive/10 text-destructive">
+                  {blockedQueueRequests.length}
+                </Badge>
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                {blockedQueueRequests.length ? (
+                  blockedQueueRequests.map((request) => {
+                    const dsMeta = getDsMeta(request.ds)
+                    const statusMeta = getBlockedQueueStatusMeta(request.status, request.cooldownUntil)
+                    return (
+                    <div
+                      key={request.driverId}
+                      className="rounded-lg border border-border/70 bg-muted/20 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-2">
+                          <div className="space-y-1">
+                            <p className="truncate text-sm font-medium text-foreground">
+                              {request.driverName || request.driverId}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              ID {request.driverId} {request.vehicleType ? `| ${request.vehicleType}` : ""}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant="outline" className={statusMeta.className}>
+                              {statusMeta.label}
+                            </Badge>
+                            <Badge variant="outline">Score {request.priorityScore.toFixed(0)}</Badge>
+                            <Badge variant="outline" className={dsMeta.className}>
+                              DS {dsMeta.valueLabel} | {dsMeta.label}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Solicitado em {formatRequestTimestamp(request.requestedAt)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Motivo: {getBusinessBlockReasonLabel(request.blockReason)}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-col gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => void handleApproveBlockedQueue(request)}
+                            disabled={
+                              request.status === "REJECTED" ||
+                              approvingBlockedDriverId === request.driverId ||
+                              rejectingBlockedDriverId === request.driverId
+                            }
+                          >
+                            {approvingBlockedDriverId === request.driverId ? "Aprovando..." : "Aprovar"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleRejectBlockedQueue(request)}
+                            disabled={
+                              request.status === "REJECTED" ||
+                              approvingBlockedDriverId === request.driverId ||
+                              rejectingBlockedDriverId === request.driverId
+                            }
+                          >
+                            {rejectingBlockedDriverId === request.driverId ? "Reprovando..." : "Reprovar"}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )})
+                ) : (
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                    Nenhuma solicitacao pendente de motorista bloqueado.
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="flex h-[420px] flex-col p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Solicitacoes de rotas</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Pedidos recebidos pelo bot aguardando atribuicao da analista
+                  </p>
+                </div>
+                <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700">
+                  {visibleRouteRequests.length}
+                </Badge>
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                {visibleRouteRequests.length ? (
+                  visibleRouteRequests.map((request) => {
+                    const dsMeta = getDsMeta(request.requestedDriverDs)
+                    return (
+                    <div
+                      key={`${request.routeId}-${request.requestedDriverId || "sem-motorista"}`}
+                      className="flex items-start justify-between gap-3 rounded-lg border border-border/70 bg-muted/20 p-3"
+                    >
+                      <div className="min-w-0 space-y-2">
+                        <div className="space-y-1">
+                          <p className="truncate text-sm font-medium text-foreground">
+                            AT {request.atId}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            ID {request.requestedDriverId || "-"} | {request.requestedDriverName || "Sem motorista"}
+                            {request.requestedDriverVehicleType
+                              ? ` | ${request.requestedDriverVehicleType}`
+                              : ""}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant="outline">
+                            Score {request.requestedDriverPriorityScore.toFixed(0)}
+                          </Badge>
+                          <Badge variant="outline" className={dsMeta.className}>
+                            DS {dsMeta.valueLabel} | {dsMeta.label}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {request.routeDate || "-"} {request.shift ? `| ${request.shift}` : ""}
+                          {request.cidade ? ` | ${request.cidade}` : ""}
+                          {request.bairro ? ` | ${request.bairro}` : ""}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Motivo: {getBusinessBlockReasonLabel(request.blockReason)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Solicitado em {formatRequestTimestamp(request.requestedAt)}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-col gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => void handleApproveRouteRequest(request)}
+                          disabled={
+                            approvingRouteRequestId === request.routeId ||
+                            rejectingRouteRequestId === request.routeId
+                          }
+                        >
+                          {approvingRouteRequestId === request.routeId ? "Aprovando..." : "Aprovar"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleRejectRouteRequest(request)}
+                          disabled={
+                            approvingRouteRequestId === request.routeId ||
+                            rejectingRouteRequestId === request.routeId
+                          }
+                        >
+                          {rejectingRouteRequestId === request.routeId ? "Recusando..." : "Recusar"}
+                        </Button>
+                      </div>
+                    </div>
+                  )})
+                ) : (
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                    Nenhuma solicitacao de rota pendente para os filtros atuais.
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Table */}
         {isLoading ? (
           <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">
@@ -803,8 +1282,10 @@ export default function RoutesPage() {
                                 ? "border-destructive/30 bg-destructive/15 text-destructive"
                                 : isTelegramRequested(route)
                                   ? "border-amber-500/30 bg-amber-500/10 text-amber-700"
-                                : route.status === "ATRIBUIDA"
+                                : route.status === "APROVADA"
                                   ? "border-chart-1/30 bg-chart-1/10 text-chart-1"
+                                : route.status === "ATRIBUIDA"
+                                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
                                   : route.status === "BLOQUEADA"
                                     ? "border-chart-3/30 bg-chart-3/10 text-chart-3"
                                     : "border-chart-2/30 bg-chart-2/10 text-chart-2"

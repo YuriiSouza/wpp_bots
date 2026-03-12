@@ -192,6 +192,131 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return isActive;
   }
 
+  private async getBlockedQueueRequest(driverId: string) {
+    const prisma = this.prisma as any;
+    return prisma.blockedQueueRequest.findUnique({
+      where: { driverId },
+    });
+  }
+
+  private async createOrRefreshBlockedQueueRequest(
+    chatId: string,
+    state: DriverSession,
+  ) {
+    const prisma = this.prisma as any;
+    const blocklist = await prisma.driverBlocklist.findUnique({
+      where: { driverId: state.driverId },
+      select: { reason: true },
+    });
+    const existing = await this.getBlockedQueueRequest(String(state.driverId || ''));
+    const payload = {
+      chatId,
+      driverName: state.driverName || null,
+      vehicleType: state.vehicleType || null,
+      blockReason: blocklist?.reason || null,
+      requestedAt: new Date(),
+      approvedById: null,
+      approvedByName: null,
+      resolvedAt: null,
+    };
+
+    if (!existing) {
+      const created = await prisma.blockedQueueRequest.create({
+        data: {
+          driverId: state.driverId,
+          status: 'PENDING',
+          cooldownUntil: null,
+          ...payload,
+        },
+      });
+      return { request: created, created: true, cooldownActive: false };
+    }
+
+    if (String(existing.status || '') === 'APPROVED') {
+      return { request: existing, created: false, cooldownActive: false };
+    }
+
+    const cooldownUntil = existing.cooldownUntil ? new Date(existing.cooldownUntil) : null;
+    if (
+      String(existing.status || '') === 'REJECTED' &&
+      cooldownUntil &&
+      !Number.isNaN(cooldownUntil.getTime()) &&
+      cooldownUntil.getTime() > Date.now()
+    ) {
+      return { request: existing, created: false, cooldownActive: true };
+    }
+
+    const updated = await prisma.blockedQueueRequest.update({
+      where: { driverId: state.driverId },
+      data: {
+        status: 'PENDING',
+        cooldownUntil: null,
+        ...payload,
+      },
+    });
+    return {
+      request: updated,
+      created: String(existing.status || '') !== 'PENDING',
+      cooldownActive: false,
+    };
+  }
+
+  private async consumeBlockedQueueApproval(driverId: string) {
+    const prisma = this.prisma as any;
+    await prisma.blockedQueueRequest.updateMany({
+      where: {
+        driverId,
+        status: 'APPROVED',
+      },
+      data: {
+        status: 'CONSUMED',
+        resolvedAt: new Date(),
+      },
+    });
+  }
+
+  private async notifyAnalystsAboutBlockedQueueRequest(input: {
+    driverId: string;
+    driverName?: string | null;
+    vehicleType?: string | null;
+    reason?: string | null;
+  }) {
+    const targets = await this.getAnalystNotificationTargets(input.driverId);
+    if (!targets.length) return;
+
+    const messageLines = [
+      'Solicitacao de fila devido analise de DS.',
+      `Motorista: ${input.driverName || input.driverId} (${input.driverId})`,
+    ];
+
+    if (input.vehicleType) {
+      messageLines.push(`Veiculo: ${input.vehicleType}`);
+    }
+
+    if (input.reason) {
+      messageLines.push(`Motivo: ${input.reason}`);
+    }
+
+    messageLines.push(`Horario: ${new Date().toLocaleString('pt-BR')}`);
+
+    await Promise.allSettled(
+      targets.map((target) =>
+        this.telegram.sendMessage(target.telegramChatId, messageLines.join('\n')),
+      ),
+    );
+  }
+
+  private getBusinessBlockReasonLabel(reason?: string | null) {
+    const normalized = String(reason || '').trim().toLowerCase();
+    if (normalized.includes('novato') || normalized.includes('sem ds')) {
+      return 'Acompanhamento das primeiras rotas';
+    }
+    if (!normalized) {
+      return 'Nao informado';
+    }
+    return 'Acompanhamento de performance';
+  }
+
   private parsePriorityScore(value: unknown): number {
     const score = Number(value);
     if (!Number.isFinite(score)) return 0;
@@ -784,8 +909,8 @@ encerrar - Encerrar atendimento
 
     if (!items.length) {
       const menu = `Dúvidas frequentes:
-encerrar - Encerrar atendimento
-voltar - Voltar
+Digite "encerrar" para encerrar atendimento
+Digite "voltar" para voltar.
 
 No momento, não há dúvidas cadastradas.
 Peça ao analista para cadastrar em /acess/duvidas.
@@ -804,7 +929,7 @@ Peça ao analista para cadastrar em /acess/duvidas.
       answers[key] = item.answer;
     }
 
-    lines.push('voltar - Voltar');
+    lines.push('Digite "voltar" para voltar.');
     return { menu: `${lines.join('\n')}\n`, answers };
   }
 
@@ -1079,6 +1204,40 @@ Peça ao analista para cadastrar em /acess/duvidas.
       return;
     }
 
+    const isBlocklisted = await this.isChatBlocklisted(chatId, state);
+    if (isBlocklisted && !state.blockedQueueApproved) {
+      const requestState = await this.createOrRefreshBlockedQueueRequest(chatId, state);
+      if (requestState.cooldownActive) {
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Converse com um analista para verificar as rotas disponiveis.',
+        );
+      } else {
+        if (requestState.created) {
+          await this.notifyAnalystsAboutBlockedQueueRequest({
+            driverId: state.driverId,
+            driverName: state.driverName,
+            vehicleType: state.vehicleType,
+            reason: requestState.request?.blockReason || null,
+          });
+        }
+        await this.telegram.sendMessage(
+          Number(chatId),
+          `Sua entrada na fila precisa de validacao da analista.\nMotivo: ${this.getBusinessBlockReasonLabel(requestState.request?.blockReason)}\n\nAguarde a analise.`,
+        );
+      }
+      await this.setState(chatId, {
+        ...state,
+        state: DriverState.MENU,
+        inQueue: false,
+        blockedQueueApproved: false,
+      });
+      const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
+      await this.releaseAndNotifyNext(group);
+      await this.sendMainMenu(Number(chatId));
+      return;
+    }
+
     const routes = await this.routes.getAvailableRoutesForDriver(state.vehicleType);
     const sorted = sortRoutes(routes);
 
@@ -1124,7 +1283,7 @@ Peça ao analista para cadastrar em /acess/duvidas.
 Escolha a rota desejada digitando o número:
 Veículo: ${state.vehicleType}
 DS: ${state.ds || '-'} (DS = taxa de pacotes entregues)
-Para encerrar, digite: encerrar
+Para encerrar, digite: "encerrar"
 `;
     if (routesNote.trim()) {
       msg += `\n📢 Informações do dia:\n${routesNote.trim()}\n`;
@@ -1157,7 +1316,7 @@ Para encerrar, digite: encerrar
       });
     };
 
-    pushCityGroups('Outras rotas', nonMoto);
+    pushCityGroups('', nonMoto);
     pushCityGroups('Rotas de moto', moto);
 
     await this.telegram.sendMessage(Number(chatId), msg);
@@ -1435,6 +1594,40 @@ Para encerrar, digite: encerrar
         }
         await this.sendMainMenu(Number(chatId));
         return { ok: true };
+      }
+
+      const isBlocklisted = await this.isChatBlocklisted(chatId, state);
+      if (isBlocklisted && !state.blockedQueueApproved) {
+        const queueRequest = await this.getBlockedQueueRequest(state.driverId!);
+        if (String(queueRequest?.status || '') !== 'APPROVED') {
+          const requestState = await this.createOrRefreshBlockedQueueRequest(chatId, state);
+          if (requestState.cooldownActive) {
+            await this.telegram.sendMessage(
+              Number(chatId),
+              'A rota não esta disponivel. Para verificar, fale com um dos analistas.',
+            );
+          } else {
+            if (requestState.created) {
+              await this.notifyAnalystsAboutBlockedQueueRequest({
+                driverId: state.driverId!,
+                driverName: state.driverName,
+                vehicleType: state.vehicleType,
+                reason: requestState.request?.blockReason || null,
+              });
+            }
+            await this.telegram.sendMessage(
+              Number(chatId),
+              `Sua entrada na fila precisa de validacao da analista.\nMotivo: ${this.getBusinessBlockReasonLabel(requestState.request?.blockReason)}\n\nAguarde a analise.`,
+            );
+          }
+          await this.sendMainMenu(Number(chatId));
+          return { ok: true };
+        }
+        state = {
+          ...state,
+          blockedQueueApproved: true,
+        };
+        await this.setState(chatId, state);
       }
 
       const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);

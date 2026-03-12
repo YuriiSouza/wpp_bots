@@ -295,7 +295,7 @@ export class SyncService implements OnModuleInit {
 
   private async applyAutomaticBlocklist(
     driverId: string,
-    priorityScore: number,
+    reason: string,
     config: {
       noShowWeight: number;
       declineWeight: number;
@@ -304,20 +304,23 @@ export class SyncService implements OnModuleInit {
       autoBlock: boolean;
     },
   ): Promise<boolean> {
-    if (!config.autoBlock || priorityScore > config.blockThreshold) {
+    const isNoviceWithoutDs = reason === 'Sem DS (novato - rota direto com analista)';
+    if (!isNoviceWithoutDs && !config.autoBlock) {
       return false;
     }
 
-    const existing = await this.prisma.driverBlocklist.findUnique({
+    const prisma = this.prisma as any;
+    const existing = await prisma.driverBlocklist.findUnique({
       where: { driverId },
-      select: { status: true, timesListed: true },
+      select: { status: true, timesListed: true, reason: true },
     });
 
     if (!existing) {
-      await this.prisma.driverBlocklist.create({
+      await prisma.driverBlocklist.create({
         data: {
           driverId,
           status: 'BLOCKED' as any,
+          reason,
           timesListed: 1,
           lastActivatedAt: new Date(),
         },
@@ -332,10 +335,11 @@ export class SyncService implements OnModuleInit {
       return false;
     }
 
-    await this.prisma.driverBlocklist.update({
+    await prisma.driverBlocklist.update({
       where: { driverId },
       data: {
         status: 'BLOCKED' as any,
+        reason,
         timesListed: { increment: 1 },
         lastActivatedAt: new Date(),
       },
@@ -398,7 +402,8 @@ export class SyncService implements OnModuleInit {
       await this.ensureDriversExist(sheetDriverIds);
     }
 
-    const drivers = await this.prisma.driver.findMany({
+    const prisma = this.prisma as any;
+    const drivers = await prisma.driver.findMany({
       select: { id: true, ds: true },
     });
     let changedAutoBlock = false;
@@ -407,10 +412,11 @@ export class SyncService implements OnModuleInit {
       const conv = convocationByDriver.get(driver.id) || { total: 0, declined: 0 };
       const noShowCount = noShowByDriver.get(driver.id) || 0;
       const declineRate = conv.total > 0 ? (conv.declined / conv.total) * 100 : 0;
+      const hasDs = Boolean(String(driver.ds || '').trim());
       const dsPercent = this.parsePercent(driver.ds);
       const priorityScore = this.calculatePriorityScore(dsPercent, declineRate, noShowCount, algorithm);
 
-      await this.prisma.driver.update({
+      await prisma.driver.update({
         where: { id: driver.id },
         data: {
           noShowCount,
@@ -419,7 +425,14 @@ export class SyncService implements OnModuleInit {
         },
       });
 
-      if (await this.applyAutomaticBlocklist(driver.id, priorityScore, algorithm)) {
+      const autoBlockReason =
+        !hasDs
+          ? 'Sem DS (novato - rota direto com analista)'
+          : priorityScore <= algorithm.blockThreshold
+            ? 'Score baixo'
+            : null;
+
+      if (autoBlockReason && await this.applyAutomaticBlocklist(driver.id, autoBlockReason, algorithm)) {
         changedAutoBlock = true;
       }
     }
@@ -628,26 +641,36 @@ export class SyncService implements OnModuleInit {
     const [driverHeaders, ...driverData] = driverRows;
 
     const drivers = this.mapRows(driverHeaders, driverData);
+    const statusIndex = this.getHeaderIndex(driverHeaders, ['Status', 'Driver Status']);
 
     let driverCount = 0;
-    for (const row of drivers) {
+    const prisma = this.prisma as any;
+    for (let index = 0; index < drivers.length; index += 1) {
+      const row = drivers[index];
+      const rawRow = driverData[index] ?? [];
       const driverId = row['Driver ID']?.trim();
       if (!driverId) continue;
       driverCount += 1;
 
       const vehicleType = row['Vehicle Type']?.trim() || null;
       const ds = row['DS'] || null;
+      const status =
+        (statusIndex >= 0 ? String(rawRow[statusIndex] || '').trim() : '') ||
+        String(rawRow[51] || '').trim() ||
+        null;
 
-      await this.prisma.driver.upsert({
+      await prisma.driver.upsert({
         where: { id: driverId },
         update: {
           name: row['Driver Name'] || null,
+          status,
           vehicleType,
           ds,
         },
         create: {
           id: driverId,
           name: row['Driver Name'] || null,
+          status,
           vehicleType,
           ds,
         },
@@ -666,7 +689,26 @@ export class SyncService implements OnModuleInit {
   private normalizeSheetDriverId(value?: string | null): string | null {
     const raw = String(value ?? '').trim();
     if (!raw || raw === '0') return null;
-    return raw;
+
+    const compact = raw.replace(/\s+/g, '');
+    const scientific = compact.replace(',', '.');
+    if (/^[+-]?\d+(?:\.\d+)?e[+-]?\d+$/i.test(scientific)) {
+      const parsed = Number(scientific);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return String(Math.round(parsed));
+      }
+    }
+
+    if (/^\d+(?:[.,]\d+)?$/.test(compact)) {
+      const parsed = Number(compact.replace(',', '.'));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return String(Math.round(parsed));
+      }
+    }
+
+    const digitsOnly = compact.replace(/\D/g, '');
+    if (!digitsOnly || digitsOnly === '0') return null;
+    return digitsOnly;
   }
 
   private normalizeShift(value?: string | null): 'AM' | 'PM' | 'PM2' | null {
@@ -921,7 +963,10 @@ export class SyncService implements OnModuleInit {
     const driverIdIndex = this.getHeaderIndex(historyHeaders, ['Driver ID']);
     const plannedVehicleTypeIndex = this.getHeaderIndex(historyHeaders, ['Planned Vehicle Type']);
     const vehicleTypeIndex = this.getHeaderIndex(historyHeaders, ['Vehicle Type']);
-    const corridorIndex = this.getHeaderIndex(historyHeaders, ['Corridor/Cage']);
+    const corridorIndex = this.getHeaderIndex(historyHeaders, [
+      'Corridor-Cage/Route',
+      'Corridor/Cage',
+    ]);
     const neighborhoodIndex = this.getHeaderIndex(historyHeaders, ['Neighborhood']);
     const cityIndex = this.getHeaderIndex(historyHeaders, ['City']);
     const dsIndex = this.getHeaderIndex(historyHeaders, ['DS']);
@@ -1175,8 +1220,8 @@ export class SyncService implements OnModuleInit {
 
   async syncDriversScheduled(): Promise<number> {
     this.logSync('Sync motoristas agendado: inicio');
-    await this.lock();
-    const log = await this.prisma.syncLog.create({
+    const prisma = this.prisma as any;
+    const log = await prisma.syncLog.create({
       data: { status: 'running', message: 'Sincronizacao de motoristas iniciada' },
     });
 
@@ -1184,7 +1229,7 @@ export class SyncService implements OnModuleInit {
       const driverCount = await this.syncDriversFromSheets();
       await this.syncDriverPriorityMetrics();
       await this.syncDriverAvailabilityFromSheet();
-      await this.prisma.syncLog.update({
+      await prisma.syncLog.update({
         where: { id: log.id },
         data: {
           status: 'success',
@@ -1203,7 +1248,7 @@ export class SyncService implements OnModuleInit {
         `Sync motoristas agendado: falha ${(error as Error).message}`,
         (error as Error).stack,
       );
-      await this.prisma.syncLog.update({
+      await prisma.syncLog.update({
         where: { id: log.id },
         data: {
           status: 'failed',
@@ -1212,8 +1257,6 @@ export class SyncService implements OnModuleInit {
         },
       });
       throw error;
-    } finally {
-      await this.unlock();
     }
   }
 

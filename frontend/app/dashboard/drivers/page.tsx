@@ -134,6 +134,7 @@ export default function DriversPage() {
       avgScore: analyticsPayload?.summary.avgScore || 0,
       avgDs: analyticsPayload?.summary.avgDs || 0,
       byVehicle: analyticsPayload?.byVehicle || [],
+      byStatus: analyticsPayload?.byStatus || [],
       topRisk: analyticsPayload?.topRisk || [],
       topScore: analyticsPayload?.topScore || [],
     }
@@ -184,9 +185,19 @@ export default function DriversPage() {
 
   const handleToggleBlock = async (driver: Driver, isBlocked: boolean) => {
     try {
+      const reason =
+        !isBlocked
+          ? window.prompt(`Informe a justificativa do bloqueio para ${driver.name || driver.id}:`, "")?.trim() || ""
+          : ""
+
+      if (!isBlocked && !reason) {
+        toast.error("Justificativa obrigatoria para bloqueio manual")
+        return
+      }
+
       const response = isBlocked
         ? await removeBlocklistDriver(driver.id)
-        : await addBlocklistDriver(driver.id)
+        : await addBlocklistDriver(driver.id, reason)
 
       if (!response.ok) {
         toast.error(response.message)
@@ -269,6 +280,15 @@ export default function DriversPage() {
                 title="Veiculos Mais Presentes"
                 description="Distribuicao da frota no recorte"
                 items={analytics.byVehicle.map((item) => ({
+                  label: item.label,
+                  value: `${item.count} motoristas`,
+                  progress: analytics.sampleSize ? (item.count / analytics.sampleSize) * 100 : 0,
+                }))}
+              />
+              <InsightListCard
+                title="Status dos Motoristas"
+                description="Distribuicao da coluna AZ"
+                items={analytics.byStatus.map((item) => ({
                   label: item.label,
                   value: `${item.count} motoristas`,
                   progress: analytics.sampleSize ? (item.count / analytics.sampleSize) * 100 : 0,
@@ -388,6 +408,7 @@ export default function DriversPage() {
                               </div>
                               <div className="flex flex-wrap gap-2">
                                 <Badge variant="outline">{driver.vehicleType || "Sem veiculo"}</Badge>
+                                <Badge variant="outline">{driver.status || "Sem status"}</Badge>
                                 <Badge
                                   variant="outline"
                                   className={`border-transparent ${risk.bg} ${risk.color}`}

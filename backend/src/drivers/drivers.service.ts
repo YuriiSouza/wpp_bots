@@ -68,22 +68,36 @@ export class DriversService {
     });
   }
 
-  async addBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
+  async addBlocklistDriver(driverIdRaw: string, reasonRaw?: string): Promise<{ ok: boolean; message: string }> {
+    const prisma = this.common.prisma as any;
     const driverId = this.common.normalizeDriverId(driverIdRaw);
+    const reason = String(reasonRaw || '').trim();
     if (!driverId) return { ok: false, message: 'Informe um Driver ID valido.' };
+    if (!reason) return { ok: false, message: 'Informe a justificativa do bloqueio.' };
 
-    const existing = await this.common.prisma.driverBlocklist.findUnique({
+    const existing = await prisma.driverBlocklist.findUnique({
       where: { driverId },
-      select: { status: true },
+      select: { status: true, reason: true },
     });
 
     if (!existing) {
-      await this.common.prisma.driverBlocklist.create({
+      await prisma.driverBlocklist.create({
         data: {
           driverId,
           status: 'BLOCKED' as any,
+          reason,
           timesListed: 1,
           lastActivatedAt: new Date(),
+        },
+      });
+      await prisma.blockedQueueRequest.updateMany({
+        where: { driverId },
+        data: {
+          status: 'REJECTED',
+          cooldownUntil: null,
+          resolvedAt: new Date(),
+          approvedById: null,
+          approvedByName: null,
         },
       });
       await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), true, 3600);
@@ -95,12 +109,23 @@ export class DriversService {
       return { ok: true, message: `Motorista ${driverId} ja esta bloqueado na lista de bloqueio.` };
     }
 
-    await this.common.prisma.driverBlocklist.update({
+    await prisma.driverBlocklist.update({
       where: { driverId },
       data: {
         status: 'BLOCKED' as any,
+        reason,
         timesListed: { increment: 1 },
         lastActivatedAt: new Date(),
+      },
+    });
+    await prisma.blockedQueueRequest.updateMany({
+      where: { driverId },
+      data: {
+        status: 'REJECTED',
+        cooldownUntil: null,
+        resolvedAt: new Date(),
+        approvedById: null,
+        approvedByName: null,
       },
     });
     await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), true, 3600);
@@ -108,10 +133,11 @@ export class DriversService {
   }
 
   async removeBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {
+    const prisma = this.common.prisma as any;
     const driverId = this.common.normalizeDriverId(driverIdRaw);
     if (!driverId) return { ok: false, message: 'Informe um Driver ID valido.' };
 
-    const existing = await this.common.prisma.driverBlocklist.findUnique({
+    const existing = await prisma.driverBlocklist.findUnique({
       where: { driverId },
       select: { status: true },
     });
@@ -125,11 +151,20 @@ export class DriversService {
       return { ok: true, message: `Motorista ${driverId} ja esta desbloqueado na lista de bloqueio.` };
     }
 
-    await this.common.prisma.driverBlocklist.update({
+    await prisma.driverBlocklist.update({
       where: { driverId },
       data: {
         status: 'UNBLOCKED' as any,
+        reason: null,
         lastInactivatedAt: new Date(),
+      },
+    });
+    await prisma.blockedQueueRequest.updateMany({
+      where: { driverId },
+      data: {
+        status: 'CONSUMED',
+        cooldownUntil: null,
+        resolvedAt: new Date(),
       },
     });
     await this.common.redisService.set(this.common.getBlocklistCacheKey(driverId), false, 3600);

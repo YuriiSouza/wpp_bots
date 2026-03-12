@@ -52,7 +52,7 @@ export class RouteService {
         OR: [
           {
             driverId,
-            status: 'ATRIBUIDA',
+            status: { in: ['ATRIBUIDA', 'APROVADA'] as any },
           },
           {
             requestedDriverId: driverId,
@@ -74,7 +74,7 @@ export class RouteService {
         OR: [
           {
             driverId,
-            status: 'ATRIBUIDA',
+            status: { in: ['ATRIBUIDA', 'APROVADA'] as any },
           },
           {
             requestedDriverId: driverId,
@@ -159,7 +159,7 @@ export class RouteService {
       const existing = await prismaTx.route.findFirst({
         where: {
           driverId,
-          status: 'ATRIBUIDA',
+          status: { in: ['ATRIBUIDA', 'APROVADA'] as any },
           routeDate: currentWindow.date,
           shift: currentWindow.shift,
         },

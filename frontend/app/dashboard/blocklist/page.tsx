@@ -117,6 +117,7 @@ export default function BlocklistPage() {
         const extraDrivers = Array.from(resolvedById.entries()).map(([id, name]) => ({
           id,
           name,
+          status: null,
           vehicleType: null,
           ds: null,
           noShowCount: 0,
@@ -184,6 +185,7 @@ export default function BlocklistPage() {
         driverName: driver.name || null,
         status: "UNBLOCKED",
         displayStatus: "UNLISTED",
+        reason: null,
         timesListed: 0,
         lastActivatedAt: null,
         lastInactivatedAt: null,
@@ -195,7 +197,7 @@ export default function BlocklistPage() {
   }, [drivers, filtered, search, statusFilter])
 
   const handleToggle = async () => {
-    if (!actionItem || !justification.trim()) {
+    if (!actionItem || (actionItem.displayStatus !== "BLOCKED" && !justification.trim())) {
       toast.error("Justificativa obrigatoria")
       return
     }
@@ -203,7 +205,7 @@ export default function BlocklistPage() {
     try {
       const response =
         newStatus === "BLOCKED"
-          ? await addBlocklistDriver(actionItem.driverId)
+          ? await addBlocklistDriver(actionItem.driverId, justification.trim())
           : await removeBlocklistDriver(actionItem.driverId)
 
       if (!response.ok) {
@@ -219,6 +221,7 @@ export default function BlocklistPage() {
               driverId: actionItem.driverId,
               driverName: actionItem.driverName || driverMap.get(actionItem.driverId) || null,
               status: newStatus as "BLOCKED" | "UNBLOCKED",
+              reason: newStatus === "BLOCKED" ? justification.trim() : null,
               timesListed: 1,
               lastActivatedAt: newStatus === "BLOCKED" ? new Date().toISOString() : null,
               lastInactivatedAt: newStatus === "UNBLOCKED" ? new Date().toISOString() : null,
@@ -234,6 +237,7 @@ export default function BlocklistPage() {
             ? {
                 ...b,
                 status: newStatus as "BLOCKED" | "UNBLOCKED",
+                reason: newStatus === "BLOCKED" ? justification.trim() : null,
                 timesListed: newStatus === "BLOCKED" ? b.timesListed + 1 : b.timesListed,
                 lastActivatedAt: newStatus === "BLOCKED" ? new Date().toISOString() : b.lastActivatedAt,
                 lastInactivatedAt: newStatus === "UNBLOCKED" ? new Date().toISOString() : b.lastInactivatedAt,
@@ -296,6 +300,7 @@ export default function BlocklistPage() {
                 <TableHead>Motorista</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Vezes Listado</TableHead>
+                <TableHead>Justificativa</TableHead>
                 <TableHead>Ultima Ativacao</TableHead>
                 <TableHead>Ultima Inativacao</TableHead>
                 <TableHead className="w-[120px]">Acao</TableHead>
@@ -314,6 +319,9 @@ export default function BlocklistPage() {
                   </TableCell>
                   <TableCell><StatusBadge status={item.displayStatus} /></TableCell>
                   <TableCell className="text-sm text-card-foreground">{item.timesListed}</TableCell>
+                  <TableCell className="max-w-[280px] text-sm text-muted-foreground">
+                    <span className="block truncate">{item.reason || "-"}</span>
+                  </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     {item.lastActivatedAt ? format(new Date(item.lastActivatedAt), "dd/MM/yy HH:mm", { locale: ptBR }) : "-"}
                   </TableCell>
@@ -350,21 +358,25 @@ export default function BlocklistPage() {
           <div className="py-4 flex flex-col gap-3">
             <div className="flex items-center gap-2 rounded-lg bg-warning/10 p-3">
               <AlertTriangle className="h-4 w-4 text-warning" />
-              <p className="text-sm text-warning">Justificativa obrigatoria para esta acao.</p>
+              <p className="text-sm text-warning">
+                {actionItem?.displayStatus === "BLOCKED"
+                  ? "O desbloqueio remove a justificativa atual."
+                  : "Justificativa obrigatoria para bloqueio manual."}
+              </p>
             </div>
             <div className="flex flex-col gap-2">
               <Label>Justificativa</Label>
               <Textarea
                 value={justification}
                 onChange={(e) => setJustification(e.target.value)}
-                placeholder="Descreva o motivo da alteracao..."
+                placeholder={actionItem?.displayStatus === "BLOCKED" ? "Opcional para desbloqueio" : "Descreva o motivo do bloqueio..."}
                 rows={3}
               />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setActionItem(null); setJustification("") }}>Cancelar</Button>
-            <Button onClick={handleToggle} disabled={!justification.trim()}>Confirmar</Button>
+            <Button onClick={handleToggle} disabled={actionItem?.displayStatus !== "BLOCKED" && !justification.trim()}>Confirmar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

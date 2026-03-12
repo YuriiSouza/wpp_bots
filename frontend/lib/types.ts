@@ -1,5 +1,5 @@
 // ===== Enums =====
-export type RouteStatus = "DISPONIVEL" | "ATRIBUIDA" | "BLOQUEADA" | "EXPORTADA"
+export type RouteStatus = "DISPONIVEL" | "ATRIBUIDA" | "APROVADA" | "BLOQUEADA" | "EXPORTADA"
 export type BlocklistStatus = "BLOCKED" | "UNBLOCKED"
 export type UserRole = "ADMIN" | "ANALISTA" | "SUPERVISOR"
 export type RouteAssignmentSource = "SYNC" | "MANUAL" | "TELEGRAM_BOT"
@@ -8,6 +8,7 @@ export type RouteAssignmentSource = "SYNC" | "MANUAL" | "TELEGRAM_BOT"
 export interface Driver {
   id: string
   name: string | null
+  status: string | null
   vehicleType: string | null
   ds: string | null
   noShowCount: number
@@ -76,11 +77,44 @@ export interface DriverBlocklist {
   driverId: string
   driverName?: string | null
   status: BlocklistStatus
+  reason?: string | null
   timesListed: number
   lastActivatedAt: string | null
   lastInactivatedAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface PendingRouteRequest {
+  routeId: string
+  atId: string
+  routeDate: string | null
+  shift: string | null
+  cluster: string | null
+  cidade: string | null
+  bairro: string | null
+  requiredVehicleType: string | null
+  requestedDriverId: string | null
+  requestedDriverName: string | null
+  requestedDriverVehicleType: string | null
+  requestedDriverDs: string | null
+  requestedDriverPriorityScore: number
+  blockReason: string | null
+  requestedAt: string | null
+}
+
+export interface BlockedQueueRequest {
+  driverId: string
+  chatId: string | null
+  driverName: string | null
+  vehicleType: string | null
+  ds: string | null
+  priorityScore: number
+  status?: string
+  blockReason: string | null
+  cooldownUntil?: string | null
+  requestedAt: string | null
+  updatedAt: string | null
 }
 
 export interface FaqItem {

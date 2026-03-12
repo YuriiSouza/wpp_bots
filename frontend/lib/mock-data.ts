@@ -7,7 +7,6 @@ import type {
   FaqItem,
   DashboardStats,
   AuditLog,
-  ConversationState,
 } from "./types"
 
 // ===== Drivers =====
@@ -128,13 +127,6 @@ export const mockAuditLogs: AuditLog[] = [
   { id: "aud-4", entityType: "FaqItem", entityId: "faq-1", action: "UPDATE", userId: "admin-1", userName: "Admin Master", before: { title: "Como cadastrar?" }, after: { title: "Como me cadastrar?" }, createdAt: new Date(Date.now() - 14400000).toISOString() },
   { id: "aud-5", entityType: "Driver", entityId: "DRV0005", action: "RESET_NOSHOW", userId: "admin-1", userName: "Admin Master", before: { noShowCount: 5 }, after: { noShowCount: 0 }, createdAt: new Date(Date.now() - 18000000).toISOString() },
   { id: "aud-6", entityType: "Route", entityId: "RT00010", action: "UNASSIGN", userId: "admin-1", userName: "Admin Master", before: { status: "ATRIBUIDA", driverId: "DRV0007" }, after: { status: "DISPONIVEL", driverId: null }, createdAt: new Date(Date.now() - 21600000).toISOString() },
-]
-
-// ===== ConversationState =====
-export const mockConversations: ConversationState[] = [
-  { phone: "+5511999990001", step: "ASK_DRIVER_ID", lastDriverId: null, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
-  { phone: "+5511999990002", step: "DONE", lastDriverId: "DRV0001", updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
-  { phone: "+5511999990003", step: "ASK_DRIVER_ID", lastDriverId: null, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
 ]
 
 // ===== Dashboard Stats =====

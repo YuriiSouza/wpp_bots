@@ -25,6 +25,10 @@ export class AdminCommonService {
     return value ? value.toISOString() : null;
   }
 
+  stateKey(chatId: string) {
+    return `telegram:state:${chatId}`;
+  }
+
   createJwtToken(payload: Record<string, unknown>): string {
     const header = this.encodeBase64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
     const body = this.encodeBase64Url(JSON.stringify(payload));
@@ -283,10 +287,6 @@ export class AdminCommonService {
     const m = String(date.getMonth() + 1).padStart(2, '0');
     const d = String(date.getDate()).padStart(2, '0');
     return `${this.LOG_PREFIX}:${y}-${m}-${d}`;
-  }
-
-  stateKey(chatId: string) {
-    return `telegram:state:${chatId}`;
   }
 
   async checkRedis(): Promise<string> {

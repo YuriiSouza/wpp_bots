@@ -802,6 +802,10 @@ export class AppService {
     return route.createdAt;
   }
 
+  private formatIsoDate(value: Date) {
+    return value.toISOString().slice(0, 10);
+  }
+
   private toTopBreakdownEntries(counts: Map<string, number>, limit = 8) {
     return Array.from(counts.entries())
       .map(([label, count]) => ({ label, count }))
@@ -896,11 +900,16 @@ export class AppService {
   }
 
   private async getExecutiveDashboardSection() {
-    const cacheKey = `${this.DASHBOARD_EXECUTIVE_CACHE_PREFIX}:v1`;
+    const cacheKey = `${this.DASHBOARD_EXECUTIVE_CACHE_PREFIX}:v2`;
     const cached = await this.redisService.get<any>(cacheKey);
     if (cached) {
       return cached;
     }
+
+    const routesWindowStart = new Date();
+    routesWindowStart.setHours(0, 0, 0, 0);
+    routesWindowStart.setDate(routesWindowStart.getDate() - 13);
+    const routesWindowStartIso = this.formatIsoDate(routesWindowStart);
 
     const [
       totalDrivers,
@@ -945,15 +954,26 @@ export class AppService {
       }),
       this.prisma.route.findMany({
         where: {
-          createdAt: {
-            gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
-          },
+          OR: [
+            {
+              routeDate: {
+                gte: routesWindowStartIso,
+              },
+            },
+            {
+              routeDate: null,
+              createdAt: {
+                gte: routesWindowStart,
+              },
+            },
+          ],
         },
         select: {
+          routeDate: true,
           createdAt: true,
           status: true,
         },
-        orderBy: { createdAt: 'asc' },
+        orderBy: [{ routeDate: 'asc' }, { createdAt: 'asc' }],
       }),
     ]);
 
@@ -979,7 +999,7 @@ export class AppService {
     }
 
     recentRoutes.forEach((route) => {
-      const key = route.createdAt.toISOString().slice(0, 10);
+      const key = this.formatIsoDate(this.resolveRouteReferenceDate(route));
       const bucket = historyMap.get(key);
       if (!bucket) return;
       if (route.status === RouteStatus.ATRIBUIDA) bucket.atribuidas += 1;
@@ -1030,7 +1050,7 @@ export class AppService {
   }
 
   private async getNoShowDashboardSection() {
-    const cacheKey = `${this.DASHBOARD_NOSHOW_CACHE_PREFIX}:v1`;
+    const cacheKey = `${this.DASHBOARD_NOSHOW_CACHE_PREFIX}:v2`;
     const cached = await this.redisService.get<any>(cacheKey);
     if (cached) {
       return cached;
@@ -1039,6 +1059,7 @@ export class AppService {
     const noShowWindowStart = new Date();
     noShowWindowStart.setHours(0, 0, 0, 0);
     noShowWindowStart.setDate(noShowWindowStart.getDate() - 29);
+    const noShowWindowStartIso = this.formatIsoDate(noShowWindowStart);
 
     const noShowTodayStart = new Date();
     noShowTodayStart.setHours(0, 0, 0, 0);
@@ -1050,9 +1071,19 @@ export class AppService {
         this.prisma.route.findMany({
           where: {
             noShow: true,
-            createdAt: {
-              gte: noShowWindowStart,
-            },
+            OR: [
+              {
+                routeDate: {
+                  gte: noShowWindowStartIso,
+                },
+              },
+              {
+                routeDate: null,
+                createdAt: {
+                  gte: noShowWindowStart,
+                },
+              },
+            ],
           },
           select: {
             id: true,
@@ -4805,7 +4836,7 @@ export class AppService {
 
       return {
         ok: true,
-        message: `Rotas atualizadas pelo Historico ATs para ${selectedDate} (${selectedShift}). Disponiveis: ${summary.routesAvailable}. Atribuidas: ${summary.routesAssigned}.`,
+        message: `Rotas atualizadas pelo Historico ATs sem filtro de data nem turno. Disponiveis: ${summary.routesAvailable}. Atribuidas: ${summary.routesAssigned}.`,
       };
     } catch (error) {
       return {
@@ -4830,9 +4861,8 @@ export class AppService {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
     const redis = this.redisService.client();
-    const [conversations, syncLogs, lastMinuteMessages, activeTickets, openRoutes] =
+    const [syncLogs, lastMinuteMessages, activeTickets, openRoutes] =
       await Promise.all([
-        this.prisma.conversationState.findMany({ orderBy: { updatedAt: 'desc' }, take: 30 }),
         this.prisma.syncLog.findMany({ orderBy: { startedAt: 'desc' }, take: 20 }),
         prisma.supportMessage.count({
           where: { createdAt: { gte: new Date(Date.now() - 60 * 1000) } },
@@ -4893,15 +4923,19 @@ export class AppService {
       )
     );
 
+    const trackedChatIds = new Set([
+      ...queueStates.map((entry) => entry.chatId),
+      ...activeEntries.map((entry) => entry.chatId),
+    ]);
+
     const recentErrors = syncLogs.filter((item) => item.status === 'FAILED').length;
     return {
       messagesPerMin: lastMinuteMessages,
       uptime: recentErrors > 3 ? 96.2 : 99.7,
       status: recentErrors > 5 ? 'DEGRADED' : 'ONLINE',
-      activeConversations: conversations.filter((item) => item.step !== 'DONE').length,
-      totalUsers: conversations.length,
+      activeConversations: activeEntries.length,
+      totalUsers: trackedChatIds.size,
       recentErrors,
-      conversations,
       queue: queueStates,
       activeQueue: activeEntries,
       alerts: [

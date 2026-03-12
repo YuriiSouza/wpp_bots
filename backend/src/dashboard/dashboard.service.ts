@@ -6,8 +6,24 @@ import { AdminCommonService } from '../admin-common/admin-common.service';
 export class DashboardService {
   constructor(private readonly common: AdminCommonService) {}
 
+  private resolveRouteReferenceDate(route: { routeDate?: string | null; createdAt: Date }) {
+    const rawDate = String(route.routeDate || '').trim();
+    if (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      const parsed = new Date(`${rawDate}T00:00:00`);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+
+    return route.createdAt;
+  }
+
   async getDashboardData() {
-    const prisma = this.common.prisma;
+    const prisma = this.common.prisma as any;
+    const routesWindowStart = new Date();
+    routesWindowStart.setHours(0, 0, 0, 0);
+    routesWindowStart.setDate(routesWindowStart.getDate() - 13);
+    const routesWindowStartIso = routesWindowStart.toISOString().slice(0, 10);
     const [
       totalDrivers,
       routesAvailable,
@@ -44,15 +60,26 @@ export class DashboardService {
       }),
       prisma.route.findMany({
         where: {
-          createdAt: {
-            gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
-          },
+          OR: [
+            {
+              routeDate: {
+                gte: routesWindowStartIso,
+              },
+            },
+            {
+              routeDate: null,
+              createdAt: {
+                gte: routesWindowStart,
+              },
+            },
+          ],
         },
         select: {
+          routeDate: true,
           createdAt: true,
           status: true,
         },
-        orderBy: { createdAt: 'asc' },
+        orderBy: [{ routeDate: 'asc' }, { createdAt: 'asc' }],
       }),
     ]);
 
@@ -76,7 +103,7 @@ export class DashboardService {
     }
 
     recentRoutes.forEach((route) => {
-      const key = route.createdAt.toISOString().slice(0, 10);
+      const key = this.resolveRouteReferenceDate(route).toISOString().slice(0, 10);
       const bucket = historyMap.get(key);
       if (!bucket) return;
       if (route.status === RouteStatus.ATRIBUIDA) bucket.atribuidas += 1;
@@ -161,9 +188,9 @@ export class DashboardService {
   async getBotHealthData() {
     await this.common.ensureSupportSeedData();
     const prisma = this.common.prisma as any;
-    const [conversations, syncLogs, lastMinuteMessages, activeTickets, openRoutes] =
+    const redis = this.common.redisService.client();
+    const [syncLogs, lastMinuteMessages, activeTickets, openRoutes] =
       await Promise.all([
-        this.common.prisma.conversationState.findMany({ orderBy: { updatedAt: 'desc' }, take: 30 }),
         this.common.prisma.syncLog.findMany({ orderBy: { startedAt: 'desc' }, take: 20 }),
         prisma.supportMessage.count({
           where: { createdAt: { gte: new Date(Date.now() - 60 * 1000) } },
@@ -179,15 +206,67 @@ export class DashboardService {
         }),
       ]);
 
+    const [queue, motoQueue, activeChatId, activeMotoChatId] = await Promise.all([
+      redis.lrange(this.common.QUEUE_LIST_KEY_GENERAL, 0, -1),
+      redis.lrange(this.common.QUEUE_LIST_KEY_MOTO, 0, -1),
+      redis.get(this.common.QUEUE_ACTIVE_KEY_GENERAL),
+      redis.get(this.common.QUEUE_ACTIVE_KEY_MOTO),
+    ]);
+
+    const queueEntries = [
+      ...queue.map((chatId, index) => ({ chatId, position: index + 1, group: 'general' as const })),
+      ...motoQueue.map((chatId, index) => ({ chatId, position: index + 1, group: 'moto' as const })),
+    ];
+
+    const queueStates = await Promise.all(
+      queueEntries.map(async (entry) => {
+        const state = await this.common.redisService.get<any>(this.common.stateKey(entry.chatId));
+        return {
+          chatId: entry.chatId,
+          position: entry.position,
+          group: entry.group,
+          driverId: state?.driverId || null,
+          driverName: state?.driverName || null,
+          vehicleType: state?.vehicleType || null,
+          step: state?.step || null,
+        };
+      }),
+    );
+
+    const activeEntries = await Promise.all(
+      [
+        activeChatId ? { chatId: activeChatId, group: 'general' as const } : null,
+        activeMotoChatId ? { chatId: activeMotoChatId, group: 'moto' as const } : null,
+      ]
+        .filter((value): value is { chatId: string; group: 'general' | 'moto' } => Boolean(value))
+        .map(async (entry) => {
+          const state = await this.common.redisService.get<any>(this.common.stateKey(entry.chatId));
+          return {
+            chatId: entry.chatId,
+            group: entry.group,
+            driverId: state?.driverId || null,
+            driverName: state?.driverName || null,
+            vehicleType: state?.vehicleType || null,
+            step: state?.step || null,
+          };
+        }),
+    );
+
+    const trackedChatIds = new Set([
+      ...queueStates.map((entry) => entry.chatId),
+      ...activeEntries.map((entry) => entry.chatId),
+    ]);
+
     const recentErrors = syncLogs.filter((item) => item.status === 'FAILED').length;
     return {
       messagesPerMin: lastMinuteMessages,
       uptime: recentErrors > 3 ? 96.2 : 99.7,
       status: recentErrors > 5 ? 'DEGRADED' : 'ONLINE',
-      activeConversations: conversations.filter((item) => item.step !== 'DONE').length,
-      totalUsers: conversations.length,
+      activeConversations: activeEntries.length,
+      totalUsers: trackedChatIds.size,
       recentErrors,
-      conversations,
+      queue: queueStates,
+      activeQueue: activeEntries,
       alerts: [
         activeTickets > 0
           ? {

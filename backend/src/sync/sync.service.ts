@@ -976,7 +976,7 @@ export class SyncService implements OnModuleInit {
       memory: this.memorySnapshot(),
     });
     const [historyRows, overviewRows] = await Promise.all([
-      this.sheets.getRows(`'Historico ATs'!A:AN`),
+      this.sheets.getRows(`'Historico ATs'!A:AP`),
       this.sheets.getAssignmentOverviewRows(),
     ]);
 
@@ -1007,6 +1007,9 @@ export class SyncService implements OnModuleInit {
     ]);
     const neighborhoodIndex = this.getHeaderIndex(historyHeaders, ['Neighborhood']);
     const cityIndex = this.getHeaderIndex(historyHeaders, ['City']);
+    const clusterIndex = this.getHeaderIndex(historyHeaders, ['Cluster']);
+    const shiftIndex = this.getHeaderIndex(historyHeaders, ['Turno']);
+    const routeDateIndex = this.getHeaderIndex(historyHeaders, ['Data', 'Delivery Date']);
     const dsIndex = this.getHeaderIndex(historyHeaders, ['DS']);
     const totalDistanceIndex = this.getHeaderIndex(historyHeaders, ['Total Distance']);
     const assignedOrdersIndex = this.getHeaderIndex(historyHeaders, ['Number of assigned orders/TO']);
@@ -1037,21 +1040,25 @@ export class SyncService implements OnModuleInit {
       if (!atId) continue;
       const overviewRoute = overviewByAt.get(atId);
       const currentDriverId = this.normalizeSheetDriverId(
-        (driverIdIndex >= 0 ? rawRow[driverIdIndex] : rawRow[6]) ?? null,
+        (driverIdIndex >= 0 ? rawRow[driverIdIndex] : rawRow[7]) ?? null,
       );
       historyDriverByAt.set(atId, currentDriverId || null);
       if (currentDriverId) driverIds.push(currentDriverId);
 
-      const routeDate = this.normalizeRouteDate(rawRow[39]);
+      const routeDate = this.normalizeRouteDate(
+        routeDateIndex >= 0 ? rawRow[routeDateIndex] : null,
+      );
       if (!routeDate) {
         skippedMissingDate += 1;
       }
-      const routeShift = this.normalizeCalculationTaskShift(rawRow[36]) || null;
+      const routeShift = this.normalizeCalculationTaskShift(
+        shiftIndex >= 0 ? rawRow[shiftIndex] : null,
+      ) || null;
       if (!routeShift) {
         skippedMissingShift += 1;
       }
       const routeId = this.buildPersistentRouteId(atId);
-      const cluster = String(rawRow[23] ?? '').trim() || null;
+      const cluster = String((clusterIndex >= 0 ? rawRow[clusterIndex] : '') ?? '').trim() || null;
       const requestedDriverId = overviewRoute?.requestedDriverId || null;
       if (requestedDriverId) driverIds.push(requestedDriverId);
       const requiredVehicleType =

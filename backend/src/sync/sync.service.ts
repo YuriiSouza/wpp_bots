@@ -723,23 +723,61 @@ export class SyncService implements OnModuleInit {
   private normalizeRouteDate(value?: string | null): string | null {
     const raw = String(value ?? '').trim();
     if (!raw) return null;
+    const toIsoDate = (year: string, month: string, day: string) => {
+      const monthNumber = Number(month);
+      const dayNumber = Number(day);
+      const yearNumber = Number(year);
+      if (
+        !Number.isInteger(yearNumber) ||
+        !Number.isInteger(monthNumber) ||
+        !Number.isInteger(dayNumber) ||
+        monthNumber < 1 ||
+        monthNumber > 12 ||
+        dayNumber < 1 ||
+        dayNumber > 31
+      ) {
+        return null;
+      }
+
+      const candidate = new Date(
+        Date.UTC(yearNumber, monthNumber - 1, dayNumber),
+      );
+      if (
+        candidate.getUTCFullYear() !== yearNumber ||
+        candidate.getUTCMonth() + 1 !== monthNumber ||
+        candidate.getUTCDate() !== dayNumber
+      ) {
+        return null;
+      }
+
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    };
 
     const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (isoMatch) {
       const [, year, month, day] = isoMatch;
-      return `${year}-${month}-${day}`;
+      return toIsoDate(year, month, day);
     }
 
-    const dashMatch = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:\s+.*)?$/);
-    if (dashMatch) {
-      const [, day, month, year] = dashMatch;
-      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
+    const localDateMatch = raw.match(/^(\d{1,2})([-\/])(\d{1,2})\2(\d{4})(?:\s+.*)?$/);
+    if (localDateMatch) {
+      const [, first, , second, year] = localDateMatch;
+      const firstNumber = Number(first);
+      const secondNumber = Number(second);
 
-    const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+.*)?$/);
-    if (slashMatch) {
-      const [, day, month, year] = slashMatch;
-      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+      if (firstNumber > 12 && secondNumber <= 12) {
+        return toIsoDate(year, second, first);
+      }
+      if (secondNumber > 12 && firstNumber <= 12) {
+        return toIsoDate(year, first, second);
+      }
+
+      const ddMmYyyy = toIsoDate(year, second, first);
+      if (ddMmYyyy) {
+        return ddMmYyyy;
+      }
+
+      return toIsoDate(year, first, second);
     }
 
     const parsed = new Date(raw);

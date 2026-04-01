@@ -1,2 +1,0 @@
-ALTER TABLE "Route"
-ADD COLUMN "botAvailable" BOOLEAN NOT NULL DEFAULT false;

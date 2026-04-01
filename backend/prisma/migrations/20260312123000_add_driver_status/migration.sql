@@ -1,2 +1,0 @@
-ALTER TABLE "Driver"
-ADD COLUMN IF NOT EXISTS "status" TEXT;

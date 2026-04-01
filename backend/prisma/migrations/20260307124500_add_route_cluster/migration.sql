@@ -1,2 +1,0 @@
-ALTER TABLE "Route"
-ADD COLUMN IF NOT EXISTS "cluster" TEXT;

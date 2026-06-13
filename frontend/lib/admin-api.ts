@@ -295,6 +295,13 @@ export async function fetchRoutes(params?: {
   return response.data
 }
 
+export async function refreshRoutesFromSheet() {
+  const response = await api.post<{ ok: boolean; routesAvailable?: number; routesAssigned?: number }>(
+    "/api/routes/refresh",
+  )
+  return response.data
+}
+
 export async function fetchRouteRequestsBoard() {
   const response = await api.get<RouteRequestsBoardPayload>("/api/routes/requests-board")
   return response.data

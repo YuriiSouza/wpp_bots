@@ -147,34 +147,28 @@ export class DashboardService {
 
   async getOverviewData() {
     const prisma = this.common.prisma;
-    const [overviews, routes] = await Promise.all([
-      prisma.assignmentOverview.findMany({ orderBy: { rowNumber: 'asc' } }),
-      prisma.route.findMany({ select: { id: true, status: true, driverId: true } }),
-    ]);
-    const routeMap = new Map(routes.map((route) => [route.id, route]));
-
-    const data = overviews.map((overview) => {
-      const payload = overview.payload as Record<string, unknown>;
-      const routeId = String(payload.routeId || '');
-      const route = routeMap.get(routeId);
-      let inconsistency: string | null = null;
-      if (!route) inconsistency = 'Rota nao encontrada';
-      else if (route.status !== payload.status) {
-        inconsistency = `Status divergente (overview: ${String(payload.status)}, real: ${route.status})`;
-      } else if ((route.driverId || null) !== (overview.driverId || null)) {
-        inconsistency = 'Motorista divergente';
-      }
-
-      return {
-        ...overview,
-        updatedAt: this.common.toIsoString(overview.updatedAt),
-        createdAt: this.common.toIsoString(overview.createdAt),
-        inconsistency,
-      };
+    const routes = await prisma.route.findMany({
+      orderBy: [{ sheetRowNumber: 'asc' }, { atId: 'asc' }],
     });
 
+    const data = routes.map((route) => ({
+      rowNumber: route.sheetRowNumber,
+      driverId: route.driverId,
+      payload: {
+        atId: route.atId,
+        cluster: route.cluster,
+        cidade: route.cidade,
+        requiredVehicleType: route.requiredVehicleType,
+        requestedDriverId: route.requestedDriverId,
+        status: route.status,
+      },
+      updatedAt: this.common.toIsoString(route.updatedAt),
+      createdAt: this.common.toIsoString(route.createdAt),
+      inconsistency: null as string | null,
+    }));
+
     return {
-      inconsistentCount: data.filter((item) => item.inconsistency).length,
+      inconsistentCount: 0,
       data,
     };
   }

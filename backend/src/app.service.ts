@@ -4520,17 +4520,7 @@ export class AppService {
             },
             orderBy: [{ updatedAt: 'desc' }],
           }),
-          this.prisma.assignmentOverview.findMany({
-            where: {
-              driverId: { in: driverIds },
-            },
-            select: {
-              driverId: true,
-              payload: true,
-              updatedAt: true,
-            },
-            orderBy: [{ updatedAt: 'desc' }],
-          }),
+          Promise.resolve([] as { driverId: string | null; payload: any; updatedAt: Date }[]),
         ])
       : [[], [], []];
     const driverNameById = new Map<string, string | null>();
@@ -5345,7 +5335,7 @@ export class AppService {
           : typeof happenedAtRaw === 'string'
             ? happenedAtRaw
             : log.createdAt.toISOString();
-      const time = happenedAt.slice(11, 19) || this.toIsoString(log.createdAt).slice(11, 19);
+      const time = happenedAt.slice(11, 19) || (this.toIsoString(log.createdAt) || '').slice(11, 19);
 
       const current =
         requestMap.get(driverId) || {
@@ -5480,21 +5470,12 @@ export class AppService {
     }
 
     try {
-      const inferredWindow = await this.sheets.getCurrentCalculationWindow();
-      const fallbackWindow = this.getCurrentRouteWindow();
-      const selectedDate =
-        String(date || '').trim() || inferredWindow?.date || fallbackWindow.date;
-      const selectedShift =
-        (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2' | '') ||
-        inferredWindow?.shift ||
-        fallbackWindow.shift;
-
-      const summary = await this.sync.syncRoutesOnly(selectedDate, selectedShift);
+      const summary = await this.sync.syncRoutesOnly();
       await this.invalidateRoutesCache();
 
       return {
         ok: true,
-        message: `Rotas atualizadas pelo Historico ATs sem filtro de data nem turno. Disponiveis: ${summary.routesAvailable}. Atribuidas: ${summary.routesAssigned}.`,
+        message: `Rotas atualizadas pela guia Reatribuição. Disponiveis: ${summary.routesAvailable}. Atribuidas: ${summary.routesAssigned}.`,
       };
     } catch (error) {
       return {

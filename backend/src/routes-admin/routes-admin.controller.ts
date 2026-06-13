@@ -10,6 +10,11 @@ export class RoutesAdminController {
     return this.routesAdminService.getRoutes();
   }
 
+  @Post('api/routes/refresh')
+  async refreshRoutes() {
+    return this.routesAdminService.refreshRoutesFromSheet();
+  }
+
   @Post('api/routes/:routeId/assign')
   async assignRoute(
     @Param('routeId') routeId: string,

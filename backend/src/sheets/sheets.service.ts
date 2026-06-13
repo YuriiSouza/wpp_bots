@@ -1,16 +1,28 @@
 import { Injectable } from '@nestjs/common';
 import { google } from 'googleapis';
-import { RedisService } from '../redis/redis.service';
 import { PrismaService } from '../prisma/prisma.service';
+
+export interface ReatribuicaoRoute {
+  rowIndex: number;
+  atId: string;
+  gaiola?: string;
+  cluster?: string;
+  cidade?: string;
+  requiredVehicleType?: string;
+  routeDate?: string;
+  km?: string;
+  spr?: string;
+  paradas?: string;
+  requestedDriverId?: string;
+}
 
 export interface RotaDisponivel {
   rowIndex: number;
   atId: string;
   gaiola?: string;
-  bairro?: string;
+  cluster?: string;
   cidade?: string;
   vehicleType?: string;
-  volume: number;
   driverId?: string;
 }
 
@@ -18,13 +30,24 @@ export interface RotaDisponivel {
 export class SheetsService {
   private sheets;
   private spreadsheetId = process.env.SHEET_ID;
-  private readonly cacheTtlSeconds = 300;
+  private readonly reatribuicaoSheetName = 'Reatribuição';
   private readonly assignmentSheetName = 'Visão Geral Atribuições';
 
-  constructor(
-    private readonly redisService: RedisService,
-    private readonly prisma: PrismaService,
-  ) {
+  // Headers esperados na aba Reatribuição. Ordem ignorada — uso findIndex por nome.
+  private readonly reatribuicaoHeaders = {
+    idSugerido: 'ID Sugerido',
+    ats: 'ATs',
+    gaiola: 'Gaiola',
+    cluster: 'Cluster',
+    cidade: 'Cidade',
+    requiredVehicleType: 'Tipo de Veiculo Nescessario',
+    data: 'Data',
+    km: 'KM',
+    spr: 'SPR',
+    paradas: 'Paradas',
+  };
+
+  constructor(private readonly prisma: PrismaService) {
     const credentials = this.getServiceAccountCredentials();
     const auth = new google.auth.GoogleAuth({
       credentials,
@@ -33,7 +56,6 @@ export class SheetsService {
 
     this.sheets = google.sheets({ version: 'v4', auth });
   }
-
 
   private getServiceAccountCredentials() {
     const envB64 = process.env.GOOGLE_CREDENTIALS_B64;
@@ -56,93 +78,6 @@ export class SheetsService {
     });
 
     return res.data.values || [];
-  }
-
-  private normalizeCalculationDate(value: unknown) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-
-    const brMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-    if (brMatch) {
-      const [, day, month, year] = brMatch;
-      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    const dashMatch = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-    if (dashMatch) {
-      const [, day, month, year] = dashMatch;
-      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    const parsed = new Date(raw);
-    if (Number.isNaN(parsed.getTime())) return '';
-    return parsed.toISOString().slice(0, 10);
-  }
-
-  private normalizeCalculationShift(value: unknown) {
-    const raw = String(value || '')
-      .trim()
-      .toUpperCase()
-      .replace(/[\u2012\u2013\u2014\u2015\u2212]/g, '-')
-      .replace(/\s*-\s*/g, ' - ');
-    if (raw === 'AM') return 'AM';
-    if (raw === 'PM' || raw === 'PM1') return 'PM';
-    if (raw === 'PM2') return 'PM2';
-    if (raw === '06:00 - 09:00') return 'AM';
-    const rangeMatch = raw.match(/^(\d{1,2}):(\d{2}) - (\d{1,2}):(\d{2})$/);
-    if (rangeMatch) {
-      const [, startHour, startMinute, endHour, endMinute] = rangeMatch;
-      const start = Number(startHour) * 60 + Number(startMinute);
-      const end = Number(endHour) * 60 + Number(endMinute);
-
-      if (end <= 10 * 60) return 'AM';
-      if (start >= 15 * 60 || end > 18 * 60) return 'PM2';
-      return 'PM';
-    }
-    return '';
-  }
-
-  async getCurrentCalculationWindow(): Promise<{ date: string; shift: 'AM' | 'PM' | 'PM2' } | null> {
-    const rows = await this.getRows("'Calculation Tasks'!K:AF");
-    if (rows.length <= 1) return null;
-
-    const today = new Date().toISOString().slice(0, 10);
-    const counts = new Map<string, number>();
-
-    for (const row of rows.slice(1)) {
-      const date = this.normalizeCalculationDate(row[0]);
-      const shift = this.normalizeCalculationShift(row[21] || row[1]);
-      const atId = String(row[17] || '').trim();
-      if (!date || !atId || !shift) continue;
-
-      const key = `${date}|${shift}`;
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-
-    if (!counts.size) return null;
-
-    const sorted = Array.from(counts.entries()).sort((left, right) => {
-      const [leftKey, leftCount] = left;
-      const [rightKey, rightCount] = right;
-      const [leftDate] = leftKey.split('|');
-      const [rightDate] = rightKey.split('|');
-
-      const leftIsToday = leftDate === today ? 1 : 0;
-      const rightIsToday = rightDate === today ? 1 : 0;
-      if (leftIsToday !== rightIsToday) return rightIsToday - leftIsToday;
-      if (leftCount !== rightCount) return rightCount - leftCount;
-      return rightKey.localeCompare(leftKey);
-    });
-
-    const [selectedKey] = sorted[0];
-    const [date, shift] = selectedKey.split('|');
-    if (!date || !shift) return null;
-
-    return {
-      date,
-      shift: shift as 'AM' | 'PM' | 'PM2',
-    };
   }
 
   async batchUpdateValues(
@@ -209,97 +144,181 @@ export class SheetsService {
     return `'${name.replace(/'/g, "''")}'`;
   }
 
+  private reatribuicaoRange(range: string) {
+    return `${this.sanitizeSheetName(this.reatribuicaoSheetName)}!${range}`;
+  }
+
   private assignmentRange(range: string) {
     return `${this.sanitizeSheetName(this.assignmentSheetName)}!${range}`;
+  }
+
+  /**
+   * Lê todas as rotas atualmente disponíveis na guia Reatribuição.
+   * É a fonte única de verdade para a tabela Route — qualquer rota fora daqui é descartada.
+   */
+  async getReatribuicaoRoutes(): Promise<ReatribuicaoRoute[]> {
+    const rows = await this.getRows(this.reatribuicaoRange('A:L'));
+    if (rows.length <= 1) return [];
+
+    const headers = rows[0].map((h) => String(h || '').trim());
+    const idx = {
+      idSugerido: headers.indexOf(this.reatribuicaoHeaders.idSugerido),
+      ats: headers.indexOf(this.reatribuicaoHeaders.ats),
+      gaiola: headers.indexOf(this.reatribuicaoHeaders.gaiola),
+      cluster: headers.indexOf(this.reatribuicaoHeaders.cluster),
+      cidade: headers.indexOf(this.reatribuicaoHeaders.cidade),
+      requiredVehicleType: headers.indexOf(
+        this.reatribuicaoHeaders.requiredVehicleType,
+      ),
+      data: headers.indexOf(this.reatribuicaoHeaders.data),
+      km: headers.indexOf(this.reatribuicaoHeaders.km),
+      spr: headers.indexOf(this.reatribuicaoHeaders.spr),
+      paradas: headers.indexOf(this.reatribuicaoHeaders.paradas),
+    };
+
+    if (idx.ats < 0) {
+      throw new Error(
+        `Coluna "${this.reatribuicaoHeaders.ats}" não encontrada na guia ${this.reatribuicaoSheetName}`,
+      );
+    }
+
+    const routes: ReatribuicaoRoute[] = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const atId = String(row[idx.ats] || '').trim();
+      if (!atId) continue;
+      routes.push({
+        rowIndex: i + 1,
+        atId,
+        gaiola: idx.gaiola >= 0 ? String(row[idx.gaiola] || '').trim() : '',
+        cluster: idx.cluster >= 0 ? String(row[idx.cluster] || '').trim() : '',
+        cidade: idx.cidade >= 0 ? String(row[idx.cidade] || '').trim() : '',
+        requiredVehicleType:
+          idx.requiredVehicleType >= 0
+            ? String(row[idx.requiredVehicleType] || '').trim()
+            : '',
+        routeDate: idx.data >= 0 ? String(row[idx.data] || '').trim() : '',
+        km: idx.km >= 0 ? String(row[idx.km] || '').trim() : '',
+        spr: idx.spr >= 0 ? String(row[idx.spr] || '').trim() : '',
+        paradas:
+          idx.paradas >= 0 ? String(row[idx.paradas] || '').trim() : '',
+        requestedDriverId:
+          idx.idSugerido >= 0
+            ? String(row[idx.idSugerido] || '').trim()
+            : '',
+      });
+    }
+    return routes;
+  }
+
+  /**
+   * Resolve a coluna da "ID Sugerido" na guia Reatribuição (lendo o cabeçalho).
+   */
+  private async getIdSugeridoColumnLetter(): Promise<string> {
+    const headerRow = await this.getRows(this.reatribuicaoRange('1:1'));
+    const headers = (headerRow[0] || []).map((h) => String(h || '').trim());
+    const idx = headers.indexOf(this.reatribuicaoHeaders.idSugerido);
+    if (idx < 0) {
+      throw new Error(
+        `Coluna "${this.reatribuicaoHeaders.idSugerido}" não encontrada na guia ${this.reatribuicaoSheetName}`,
+      );
+    }
+    return this.columnIndexToLetter(idx);
+  }
+
+  /**
+   * Escreve o ID do motorista aprovado na coluna ID Sugerido da guia Reatribuição.
+   */
+  async writeIdSugerido(rowNumber: number, driverId: string) {
+    const column = await this.getIdSugeridoColumnLetter();
+    const range = this.reatribuicaoRange(`${column}${rowNumber}`);
+    await this.sheets.spreadsheets.values.update({
+      spreadsheetId: this.spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[driverId]] },
+    });
+  }
+
+  async clearIdSugerido(rowNumber: number) {
+    const column = await this.getIdSugeridoColumnLetter();
+    const range = this.reatribuicaoRange(`${column}${rowNumber}`);
+    await this.sheets.spreadsheets.values.update({
+      spreadsheetId: this.spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      requestBody: { values: [['']] },
+    });
+  }
+
+  /**
+   * Lê a coluna K da guia "Visão Geral Atribuições" — IDs de motoristas que já têm rota.
+   * Usado pelo sync de drivers para marcar Driver.hasActiveRoute.
+   */
+  async getActiveDriverIdsFromAssignmentOverview(): Promise<string[]> {
+    const rows = await this.getRows(this.assignmentRange('K:K'));
+    if (rows.length <= 1) return [];
+    const ids = new Set<string>();
+    for (let i = 1; i < rows.length; i++) {
+      const id = String((rows[i] || [])[0] || '').trim();
+      if (id) ids.add(id);
+    }
+    return Array.from(ids);
   }
 
   async getAssignmentOverviewRows(): Promise<string[][]> {
     return this.getRows(this.assignmentRange('A:R'));
   }
 
-  async updateAssignmentRequestByRow(rowNumber: number, driverId: string) {
-    const range = this.assignmentRange(`R${rowNumber}`);
-    await this.sheets.spreadsheets.values.update({
-      spreadsheetId: this.spreadsheetId,
-      range,
-      valueInputOption: 'RAW',
-      requestBody: {
-        values: [[driverId]],
-      },
-    });
-    return true;
-  }
-
+  /**
+   * Compat: chamadas legadas (bot, route.service) usam updateAssignmentRequest(routeId, driverId)
+   * para registrar a intenção de atribuição. Agora isso escreve a "ID Sugerido"
+   * da Reatribuição, em vez da coluna R de Visão Geral.
+   */
   async updateAssignmentRequest(routeId: string, driverId: string) {
-    const route = await (this.prisma as any).route.findUnique({
+    const route = await this.prisma.route.findUnique({
       where: { id: routeId },
       select: { sheetRowNumber: true },
     });
     if (!route?.sheetRowNumber) return false;
-    await this.updateAssignmentRequestByRow(route.sheetRowNumber, driverId);
+    await this.writeIdSugerido(route.sheetRowNumber, driverId);
     return true;
   }
 
   async clearAssignmentRequest(routeId: string) {
-    const route = await (this.prisma as any).route.findUnique({
+    const route = await this.prisma.route.findUnique({
       where: { id: routeId },
-      select: { sheetRowNumber: true, driverId: true },
+      select: { sheetRowNumber: true },
     });
     if (!route?.sheetRowNumber) return false;
-    await this.updateAssignmentRequestByRow(route.sheetRowNumber, '');
-    if (route.driverId) {
-      await this.clearDriverRouteCache(route.driverId);
-    }
+    await this.clearIdSugerido(route.sheetRowNumber);
     return true;
   }
 
-  async clearDriverRouteCache(driverId: string) {
-    await this.redisService.del(`driver:hasRoute:${String(driverId)}`);
+  /** Compat: sem cache Redis, no-op. */
+  async clearDriverRouteCache(_driverId: string) {
+    return;
   }
 
-  async updateRouteDriverId(atId: string, driverId: string) {
-    const rows = await this.getRows(`'Rotas recusadas'!A:Z`);
-    if (!rows.length) return false;
-
-    const headers = rows[0];
-    const idIndex = headers.findIndex((h) => h.trim() === 'ID');
-    const atIndex = headers.findIndex((h) => h.trim() === 'ATs');
-    if (idIndex < 0 || atIndex < 0) return false;
-
-    const rowIndex = rows
-      .slice(1)
-      .findIndex((row) => String(row[atIndex] || '').trim() === atId);
-    if (rowIndex < 0) return false;
-
-    const sheetRow = rowIndex + 2;
-    const column = this.columnIndexToLetter(idIndex);
-    const range = `'Rotas recusadas'!${column}${sheetRow}`;
-
-    await this.sheets.spreadsheets.values.update({
-      spreadsheetId: this.spreadsheetId,
-      range,
-      valueInputOption: 'RAW',
-      requestBody: {
-        values: [[driverId]],
-      },
-    });
-
-    return true;
+  /**
+   * Compat: a noção de "janela de cálculo" (shift atual) foi descontinuada.
+   * Retorna null para callsites legados — eles aplicam fallback próprio.
+   */
+  async getCurrentCalculationWindow(): Promise<{ date: string; shift: 'AM' | 'PM' | 'PM2' } | null> {
+    return null;
   }
 
+  /**
+   * Verifica se um motorista já tem rota — consulta Driver.hasActiveRoute no DB.
+   * O sync periódico de drivers mantém esse campo alinhado com a coluna K
+   * de "Visão Geral Atribuições".
+   */
   async driverAlreadyHasRoute(driverId: string): Promise<boolean> {
-    const cacheKey = `driver:hasRoute:${driverId}`;
-    const cached = await this.redisService.get<boolean>(cacheKey);
-    if (cached !== null) return cached;
-
-    const hasRoute = await this.prisma.assignmentOverview.findFirst({
-      where: { driverId: String(driverId) },
-      select: { id: true },
+    const driver = await this.prisma.driver.findUnique({
+      where: { id: String(driverId) },
+      select: { hasActiveRoute: true },
     });
-
-    const result = !!hasRoute;
-    await this.redisService.set(cacheKey, result, this.cacheTtlSeconds);
-    return result;
+    return !!driver?.hasActiveRoute;
   }
 
   async getDriverVehicle(driverId: number): Promise<{
@@ -307,15 +326,6 @@ export class SheetsService {
     name: string;
     vehicleType: string;
   } | null> {
-    const cacheKey = `driver:info:${driverId}`;
-    const cached = await this.redisService.get<{
-      id: number;
-      name: string;
-      vehicleType: string;
-    }>(cacheKey);
-
-    if (cached) return cached;
-
     const rows = await this.getRows('Perfil de Motorista!A1:AZ');
     if (rows.length === 0) return null;
 
@@ -334,105 +344,97 @@ export class SheetsService {
 
     if (!driverRow) return null;
 
-    const driver = {
+    return {
       id: driverId,
       name: String(driverRow[nameIndex] || ''),
       vehicleType: String(driverRow[vehicleIndex] || ''),
     };
-
-    await this.redisService.set(cacheKey, driver, this.cacheTtlSeconds);
-    return driver;
   }
 
+  /**
+   * Rotas disponíveis para o bot — vem direto do banco (Route).
+   * O Route é alimentado pelo botão "Atualizar rotas" do frontend, que limpa
+   * tudo e reimporta da guia Reatribuição.
+   */
   async getAvailableRoutes(vehicleType: string): Promise<RotaDisponivel[]> {
-    const cacheKey = `routes:available:${vehicleType.toLowerCase()}`;
-    const cached = await this.redisService.get<RotaDisponivel[]>(cacheKey);
-    if (cached) return cached;
-
-    const rows = await this.getRows(`'Rotas recusadas'!A:L`);
-    if (rows.length <= 1) return [];
-
-    const routes = rows
-      .slice(1)
-      .map((row, index) => ({
-        rowIndex: index + 2,
-        atId: String(row[0] || ''),
-        gaiola: row[1],
-        bairro: row[2],
-        cidade: row[3],
-        vehicleType: row[4],
-        volume: Number(row[8] || 0),
-        driverId: row[11],
-      }))
-      .filter(
-        (r) =>
-          r.vehicleType?.toLowerCase() === vehicleType.toLowerCase() &&
-          (!r.driverId || r.driverId === ''),
-      );
-
-    await this.redisService.set(cacheKey, routes, this.cacheTtlSeconds);
-    return routes;
+    const routes = await this.prisma.route.findMany({
+      where: {
+        status: 'DISPONIVEL',
+        requiredVehicleType: { equals: vehicleType, mode: 'insensitive' },
+      },
+      select: {
+        sheetRowNumber: true,
+        atId: true,
+        gaiola: true,
+        cluster: true,
+        cidade: true,
+        requiredVehicleType: true,
+        requestedDriverId: true,
+      },
+    });
+    return routes.map((r) => ({
+      rowIndex: r.sheetRowNumber || 0,
+      atId: r.atId,
+      gaiola: r.gaiola || '',
+      cluster: r.cluster || '',
+      cidade: r.cidade || '',
+      vehicleType: r.requiredVehicleType || '',
+      driverId: r.requestedDriverId || '',
+    }));
   }
 
   async getAllAvailableRoutes(): Promise<RotaDisponivel[]> {
-    const cacheKey = 'routes:available:all';
-    const cached = await this.redisService.get<RotaDisponivel[]>(cacheKey);
-    if (cached) return cached;
-
-    const rows = await this.getRows(`'Rotas recusadas'!A:L`);
-    if (rows.length <= 1) return [];
-
-    const routes = rows
-      .slice(1)
-      .map((row, index) => ({
-        rowIndex: index + 2,
-        gaiola: row[1],
-        atId: String(row[0] || ''),
-        bairro: row[2],
-        cidade: row[3],
-        vehicleType: row[4],
-        volume: Number(row[8] || 0),
-        driverId: row[11],
-      }))
-      .filter((r) => !r.driverId || r.driverId === '');
-
-    await this.redisService.set(cacheKey, routes, this.cacheTtlSeconds);
-    return routes;
+    const routes = await this.prisma.route.findMany({
+      where: { status: 'DISPONIVEL' },
+      select: {
+        sheetRowNumber: true,
+        atId: true,
+        gaiola: true,
+        cluster: true,
+        cidade: true,
+        requiredVehicleType: true,
+        requestedDriverId: true,
+      },
+    });
+    return routes.map((r) => ({
+      rowIndex: r.sheetRowNumber || 0,
+      atId: r.atId,
+      gaiola: r.gaiola || '',
+      cluster: r.cluster || '',
+      cidade: r.cidade || '',
+      vehicleType: r.requiredVehicleType || '',
+      driverId: r.requestedDriverId || '',
+    }));
   }
 
-  async assignRoute(atId: string, driverId: number): Promise<boolean> {
-    const rows = await this.getRows(`'Rotas recusadas'!A:L`);
-    if (rows.length <= 1) return false;
+  /**
+   * Marca uma rota como atribuída a um motorista — atualiza DB e escreve ID Sugerido na planilha.
+   */
+  async assignRoute(atId: string, driverId: number | string): Promise<boolean> {
+    const route = await this.prisma.route.findUnique({
+      where: { atId: String(atId) },
+      select: {
+        id: true,
+        sheetRowNumber: true,
+        requestedDriverId: true,
+        status: true,
+      },
+    });
+    if (!route) return false;
+    if (route.requestedDriverId) return false;
+    if (route.status !== 'DISPONIVEL') return false;
 
-    const data = rows.slice(1);
-    const matchIndex = data.findIndex(
-      (row) => String(row[0] || '') === String(atId),
-    );
-
-    if (matchIndex === -1) return false;
-
-    const rowIndex = matchIndex + 2;
-    const currentDriverId = data[matchIndex][11];
-    const vehicleType = String(data[matchIndex][4] || '');
-
-    if (currentDriverId) return false;
-
-    await this.sheets.spreadsheets.values.update({
-      spreadsheetId: process.env.SHEET_ID,
-      range: `'Rotas recusadas'!L${rowIndex}`,
-      valueInputOption: 'RAW',
-      requestBody: {
-        values: [[driverId]],
+    await this.prisma.route.update({
+      where: { id: route.id },
+      data: {
+        requestedDriverId: String(driverId),
       },
     });
 
-    if (vehicleType) {
-      await this.redisService.del(
-        `routes:available:${vehicleType.toLowerCase()}`,
-      );
+    if (route.sheetRowNumber) {
+      await this.writeIdSugerido(route.sheetRowNumber, String(driverId));
     }
-    await this.redisService.del('routes:available:all');
-    await this.redisService.del(`driver:hasRoute:${driverId}`);
+
     return true;
   }
 }

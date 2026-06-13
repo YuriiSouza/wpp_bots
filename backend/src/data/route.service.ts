@@ -46,25 +46,11 @@ export class RouteService {
   }
 
   async driverHasRoute(driverId: string): Promise<boolean> {
-    const currentWindow = await this.getCurrentRouteWindow();
-    const existing = await this.prisma.route.findFirst({
-      where: {
-        OR: [
-          {
-            driverId,
-            status: { in: ['ATRIBUIDA', 'APROVADA'] as any },
-          },
-          {
-            requestedDriverId: driverId,
-            assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
-          },
-        ],
-        routeDate: currentWindow.date,
-        shift: currentWindow.shift,
-      },
-      select: { id: true },
+    const driver = await this.prisma.driver.findUnique({
+      where: { id: driverId },
+      select: { hasActiveRoute: true },
     });
-    return !!existing;
+    return !!driver?.hasActiveRoute;
   }
 
   async getCurrentRouteForDriver(driverId: string) {
@@ -245,12 +231,6 @@ export class RouteService {
         },
       });
 
-      if (route.sheetRowNumber) {
-        await prismaTx.assignmentOverview.updateMany({
-          where: { rowNumber: route.sheetRowNumber },
-          data: { driverId: null },
-        });
-      }
     });
 
     await this.sheets.clearAssignmentRequest(route.id);

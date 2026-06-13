@@ -54,6 +54,7 @@ import {
   fetchRouteRequestsBoard,
   fetchRoutes,
   getApiErrorMessage,
+  refreshRoutesFromSheet,
   markRouteNoShow,
   rejectRouteRequest as rejectRouteRequestApi,
   rejectBlockedQueueRequest as rejectBlockedQueueRequestApi,
@@ -900,6 +901,25 @@ export default function RoutesPage() {
     setSelectedRoute((current) => (current?.id === route.id ? null : route))
   }
 
+  const [isRefreshingRoutes, setIsRefreshingRoutes] = useState(false)
+  const handleRefreshRoutes = async () => {
+    if (isRefreshingRoutes) return
+    setIsRefreshingRoutes(true)
+    try {
+      const result = await refreshRoutesFromSheet()
+      toast.success(
+        `Rotas atualizadas. Disponíveis: ${result.routesAvailable ?? 0} • Atribuídas: ${
+          result.routesAssigned ?? 0
+        }`,
+      )
+      await loadData(true)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar as rotas"))
+    } finally {
+      setIsRefreshingRoutes(false)
+    }
+  }
+
   return (
     <div className="flex min-w-0 flex-col overflow-hidden">
       <PageHeader title="Rotas" breadcrumbs={[{ label: "Rotas" }]} />
@@ -910,6 +930,15 @@ export default function RoutesPage() {
             <p className="text-sm text-muted-foreground">{filtered.length} rotas encontradas</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="default"
+              onClick={handleRefreshRoutes}
+              disabled={isRefreshingRoutes}
+              className="w-full sm:w-auto"
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshingRoutes ? "animate-spin" : ""}`} />
+              {isRefreshingRoutes ? "Atualizando..." : "Atualizar rotas"}
+            </Button>
             <Button variant="outline" onClick={handleExportCsv} className="w-full sm:w-auto">
               <Download className="mr-2 h-4 w-4" />
               Exportar CSV

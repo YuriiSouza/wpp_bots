@@ -301,14 +301,50 @@ export class RedisService {
   async setnxRaw(key: string, value: any): Promise<boolean> {
     if (this.shouldBypassKey(key)) return false;
     const parsedValue = typeof value === 'string' ? safeParseJson(value) : value;
+
+    // 1) tenta INSERT direto
     try {
       await this.prisma.telegramKv.create({
         data: { key, value: parsedValue },
       });
       return true;
     } catch {
-      return false;
+      // conflito de PK — pode ser linha viva ou expirada
     }
+
+    // 2) linha existe — só "rouba" se estiver expirada
+    const existing = await this.prisma.telegramKv.findUnique({
+      where: { key },
+      select: { expiresAt: true },
+    });
+
+    if (!existing) {
+      // foi apagada nesse meio tempo — tenta inserir de novo
+      try {
+        await this.prisma.telegramKv.create({
+          data: { key, value: parsedValue },
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    const isExpired =
+      existing.expiresAt !== null &&
+      existing.expiresAt.getTime() < Date.now();
+
+    if (!isExpired) return false;
+
+    // 3) linha expirada — sobreescreve atomicamente (updateMany filtrando por expirado)
+    const updated = await this.prisma.telegramKv.updateMany({
+      where: {
+        key,
+        expiresAt: { lt: new Date() },
+      },
+      data: { value: parsedValue, expiresAt: null },
+    });
+    return updated.count > 0;
   }
 
   async scanKeys(pattern: string): Promise<string[]> {

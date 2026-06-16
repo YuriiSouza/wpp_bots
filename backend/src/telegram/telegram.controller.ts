@@ -78,24 +78,18 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       });
       return true;
     } catch {
-      // PK conflict — verificar se o lock existente expirou.
+      // PK conflict — pode ser lock vivo ou expirado.
     }
 
-    const existing = await this.prisma.telegramKv.findUnique({
-      where: { key },
-      select: { expiresAt: true },
+    // Sobreescreve atomicamente APENAS se já expirou.
+    const stolen = await this.prisma.telegramKv.updateMany({
+      where: {
+        key,
+        expiresAt: { lt: new Date() },
+      },
+      data: { value: { ownerToken } as any, expiresAt },
     });
-    if (existing?.expiresAt && existing.expiresAt.getTime() < Date.now()) {
-      try {
-        await this.prisma.telegramKv.update({
-          where: { key },
-          data: { value: { ownerToken } as any, expiresAt },
-        });
-        return true;
-      } catch {
-        // alguém pegou primeiro
-      }
-    }
+    if (stolen.count > 0) return true;
 
     await this.maybeSendThrottleNotice(chatId);
     return false;
@@ -1435,6 +1429,7 @@ Para encerrar, digite: "encerrar"
   private async processUpdate(message: any, chatId: string) {
     const text = message.text.trim();
     const command = this.normalizeCommand(text);
+    console.log(`[tg-debug] processUpdate chatId=${chatId} text=${JSON.stringify(text)}`);
 
     if (command === '/meuchatid') {
       await this.telegram.sendMessage(
@@ -1579,6 +1574,7 @@ Para encerrar, digite: "encerrar"
 
     /* ===== ESPERANDO ID ===== */
     if (state.state === DriverState.WAITING_ID) {
+      console.log(`[tg-debug] chatId=${chatId} estado WAITING_ID, tentando ID=${text}`);
       const driverId = text.trim();
       if (!/^\d+$/.test(driverId)) {
         await this.telegram.sendMessage(Number(chatId), 'ID inválido.');
@@ -1587,9 +1583,11 @@ Para encerrar, digite: "encerrar"
 
       const driver = await this.drivers.findById(driverId);
       if (!driver) {
+        console.log(`[tg-debug] chatId=${chatId} ID=${driverId} NÃO encontrado no DB`);
         await this.telegram.sendMessage(Number(chatId), 'ID não encontrado.');
         return { ok: true };
       }
+      console.log(`[tg-debug] chatId=${chatId} driver encontrado, indo pro MENU`);
 
       await this.setState(chatId, {
         state: DriverState.MENU,

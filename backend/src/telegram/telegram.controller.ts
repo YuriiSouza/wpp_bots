@@ -9,6 +9,7 @@ import { normalizeVehicleType } from '../utils/normalize-vehicle';
 import { SyncService } from '../sync/sync.service';
 import { SheetsService } from '../sheets/sheets.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PgLockService } from '../pg-state/pg-lock.service';
 import {
   NO_ROUTES_AVAILABLE,
 } from './telegram.messages';
@@ -51,7 +52,38 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     private readonly sync: SyncService,
     private readonly sheets: SheetsService,
     private readonly prisma: PrismaService,
+    private readonly pgLock: PgLockService,
   ) {}
+
+  /**
+   * Throttling: tenta adquirir um lock por chatId. Se já há mensagem em processamento
+   * pra esse chat, retorna false e o caller descarta. Avisa o usuário UMA vez a cada
+   * 8 segundos com mensagem "aguarde" (controlado por cooldown no TelegramKv).
+   */
+  private async acquireMessageSlot(chatId: string): Promise<boolean> {
+    const label = `tg:msg:${chatId}`;
+    const ok = await this.pgLock.tryLock(label);
+    if (!ok) {
+      const cooldownKey = `tg:throttle:notice:${chatId}`;
+      const cooldownActive = await this.redis.get<boolean>(cooldownKey);
+      if (!cooldownActive) {
+        await this.redis.set(cooldownKey, true, 8);
+        // fire-and-forget — não bloqueia a resposta do webhook
+        this.telegram
+          .sendMessage(
+            Number(chatId),
+            '⏳ Aguarde, estou processando sua última mensagem.',
+          )
+          .catch(() => undefined);
+      }
+      return false;
+    }
+    return true;
+  }
+
+  private async releaseMessageSlot(chatId: string) {
+    await this.pgLock.unlock(`tg:msg:${chatId}`).catch(() => undefined);
+  }
 
   /* =======================
       Helpers Redis
@@ -1339,6 +1371,19 @@ Para encerrar, digite: "encerrar"
     if (!message?.text) return { ok: true };
 
     const chatId = String(message.chat.id);
+
+    // Throttling: ignora mensagens enquanto há outra do mesmo chat sendo processada.
+    const acquired = await this.acquireMessageSlot(chatId);
+    if (!acquired) return { ok: true };
+
+    try {
+      return await this.processUpdate(message, chatId);
+    } finally {
+      await this.releaseMessageSlot(chatId);
+    }
+  }
+
+  private async processUpdate(message: any, chatId: string) {
     const text = message.text.trim();
     const command = this.normalizeCommand(text);
 

@@ -213,13 +213,10 @@ function getDsMeta(value?: string | null) {
   }
 }
 
-function getInitialRouteFilters(today: string) {
+function getInitialRouteFilters() {
   if (typeof window === "undefined") {
     return {
       search: "",
-      dayFromFilter: today,
-      dayToFilter: today,
-      shiftFilter: [] as string[],
       statusFilter: [] as RouteStatusFilter[],
       cityFilter: [] as string[],
       vehicleFilter: [] as string[],
@@ -231,9 +228,6 @@ function getInitialRouteFilters(today: string) {
     if (!raw) {
       return {
         search: "",
-        dayFromFilter: today,
-        dayToFilter: today,
-        shiftFilter: [] as string[],
         statusFilter: [] as RouteStatusFilter[],
         cityFilter: [] as string[],
         vehicleFilter: [] as string[],
@@ -242,22 +236,13 @@ function getInitialRouteFilters(today: string) {
 
     const parsed = JSON.parse(raw) as Partial<{
       search: string
-      dayFilter: string
-      dayFromFilter: string
-      dayToFilter: string
-      shiftFilter: string | string[]
       statusFilter: string | string[]
       cityFilter: string | string[]
       vehicleFilter: string | string[]
     }>
 
-    const fallbackDay = parsed.dayFilter || today
-
     return {
       search: parsed.search || "",
-      dayFromFilter: parsed.dayFromFilter || fallbackDay,
-      dayToFilter: parsed.dayToFilter || fallbackDay,
-      shiftFilter: normalizeStoredFilter(parsed.shiftFilter),
       statusFilter: normalizeStoredFilter(parsed.statusFilter) as RouteStatusFilter[],
       cityFilter: normalizeStoredFilter(parsed.cityFilter),
       vehicleFilter: normalizeStoredFilter(parsed.vehicleFilter),
@@ -265,9 +250,6 @@ function getInitialRouteFilters(today: string) {
   } catch {
     return {
       search: "",
-      dayFromFilter: today,
-      dayToFilter: today,
-      shiftFilter: [] as string[],
       statusFilter: [] as RouteStatusFilter[],
       cityFilter: [] as string[],
       vehicleFilter: [] as string[],
@@ -276,12 +258,8 @@ function getInitialRouteFilters(today: string) {
 }
 
 export default function RoutesPage() {
-  const today = new Date().toISOString().slice(0, 10)
-  const initialFilters = getInitialRouteFilters(today)
+  const initialFilters = getInitialRouteFilters()
   const [search, setSearch] = useState(initialFilters.search)
-  const [dayFromFilter, setDayFromFilter] = useState(initialFilters.dayFromFilter)
-  const [dayToFilter, setDayToFilter] = useState(initialFilters.dayToFilter)
-  const [shiftFilter, setShiftFilter] = useState<string[]>(initialFilters.shiftFilter)
   const [statusFilter, setStatusFilter] = useState<RouteStatusFilter[]>(initialFilters.statusFilter)
   const [cityFilter, setCityFilter] = useState<string[]>(initialFilters.cityFilter)
   const [vehicleFilter, setVehicleFilter] = useState<string[]>(initialFilters.vehicleFilter)
@@ -323,13 +301,7 @@ export default function RoutesPage() {
 
     try {
       const [routeData, driverData, requestBoard] = await Promise.all([
-        fetchRoutes({
-          dateFrom: (filters?.dateFrom ?? dayFromFilter) || undefined,
-          dateTo: (filters?.dateTo ?? dayToFilter) || undefined,
-          shift:
-            filters?.shift ??
-            (shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined),
-        }),
+        fetchRoutes(),
         fetchDrivers(),
         fetchRouteRequestsBoard(),
       ])
@@ -360,25 +332,21 @@ export default function RoutesPage() {
     return () => {
       window.clearInterval(interval)
     }
-  }, [dayFromFilter, dayToFilter, shiftFilter])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem(
       ROUTES_FILTERS_STORAGE_KEY,
       JSON.stringify({
         search,
-        dayFromFilter,
-        dayToFilter,
-        shiftFilter,
         statusFilter,
         cityFilter,
         vehicleFilter,
       })
     )
-  }, [search, dayFromFilter, dayToFilter, shiftFilter, statusFilter, cityFilter, vehicleFilter])
+  }, [search, statusFilter, cityFilter, vehicleFilter])
 
   const cities = useMemo(() => [...new Set(routes.map((r) => r.cidade).filter(Boolean))], [routes])
-  const shifts = useMemo(() => [...new Set(routes.map((r) => r.shift).filter(Boolean))], [routes])
   const vehicles = useMemo(() => [...new Set(routes.map((r) => r.requiredVehicleType).filter(Boolean))], [routes])
 
   const filtered = useMemo(() => {
@@ -395,7 +363,6 @@ export default function RoutesPage() {
           r.requestedDriverName?.toLowerCase().includes(q)
       )
     }
-    if (shiftFilter.length) result = result.filter((r) => shiftFilter.includes(r.shift || ""))
     if (statusFilter.length) {
       result = result.filter((r) =>
         statusFilter.some((status) => {
@@ -414,7 +381,7 @@ export default function RoutesPage() {
       if (aPriority !== bPriority) return aPriority - bPriority
       return (b.routeDate || "").localeCompare(a.routeDate || "")
     })
-  }, [routes, search, shiftFilter, statusFilter, cityFilter, vehicleFilter])
+  }, [routes, search, statusFilter, cityFilter, vehicleFilter])
 
   const statusCounts = useMemo(() => ({
     total: routes.length,
@@ -779,12 +746,7 @@ export default function RoutesPage() {
 
     setIsBulkReleasing(true)
     try {
-      const singleDayForActions =
-        dayFromFilter && dayToFilter && dayFromFilter === dayToFilter ? dayFromFilter : undefined
-      const response = await releaseRoutesToBotByAtRequest(atIds, {
-        date: singleDayForActions,
-        shift: shiftFilter.length === 1 ? (shiftFilter[0] as "AM" | "PM" | "PM2") : undefined,
-      })
+      const response = await releaseRoutesToBotByAtRequest(atIds, {})
       if (!response.ok) {
         toast.error(response.message)
         return
@@ -876,24 +838,22 @@ export default function RoutesPage() {
     }
   }
 
-  const handleExportCsv = async () => {
+  const handleCopyRelation = async () => {
     try {
-      const singleDayForActions =
-        dayFromFilter && dayToFilter && dayFromFilter === dayToFilter ? dayFromFilter : undefined
-      const csvBlob = await exportBotAssignedRoutesCsv(singleDayForActions)
-      const blob = new Blob([csvBlob], { type: "text/csv;charset=utf-8;" })
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement("a")
-      const suffix = singleDayForActions ? `-${singleDayForActions}` : ""
+      const lines = filtered
+        .filter((route) => route.driverId && (route.atId || route.id))
+        .map((route) => `${route.driverId} ${route.atId || route.id}`)
 
-      link.href = url
-      link.download = `rotas-atribuidas${suffix}.csv`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
+      if (!lines.length) {
+        toast.error("Nenhuma rota com motorista atribuído na lista atual")
+        return
+      }
+
+      const text = lines.join("\n")
+      await navigator.clipboard.writeText(text)
+      toast.success(`${lines.length} rota(s) copiadas para a área de transferência`)
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel exportar o CSV"))
+      toast.error(getApiErrorMessage(error, "Nao foi possivel copiar a relação"))
     }
   }
 
@@ -939,9 +899,9 @@ export default function RoutesPage() {
               <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshingRoutes ? "animate-spin" : ""}`} />
               {isRefreshingRoutes ? "Atualizando..." : "Atualizar rotas"}
             </Button>
-            <Button variant="outline" onClick={handleExportCsv} className="w-full sm:w-auto">
+            <Button variant="outline" onClick={handleCopyRelation} className="w-full sm:w-auto">
               <Download className="mr-2 h-4 w-4" />
-              Exportar CSV
+              Copiar relação
             </Button>
             <Button variant="outline" onClick={() => setBulkReleaseOpen(true)} className="w-full sm:w-auto">
               <UserPlus className="mr-2 h-4 w-4" />
@@ -978,49 +938,6 @@ export default function RoutesPage() {
                   className="pl-9"
                 />
               </div>
-              <Input
-                type="date"
-                value={dayFromFilter}
-                onChange={(e) => setDayFromFilter(e.target.value)}
-                className="w-full sm:w-[160px]"
-              />
-              <Input
-                type="date"
-                value={dayToFilter}
-                onChange={(e) => setDayToFilter(e.target.value)}
-                className="w-full sm:w-[160px]"
-              />
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setDayFromFilter(today)
-                  setDayToFilter(today)
-                }}
-                className="w-full sm:w-auto"
-              >
-                Hoje
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" className="w-full justify-between sm:w-[140px]">
-                    {buildFilterLabel("Turnos", shiftFilter)}
-                    <ChevronDown className="ml-2 h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>Turnos</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {shifts.map((shift) => (
-                    <DropdownMenuCheckboxItem
-                      key={shift}
-                      checked={shiftFilter.includes(shift || "")}
-                      onCheckedChange={() => setShiftFilter((current) => toggleFilterValue(current, shift || ""))}
-                    >
-                      {shift}
-                    </DropdownMenuCheckboxItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" className="w-full justify-between sm:w-[150px]">
@@ -1277,12 +1194,12 @@ export default function RoutesPage() {
               <Table className="min-w-[760px] table-fixed">
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-[140px]">Motorista</TableHead>
                     <TableHead className="w-[140px]">AT</TableHead>
                     <TableHead className="w-[110px]">Gaiola</TableHead>
                     <TableHead className="w-[130px]">Cluster</TableHead>
                     <TableHead className="w-[120px]">Status</TableHead>
                     <TableHead className="w-[150px]">Cidade</TableHead>
-                    <TableHead className="w-[180px]">Bairro</TableHead>
                     <TableHead className="w-[180px]">Solicitante</TableHead>
                     <TableHead className="w-[420px]">Acoes</TableHead>
                   </TableRow>
@@ -1300,6 +1217,9 @@ export default function RoutesPage() {
                             : ""
                         } ${isSelected ? "ring-1 ring-inset ring-primary" : ""}`}
                       >
+                        <TableCell className="truncate font-mono text-xs text-card-foreground">
+                          {route.driverId || "-"}
+                        </TableCell>
                         <TableCell className="truncate font-mono text-xs text-muted-foreground">{route.atId || route.id}</TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">{route.gaiola || "-"}</TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">{route.cluster || "-"}</TableCell>
@@ -1328,7 +1248,6 @@ export default function RoutesPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">{route.cidade}</TableCell>
-                        <TableCell className="truncate text-sm text-card-foreground">{route.bairro}</TableCell>
                         <TableCell className="truncate text-sm text-card-foreground">
                           {route.requestedDriverName || "-"}
                         </TableCell>

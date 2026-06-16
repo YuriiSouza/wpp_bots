@@ -22,6 +22,7 @@ model Driver {
   status         String?
   vehicleType    String?
   ds             String?
+  telegramChatId String?
   noShowCount    Int      @default(0)
   declineRate    Float    @default(0)
   priorityScore  Float    @default(0)
@@ -36,6 +37,7 @@ model Driver {
 
   @@index([hubId])
   @@index([hasActiveRoute])
+  @@index([telegramChatId])
 }
 
 model DriverAvailability {

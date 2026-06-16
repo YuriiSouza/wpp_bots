@@ -26,10 +26,11 @@ export class RoutesAdminService {
     atLabel: string,
   ) {
     try {
-      const chatId = await this.common.redisService
-        .client()
-        .get(`telegram:driver:chat:${String(driverId).trim()}`);
-      const numericChatId = Number(chatId);
+      const driver = await this.common.prisma.driver.findUnique({
+        where: { id: String(driverId).trim() },
+        select: { telegramChatId: true },
+      });
+      const numericChatId = Number(driver?.telegramChatId);
       if (!Number.isSafeInteger(numericChatId) || numericChatId <= 0) return;
 
       const message =

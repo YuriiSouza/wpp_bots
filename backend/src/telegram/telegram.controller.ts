@@ -148,6 +148,17 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     if (nextDriverId) {
       await client.set(this.driverChatKey(nextDriverId), chatId, 'EX', this.STATE_TTL);
       await client.set(this.chatDriverKey(chatId), nextDriverId, 'EX', this.STATE_TTL);
+
+      // Persistente: chatId vai pra coluna Driver.telegramChatId pra notificações
+      // posteriores (ex: aprovação/rejeição de rota pelo analista). Não tem TTL.
+      try {
+        await this.prisma.driver.updateMany({
+          where: { id: nextDriverId },
+          data: { telegramChatId: chatId },
+        });
+      } catch {
+        // ignora — não bloqueia o fluxo do bot
+      }
       return;
     }
 

@@ -9,7 +9,6 @@ import { normalizeVehicleType } from '../utils/normalize-vehicle';
 import { SyncService } from '../sync/sync.service';
 import { SheetsService } from '../sheets/sheets.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { PgLockService } from '../pg-state/pg-lock.service';
 import {
   NO_ROUTES_AVAILABLE,
 } from './telegram.messages';
@@ -52,37 +51,73 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     private readonly sync: SyncService,
     private readonly sheets: SheetsService,
     private readonly prisma: PrismaService,
-    private readonly pgLock: PgLockService,
   ) {}
 
   /**
-   * Throttling: tenta adquirir um lock por chatId. Se já há mensagem em processamento
-   * pra esse chat, retorna false e o caller descarta. Avisa o usuário UMA vez a cada
-   * 8 segundos com mensagem "aguarde" (controlado por cooldown no TelegramKv).
+   * Throttling por chatId via mutex em TelegramKv.
+   *
+   * Implementação:
+   * - INSERT na TelegramKv com key=`tg:lock:<chatId>` e expiresAt=+30s.
+   *   Se já existir um lock NÃO expirado, INSERT falha (PK conflict) → retorna false.
+   *   Se existir mas expirado (handler anterior travou), apaga e tenta de novo.
+   * - Quando o handler termina, DELETE remove o lock.
+   *
+   * Por que não pg_advisory_lock: o lock é por sessão e o Prisma reutiliza conexões
+   * do pool, deixando locks "zumbis" sem dono que nunca conseguem ser liberados.
+   *
+   * Mensagem "aguarde" é enviada no máximo uma vez a cada 8s por chat.
    */
   private async acquireMessageSlot(chatId: string): Promise<boolean> {
-    const label = `tg:msg:${chatId}`;
-    const ok = await this.pgLock.tryLock(label);
-    if (!ok) {
-      const cooldownKey = `tg:throttle:notice:${chatId}`;
-      const cooldownActive = await this.redis.get<boolean>(cooldownKey);
-      if (!cooldownActive) {
-        await this.redis.set(cooldownKey, true, 8);
-        // fire-and-forget — não bloqueia a resposta do webhook
-        this.telegram
-          .sendMessage(
-            Number(chatId),
-            '⏳ Aguarde, estou processando sua última mensagem.',
-          )
-          .catch(() => undefined);
-      }
-      return false;
+    const key = `tg:lock:${chatId}`;
+    const ownerToken = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const expiresAt = new Date(Date.now() + 30 * 1000); // 30s safety net
+
+    try {
+      await this.prisma.telegramKv.create({
+        data: { key, value: { ownerToken } as any, expiresAt },
+      });
+      return true;
+    } catch {
+      // PK conflict — verificar se o lock existente expirou.
     }
-    return true;
+
+    const existing = await this.prisma.telegramKv.findUnique({
+      where: { key },
+      select: { expiresAt: true },
+    });
+    if (existing?.expiresAt && existing.expiresAt.getTime() < Date.now()) {
+      try {
+        await this.prisma.telegramKv.update({
+          where: { key },
+          data: { value: { ownerToken } as any, expiresAt },
+        });
+        return true;
+      } catch {
+        // alguém pegou primeiro
+      }
+    }
+
+    await this.maybeSendThrottleNotice(chatId);
+    return false;
   }
 
   private async releaseMessageSlot(chatId: string) {
-    await this.pgLock.unlock(`tg:msg:${chatId}`).catch(() => undefined);
+    await this.prisma.telegramKv
+      .deleteMany({ where: { key: `tg:lock:${chatId}` } })
+      .catch(() => undefined);
+  }
+
+  private async maybeSendThrottleNotice(chatId: string) {
+    const cooldownKey = `tg:throttle:notice:${chatId}`;
+    const cooldownActive = await this.redis.get<boolean>(cooldownKey);
+    if (cooldownActive) return;
+    await this.redis.set(cooldownKey, true, 8);
+    this.telegram
+      .sendMessage(
+        Number(chatId),
+        '⏳ Aguarde, estou processando sua última mensagem.',
+      )
+      .catch(() => undefined);
   }
 
   /* =======================

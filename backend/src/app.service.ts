@@ -1008,12 +1008,6 @@ export class AppService {
   }
 
   private async getExecutiveDashboardSection() {
-    const cacheKey = `${this.DASHBOARD_EXECUTIVE_CACHE_PREFIX}:v2`;
-    const cached = await this.redisService.get<any>(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
     const routesWindowStart = new Date();
     routesWindowStart.setHours(0, 0, 0, 0);
     routesWindowStart.setDate(routesWindowStart.getDate() - 13);
@@ -1149,22 +1143,10 @@ export class AppService {
         .slice(0, 10),
     };
 
-    await this.redisService.set(
-      cacheKey,
-      payload,
-      this.DASHBOARD_EXECUTIVE_CACHE_TTL_SECONDS,
-    );
-
     return payload;
   }
 
   private async getNoShowDashboardSection() {
-    const cacheKey = `${this.DASHBOARD_NOSHOW_CACHE_PREFIX}:v2`;
-    const cached = await this.redisService.get<any>(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
     const noShowWindowStart = new Date();
     noShowWindowStart.setHours(0, 0, 0, 0);
     noShowWindowStart.setDate(noShowWindowStart.getDate() - 29);
@@ -1342,12 +1324,6 @@ export class AppService {
         })),
       },
     };
-
-    await this.redisService.set(
-      cacheKey,
-      payload,
-      this.DASHBOARD_NOSHOW_CACHE_TTL_SECONDS,
-    );
 
     return payload;
   }

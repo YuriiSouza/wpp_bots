@@ -842,7 +842,7 @@ export default function RoutesPage() {
     try {
       const lines = filtered
         .filter((route) => route.driverId && (route.atId || route.id))
-        .map((route) => `${route.driverId} ${route.atId || route.id}`)
+        .map((route) => `${route.driverId};${route.atId || route.id}`)
 
       if (!lines.length) {
         toast.error("Nenhuma rota com motorista atribuído na lista atual")

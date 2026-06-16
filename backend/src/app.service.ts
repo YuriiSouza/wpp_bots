@@ -4002,10 +4002,11 @@ export class AppService {
       },
     });
 
-    const chatId = await this.redisService.client().get(
-      `telegram:driver:chat:${String(route.requestedDriverId).trim()}`,
-    );
-    const numericChatId = Number(chatId);
+    const driverForNotice = await this.prisma.driver.findUnique({
+      where: { id: String(route.requestedDriverId).trim() },
+      select: { telegramChatId: true },
+    });
+    const numericChatId = Number(driverForNotice?.telegramChatId);
     if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
       const atLabel = route.atId || route.id;
       await this.telegram.sendMessage(
@@ -4093,10 +4094,11 @@ export class AppService {
       },
     });
 
-    const chatId = await this.redisService.client().get(
-      `telegram:driver:chat:${String(route.requestedDriverId).trim()}`,
-    );
-    const numericChatId = Number(chatId);
+    const driverForNotice = await this.prisma.driver.findUnique({
+      where: { id: String(route.requestedDriverId).trim() },
+      select: { telegramChatId: true },
+    });
+    const numericChatId = Number(driverForNotice?.telegramChatId);
     if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
       const atLabel = route.atId || route.id;
       await this.telegram.sendMessage(

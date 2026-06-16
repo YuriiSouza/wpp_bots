@@ -26,6 +26,7 @@ export interface AvailableRoute {
   atId: string;
   gaiola?: string;
   bairro?: string;
+  cluster?: string;
   cidade?: string;
   vehicleType?: string;
 }

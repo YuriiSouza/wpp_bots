@@ -465,12 +465,35 @@ export class SyncService implements OnModuleInit {
    */
   private async syncDriversFromSheets() {
     this.logSync('Sync motoristas: inicio');
-    const driverRows = await this.sheets.getRows(`'Perfil de Motorista'!A:BF`);
+    // Lê range largo para garantir que a coluna DS esteja incluída mesmo se a planilha
+    // tiver crescido em colunas (passamos de A:BF para A:ZZ).
+    const driverRows = await this.sheets.getRows(`'Perfil de Motorista'!A:ZZ`);
     if (!driverRows.length) throw new Error('Planilha Perfil de Motorista vazia');
     const [driverHeaders, ...driverData] = driverRows;
 
     const drivers = this.mapRows(driverHeaders, driverData);
     const statusIndex = this.getHeaderIndex(driverHeaders, ['Status', 'Driver Status']);
+    // DS: aceita variações comuns do cabeçalho (com espaço, com %, etc).
+    const dsIndex = this.getHeaderIndex(driverHeaders, [
+      'DS',
+      'DS %',
+      'DS%',
+      'DS Médio',
+      'DS Medio',
+      'DS Atual',
+      'DS atual',
+      'DS Final',
+      'DS final',
+    ]);
+    if (dsIndex < 0) {
+      this.logger.warn(
+        `Sync motoristas: cabeçalho de DS não encontrado em "Perfil de Motorista". ` +
+          `Cabeçalhos disponíveis: ${driverHeaders
+            .map((h) => `"${String(h || '').trim()}"`)
+            .filter((h) => h !== '""')
+            .join(', ')}`,
+      );
+    }
 
     const activeDriverIds = new Set(
       await this.sheets.getActiveDriverIdsFromAssignmentOverview(),
@@ -478,6 +501,7 @@ export class SyncService implements OnModuleInit {
 
     let driverCount = 0;
     let activeCount = 0;
+    let driversWithDs = 0;
     const prisma = this.prisma as any;
     for (let index = 0; index < drivers.length; index += 1) {
       const row = drivers[index];
@@ -487,7 +511,10 @@ export class SyncService implements OnModuleInit {
       driverCount += 1;
 
       const vehicleType = row['Vehicle Type']?.trim() || null;
-      const ds = row['DS'] || null;
+      const rawDs =
+        dsIndex >= 0 ? String(rawRow[dsIndex] ?? '').trim() : '';
+      const ds = rawDs || null;
+      if (ds) driversWithDs += 1;
       const status =
         (statusIndex >= 0 ? String(rawRow[statusIndex] || '').trim() : '') ||
         String(rawRow[51] || '').trim() ||
@@ -534,6 +561,8 @@ export class SyncService implements OnModuleInit {
       rowsRead: driverRows.length - 1,
       driversProcessed: driverCount,
       driversWithActiveRoute: activeCount,
+      driversWithDs,
+      dsHeaderIndex: dsIndex,
       memory: this.memorySnapshot(),
     });
 

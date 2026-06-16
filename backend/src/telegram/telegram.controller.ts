@@ -1671,9 +1671,12 @@ Para encerrar, digite: "encerrar"
         return { ok: true };
       }
 
+      console.log(`[tg-debug] chatId=${chatId} driverId=${state.driverId} acessou opção 1`);
       await this.logEvent('solicitou_rotas', state, { chatId });
 
+      console.log(`[tg-debug] chatId=${chatId} checando hasRoute...`);
       const hasRoute = await this.driverAlreadyAssigned(state.driverId!);
+      console.log(`[tg-debug] chatId=${chatId} hasRoute=${hasRoute}`);
       if (hasRoute) {
         const route = await this.routes.getCurrentRouteForDriver(state.driverId!);
         if (route) {
@@ -1726,8 +1729,11 @@ Para encerrar, digite: "encerrar"
       }
 
       const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
+      console.log(`[tg-debug] chatId=${chatId} entrando na fila group=${group}`);
       await this.enqueue(chatId, state.vehicleType, group);
+      console.log(`[tg-debug] chatId=${chatId} enqueue OK, tentando ativar`);
       const canStart = await this.tryAcquireQueue(chatId, group);
+      console.log(`[tg-debug] chatId=${chatId} canStart=${canStart}`);
       if (!canStart) {
         await this.setState(chatId, {
           ...state,
@@ -1738,6 +1744,7 @@ Para encerrar, digite: "encerrar"
         return { ok: true };
       }
 
+      console.log(`[tg-debug] chatId=${chatId} notificando próximo da fila`);
       await this.notifyQueueNext(chatId, group, false);
       return { ok: true };
     }

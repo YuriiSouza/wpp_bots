@@ -4007,9 +4007,11 @@ export class AppService {
     );
     const numericChatId = Number(chatId);
     if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
+      const atLabel = route.atId || route.id;
       await this.telegram.sendMessage(
         numericChatId,
-        `Sua solicitacao da rota ${route.atId || route.id} foi aprovada.`,
+        `✅ Sua solicitação da rota ${atLabel} foi aprovada!\n\n` +
+          `A confirmação chegará no aplicativo. Você só vai carregar se aceitar no SPX Motorista Parceiro ou se o analista autorizar pelo WhatsApp.`,
       );
     }
 
@@ -4096,9 +4098,11 @@ export class AppService {
     );
     const numericChatId = Number(chatId);
     if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
+      const atLabel = route.atId || route.id;
       await this.telegram.sendMessage(
         numericChatId,
-        `Sua solicitacao da rota ${route.atId || route.id} foi recusada.`,
+        `❌ Sua solicitação da rota ${atLabel} não foi aprovada.\n\n` +
+          `Para saber mais, entre em contato com o analista.`,
       );
     }
 

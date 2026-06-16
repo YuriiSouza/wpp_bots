@@ -4,6 +4,7 @@ import { normalizeVehicleType } from '../utils/normalize-vehicle';
 import { AdminCommonService } from '../admin-common/admin-common.service';
 import { SyncService } from '../sync/sync.service';
 import { SheetsService } from '../sheets/sheets.service';
+import { TelegramService } from '../telegram/telegram.service';
 
 @Injectable()
 export class RoutesAdminService {
@@ -11,7 +12,38 @@ export class RoutesAdminService {
     private readonly common: AdminCommonService,
     private readonly sync: SyncService,
     private readonly sheets: SheetsService,
+    private readonly telegram: TelegramService,
   ) {}
+
+  /**
+   * Notifica o motorista no Telegram sobre o resultado da análise da rota.
+   * Falha silenciosamente — não bloqueia o fluxo principal se o chat não
+   * estiver vinculado ou se o envio falhar.
+   */
+  private async notifyDriverDecision(
+    driverId: string,
+    kind: 'APPROVED' | 'REJECTED',
+    atLabel: string,
+  ) {
+    try {
+      const chatId = await this.common.redisService
+        .client()
+        .get(`telegram:driver:chat:${String(driverId).trim()}`);
+      const numericChatId = Number(chatId);
+      if (!Number.isSafeInteger(numericChatId) || numericChatId <= 0) return;
+
+      const message =
+        kind === 'APPROVED'
+          ? `✅ Sua solicitação da rota ${atLabel} foi aprovada!\n\n` +
+            `A confirmação chegará no aplicativo. Você só vai carregar se aceitar no SPX Motorista Parceiro ou se o analista autorizar pelo WhatsApp.`
+          : `❌ Sua solicitação da rota ${atLabel} não foi aprovada.\n\n` +
+            `Para saber mais, entre em contato com o analista.`;
+
+      await this.telegram.sendMessage(numericChatId, message);
+    } catch {
+      // ignora — comunicação opcional
+    }
+  }
 
   async getRoutes() {
     return this.common.prisma.route.findMany({
@@ -95,6 +127,12 @@ export class RoutesAdminService {
       },
     });
 
+    await this.notifyDriverDecision(
+      driver.id,
+      'APPROVED',
+      route.atId || route.id,
+    );
+
     return { ok: true, message: 'Rota atribuida com sucesso.' };
   }
 
@@ -104,7 +142,7 @@ export class RoutesAdminService {
 
     const route = await this.common.prisma.route.findUnique({
       where: { id: routeId },
-      select: { sheetRowNumber: true },
+      select: { sheetRowNumber: true, atId: true, driverId: true, requestedDriverId: true },
     });
 
     await this.common.prisma.route.update({
@@ -137,6 +175,15 @@ export class RoutesAdminService {
       userName: 'System',
       after: { driverId: null, status: RouteStatus.DISPONIVEL },
     });
+
+    const notifyDriverId = route?.driverId || route?.requestedDriverId;
+    if (notifyDriverId) {
+      await this.notifyDriverDecision(
+        notifyDriverId,
+        'REJECTED',
+        route?.atId || routeId,
+      );
+    }
 
     return { ok: true, message: 'Rota desatribuida com sucesso.' };
   }

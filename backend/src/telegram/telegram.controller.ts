@@ -472,18 +472,16 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     atId?: string | null;
     gaiola?: string | null;
     cidade?: string | null;
-    bairro?: string | null;
+    cluster?: string | null;
     routeDate?: string | null;
-    shift?: string | null;
     requiredVehicleType?: string | null;
     assignmentSource?: string | null;
   }) {
     let message = `Você já possui uma rota ativa:
 Gaiola: ${route.gaiola || '-'}
 Data: ${route.routeDate || '-'}
-Turno: ${route.shift || '-'}
 Cidade: ${route.cidade || '-'}
-Bairro: ${route.bairro || '-'}`;
+Cluster: ${route.cluster || '-'}`;
 
     if (String(route.assignmentSource || '') === 'TELEGRAM_BOT') {
       message += '\n\nSe quiser cancelar esta solicitação, digite: 5';
@@ -1384,7 +1382,7 @@ Para encerrar, digite: "encerrar"
         const cityRoutes = byCity.get(city) || [];
         cityRoutes.forEach((r) => {
           const index = ordered.indexOf(r);
-          msg += `${index + 1}. ${r.bairro || 'Sem bairro'}\n`;
+          msg += `${index + 1}. ${r.cluster || 'Sem cluster'}\n`;
         });
       });
     };

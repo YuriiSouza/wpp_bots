@@ -46,16 +46,26 @@ export class RouteService {
   }
 
   async driverHasRoute(driverId: string): Promise<boolean> {
+    // 1) já tem rota ativa segundo a planilha "Visão Geral Atribuições" col K
     const driver = await this.prisma.driver.findUnique({
       where: { id: driverId },
       select: { hasActiveRoute: true },
     });
-    return !!driver?.hasActiveRoute;
+    if (driver?.hasActiveRoute) return true;
+
+    // 2) já solicitou uma rota pelo bot (com ou sem aprovação do analista)
+    const requested = await this.prisma.route.findFirst({
+      where: {
+        requestedDriverId: driverId,
+        status: { in: ['DISPONIVEL', 'ATRIBUIDA', 'APROVADA'] as any },
+      },
+      select: { id: true },
+    });
+    return !!requested;
   }
 
   async getCurrentRouteForDriver(driverId: string) {
-    const currentWindow = await this.getCurrentRouteWindow();
-    return (this.prisma as any).route.findFirst({
+    return this.prisma.route.findFirst({
       where: {
         OR: [
           {
@@ -64,23 +74,19 @@ export class RouteService {
           },
           {
             requestedDriverId: driverId,
-            assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
+            status: { in: ['DISPONIVEL', 'ATRIBUIDA', 'APROVADA'] as any },
           },
         ],
-        routeDate: currentWindow.date,
-        shift: currentWindow.shift,
       },
       orderBy: [{ assignedAt: 'desc' }, { updatedAt: 'desc' }],
       select: {
         id: true,
         atId: true,
         gaiola: true,
-        bairro: true,
+        cluster: true,
         cidade: true,
         routeDate: true,
-        shift: true,
         status: true,
-        noShow: true,
         assignmentSource: true,
         requiredVehicleType: true,
       },

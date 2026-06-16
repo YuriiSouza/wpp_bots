@@ -11,15 +11,6 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-  redis:
-    image: redis:7
-    container_name: telegram_redis
-    ports:
-      - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redisdata:/data
-
   backend:
     build:
       context: ./backend
@@ -36,7 +27,6 @@ services:
       - ./backend/credentials/credenciais.json:/app/credentials/credenciais.json:ro
     depends_on:
       - postgres
-      - redis
 
   frontend:
     build:
@@ -56,4 +46,3 @@ services:
 
 volumes:
   pgdata:
-  redisdata:

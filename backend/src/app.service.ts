@@ -1795,57 +1795,25 @@ export class AppService {
     dateFrom?: string,
     dateTo?: string,
   ) {
-    const effectiveWindow = await this.getEffectiveRouteWindow();
     const isValidDate = (value?: string) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim());
-    const selectedDate = String(date || '').trim() || effectiveWindow.date;
-    let selectedDateFrom = isValidDate(dateFrom) ? String(dateFrom).trim() : '';
-    let selectedDateTo = isValidDate(dateTo) ? String(dateTo).trim() : '';
-    if (selectedDateFrom && selectedDateTo && selectedDateFrom > selectedDateTo) {
-      [selectedDateFrom, selectedDateTo] = [selectedDateTo, selectedDateFrom];
-    }
-    const hasDateRange = Boolean(selectedDateFrom && selectedDateTo);
-    const routeDateFilter = hasDateRange
-      ? { gte: selectedDateFrom, lte: selectedDateTo }
-      : selectedDate;
-    const dateRouteCondition = hasDateRange
-      ? { routeDate: routeDateFilter }
-      : { routeDate: selectedDate };
-    const selectedShift =
-      String(shift || '').trim().toUpperCase() === 'AM' ||
-      String(shift || '').trim().toUpperCase() === 'PM' ||
-      String(shift || '').trim().toUpperCase() === 'PM2'
-        ? (String(shift || '').trim().toUpperCase() as 'AM' | 'PM' | 'PM2')
-        : undefined;
-    const cacheKey = `${this.ROUTES_CACHE_PREFIX}:v3:${hasDateRange ? `${selectedDateFrom}:${selectedDateTo}` : selectedDate}:${selectedShift || 'all'}`;
-    const cached = await this.redisService.get<any[]>(cacheKey);
-    if (cached) {
-      return cached;
+    const trimmedDate = String(date || '').trim();
+    const selectedDateFrom = isValidDate(dateFrom) ? String(dateFrom).trim() : '';
+    const selectedDateTo = isValidDate(dateTo) ? String(dateTo).trim() : '';
+    const hasExplicitDate = isValidDate(trimmedDate) || !!(selectedDateFrom && selectedDateTo);
+
+    // Sem filtro explícito → retorna TUDO (a Reatribuição é a fonte de verdade
+    // e wipe+reload no sync já garante que só rotas válidas estejam na tabela).
+    let where: any = {};
+    if (hasExplicitDate) {
+      const range =
+        selectedDateFrom && selectedDateTo
+          ? { gte: selectedDateFrom, lte: selectedDateTo }
+          : trimmedDate;
+      where = { routeDate: range };
     }
 
-    const historyRows = await this.sheets.getRows("'Historico ATs'!A:X").catch(() => []);
-    const clusterByAt = new Map<string, string>();
-
-    for (const row of historyRows.slice(1)) {
-      const atId = String(row[0] || '').trim();
-      const cluster = String(row[23] || '').trim();
-      if (!atId || !cluster) continue;
-      if (!clusterByAt.has(atId)) {
-        clusterByAt.set(atId, cluster);
-      }
-    }
-
-    const routes = await (this.prisma as any).route.findMany({
-      where: {
-        AND: [
-          selectedShift ? { shift: selectedShift } : {},
-          {
-            OR: [
-              dateRouteCondition,
-              { noShow: true, status: RouteStatus.DISPONIVEL },
-            ],
-          },
-        ],
-      },
+    const routes = await this.prisma.route.findMany({
+      where,
       include: { driver: true },
       orderBy: [{ routeDate: 'desc' }, { createdAt: 'desc' }],
     });
@@ -1869,7 +1837,6 @@ export class AppService {
 
     const normalized = routes.map((route: any) => ({
       ...route,
-      cluster: clusterByAt.get(String(route.atId || '').trim()) || null,
       driverName: route.driverName || route.driver?.name || null,
       driverVehicleType: route.driverVehicleType || route.driver?.vehicleType || null,
       requestedDriverName: route.requestedDriverId
@@ -1877,20 +1844,12 @@ export class AppService {
         : null,
     }));
 
-    const payload = normalized.sort((a: any, b: any) => {
+    return normalized.sort((a: any, b: any) => {
       const aPriority = a.noShow && a.status === RouteStatus.DISPONIVEL ? 0 : a.noShow ? 1 : 2;
       const bPriority = b.noShow && b.status === RouteStatus.DISPONIVEL ? 0 : b.noShow ? 1 : 2;
       if (aPriority !== bPriority) return aPriority - bPriority;
       return String(b.routeDate || '').localeCompare(String(a.routeDate || ''));
     });
-
-    await this.redisService.set(
-      cacheKey,
-      payload,
-      this.ROUTES_CACHE_TTL_SECONDS,
-    );
-
-    return payload;
   }
 
   async getRouteRequestsBoard() {

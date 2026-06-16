@@ -459,22 +459,23 @@ Bairro: ${route.bairro || '-'}`;
       return;
     }
 
+    const cancelledRoute = result.route!;
     await this.logEvent('rota_cancelada', state, {
-      rota: result.route.atId || result.route.id,
+      rota: cancelledRoute.atId || cancelledRoute.id,
     });
     await this.notifyAnalystsAboutRouteEvent({
       action: 'CANCELOU',
       driverId: state.driverId,
       driverName: state.driverName,
       vehicleType: state.vehicleType,
-      routeLabel: result.route.gaiola || result.route.atId || result.route.id,
-      atId: result.route.atId,
-      bairro: result.route.bairro,
-      cidade: result.route.cidade,
+      routeLabel: cancelledRoute.gaiola || cancelledRoute.atId || cancelledRoute.id,
+      atId: cancelledRoute.atId,
+      bairro: null,
+      cidade: cancelledRoute.cidade,
     });
     await this.telegram.sendMessage(
       Number(chatId),
-      `Solicitação da rota ${result.route.gaiola || result.route.atId || result.route.id} cancelada com sucesso.
+      `Solicitação da rota ${cancelledRoute.gaiola || cancelledRoute.atId || cancelledRoute.id} cancelada com sucesso.
 
 Ela já voltou a ficar disponível para outros motoristas.`,
     );

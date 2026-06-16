@@ -89,89 +89,52 @@ export class RouteService {
 
   async getAvailableRoutesForDriver(vehicleType?: string | null) {
     const normalized = normalizeVehicleType(vehicleType ?? undefined);
-    const currentWindow = await this.getCurrentRouteWindow();
 
-    const baseWhere =
-      normalized === 'MOTO'
-        ? {
-            botAvailable: true,
-            status: RouteStatus.DISPONIVEL,
-            requestedDriverId: null,
-            requiredVehicleTypeNorm: 'MOTO',
-          }
-        : {
-            botAvailable: true,
-            status: RouteStatus.DISPONIVEL,
-            requestedDriverId: null,
-          };
-
-    const where = {
-      AND: [
-        baseWhere,
-        {
-          OR: [
-            {
-              routeDate: currentWindow.date,
-              shift: currentWindow.shift,
-            },
-            {
-              noShow: true,
-              driverId: null,
-            },
-          ],
-        },
-      ],
+    // Rotas DISPONIVEL (sem requestedDriverId) — fonte é a guia Reatribuição
+    // sincronizada para a tabela Route.
+    const where: any = {
+      status: RouteStatus.DISPONIVEL,
+      requestedDriverId: null,
     };
+    if (normalized === 'MOTO') {
+      where.requiredVehicleType = { contains: 'MOTO', mode: 'insensitive' };
+    }
 
-    const routes = await (this.prisma as any).route.findMany({
+    const routes = await this.prisma.route.findMany({
       where,
-      orderBy: [{ noShow: 'desc' }, { createdAt: 'asc' }],
+      orderBy: [{ createdAt: 'asc' }],
     });
 
     return routes.map((route) => ({
       routeId: route.id,
       atId: route.atId || route.id,
       gaiola: route.gaiola ?? undefined,
-      bairro: route.bairro ?? undefined,
+      cluster: route.cluster ?? undefined,
       cidade: route.cidade ?? undefined,
       vehicleType: route.requiredVehicleType ?? undefined,
     }));
   }
 
   async assignRoute(routeId: string, driverId: string): Promise<boolean> {
-    const currentWindow = await this.getCurrentRouteWindow();
     const assigned = await this.prisma.$transaction(async (tx) => {
       const prismaTx = tx as any;
-      const existing = await prismaTx.route.findFirst({
-        where: {
-          driverId,
-          status: { in: ['ATRIBUIDA', 'APROVADA'] as any },
-          routeDate: currentWindow.date,
-          shift: currentWindow.shift,
-        },
-        select: { id: true },
+      // Motorista já tem rota ativa? (Driver.hasActiveRoute alimentado pelo sync via col K
+      // de "Visão Geral Atribuições")
+      const driver = await prismaTx.driver.findUnique({
+        where: { id: driverId },
+        select: { hasActiveRoute: true },
       });
-
-      if (existing) return false;
+      if (driver?.hasActiveRoute) return false;
 
       const updated = await prismaTx.route.updateMany({
         where: {
           id: routeId,
-          botAvailable: true,
           status: 'DISPONIVEL',
           requestedDriverId: null,
         },
         data: {
           requestedDriverId: driverId,
           assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
-          botAvailable: false,
-          driverId: null,
-          driverName: null,
-          driverVehicleType: null,
-          driverAccuracy: null,
-          driverPlate: null,
-          status: 'DISPONIVEL',
-          assignedAt: null,
         },
       });
 
@@ -185,21 +148,18 @@ export class RouteService {
   }
 
   async cancelTelegramRouteRequest(driverId: string) {
-    const currentWindow = await this.getCurrentRouteWindow();
-    const route = await (this.prisma as any).route.findFirst({
+    const route = await this.prisma.route.findFirst({
       where: {
         requestedDriverId: driverId,
         assignmentSource: ROUTE_ASSIGNMENT_SOURCE.TELEGRAM_BOT,
-        routeDate: currentWindow.date,
-        shift: currentWindow.shift,
       },
       orderBy: [{ assignedAt: 'desc' }, { updatedAt: 'desc' }],
       select: {
         id: true,
         atId: true,
         gaiola: true,
-        bairro: true,
         cidade: true,
+        cluster: true,
         assignmentSource: true,
         sheetRowNumber: true,
       },
@@ -213,24 +173,19 @@ export class RouteService {
       return { ok: false, reason: 'NOT_TELEGRAM' as const, route };
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      const prismaTx = tx as any;
-      await prismaTx.route.update({
-        where: { id: route.id },
-        data: {
-          requestedDriverId: null,
-          assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
-          botAvailable: true,
-          driverId: null,
-          driverName: null,
-          driverVehicleType: null,
-          driverAccuracy: null,
-          driverPlate: null,
-          status: 'DISPONIVEL',
-          assignedAt: null,
-        },
-      });
-
+    await this.prisma.route.update({
+      where: { id: route.id },
+      data: {
+        requestedDriverId: null,
+        assignmentSource: ROUTE_ASSIGNMENT_SOURCE.SYNC,
+        driverId: null,
+        driverName: null,
+        driverVehicleType: null,
+        driverAccuracy: null,
+        driverPlate: null,
+        status: 'DISPONIVEL',
+        assignedAt: null,
+      },
     });
 
     await this.sheets.clearAssignmentRequest(route.id);

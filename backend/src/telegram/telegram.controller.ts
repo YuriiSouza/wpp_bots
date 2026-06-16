@@ -1413,6 +1413,20 @@ Para encerrar, digite: "encerrar"
 
     try {
       return await this.processUpdate(message, chatId);
+    } catch (error) {
+      console.error(
+        `[telegram] erro ao processar update do chatId ${chatId}:`,
+        (error as Error)?.stack || error,
+      );
+      try {
+        await this.telegram.sendMessage(
+          Number(chatId),
+          'Tive um problema ao processar sua mensagem. Tente novamente em alguns segundos.',
+        );
+      } catch {
+        // ignore
+      }
+      return { ok: true };
     } finally {
       await this.releaseMessageSlot(chatId);
     }

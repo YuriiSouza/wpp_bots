@@ -1258,19 +1258,6 @@ export default function RoutesPage() {
                               size="sm"
                               onClick={(event) => {
                                 event.stopPropagation()
-                                void handleMarkNoShow(route, false)
-                              }}
-                              disabled={route.noShow}
-                              className="h-8 px-2 text-xs"
-                            >
-                              <RefreshCw className="mr-2 h-4 w-4" />
-                              No-Show
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={(event) => {
-                                event.stopPropagation()
                                 setAssignRoute(route)
                                 setSelectedDriver(isTelegramRequested(route) ? route.requestedDriverId || "" : "")
                                 setAssignDriverSearch("")
@@ -1279,28 +1266,6 @@ export default function RoutesPage() {
                             >
                               <UserPlus className="mr-2 h-4 w-4" />
                               {isTelegramRequested(route) ? "Aprovar" : "Atribuir"}
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                void handleReleaseToBot(route)
-                              }}
-                              disabled={
-                                route.status !== "DISPONIVEL" ||
-                                (isReleasedToBot(route) && !isTelegramRequested(route)) ||
-                                releasingRouteId === route.id
-                              }
-                              className="h-8 px-2 text-xs"
-                            >
-                              {releasingRouteId === route.id
-                                ? "Liberando..."
-                                : isTelegramRequested(route)
-                                  ? "Limpar Solicit."
-                                  : isReleasedToBot(route)
-                                    ? "No Bot"
-                                    : "Liberar Bot"}
                             </Button>
                             <Button
                               variant="outline"
@@ -1446,25 +1411,48 @@ export default function RoutesPage() {
               Rota {assignRoute?.atId || assignRoute?.id} - {assignRoute?.cidade}, {assignRoute?.bairro}
             </DialogDescription>
           </DialogHeader>
-          <div className="py-4">
+          <div className="space-y-3 py-4">
             <Input
               placeholder="Pesquisar motorista por ID ou nome..."
               value={assignDriverSearch}
               onChange={(e) => setAssignDriverSearch(e.target.value)}
-              className="mb-3"
+              autoFocus
             />
-            <Select value={selectedDriver} onValueChange={setSelectedDriver}>
-              <SelectTrigger>
-                <SelectValue placeholder="Selecione o motorista encontrado..." />
-              </SelectTrigger>
-              <SelectContent>
-                {assignableDrivers.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>
-                      {d.name} - {d.id} - {d.vehicleType} (Score: {d.priorityScore})
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
+            <div className="max-h-72 space-y-1 overflow-auto rounded-md border p-2">
+              {assignableDrivers.length ? (
+                assignableDrivers.map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedDriver(d.id)
+                      setAssignDriverSearch(d.name || d.id)
+                    }}
+                    className={`flex w-full items-start justify-between rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted ${
+                      selectedDriver === d.id ? "bg-primary/10" : ""
+                    }`}
+                  >
+                    <div className="flex min-w-0 flex-col">
+                      <span className="truncate font-medium">{d.name || d.id}</span>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {d.id} | {d.vehicleType || "-"} | Score {d.priorityScore ?? 0}
+                      </span>
+                    </div>
+                    {selectedDriver === d.id ? (
+                      <span className="ml-3 shrink-0 text-xs font-medium text-primary">
+                        Selecionado
+                      </span>
+                    ) : null}
+                  </button>
+                ))
+              ) : (
+                <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+                  {assignDriverSearch.trim()
+                    ? "Nenhum motorista encontrado."
+                    : "Digite para pesquisar um motorista."}
+                </p>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssignRoute(null)}>Cancelar</Button>

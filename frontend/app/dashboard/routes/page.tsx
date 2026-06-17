@@ -302,7 +302,7 @@ export default function RoutesPage() {
     try {
       const [routeData, driverData, requestBoard] = await Promise.all([
         fetchRoutes(),
-        fetchDrivers(),
+        fetchDrivers({ pageSize: 10000 }),
         fetchRouteRequestsBoard(),
       ])
       setRoutes(routeData)

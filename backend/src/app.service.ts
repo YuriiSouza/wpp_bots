@@ -1350,7 +1350,7 @@ export class AppService {
     sortDir?: 'asc' | 'desc';
   }) {
     const page = Math.max(1, Number(params?.page || 1));
-    const pageSize = Math.max(1, Math.min(100, Number(params?.pageSize || 20)));
+    const pageSize = Math.max(1, Math.min(10000, Number(params?.pageSize || 20)));
     const search = String(params?.search || '').trim();
     const vehicleType = String(params?.vehicleType || '').trim();
     const ds = String(params?.ds || '').trim();

@@ -358,19 +358,65 @@ export class RedisService {
   }
 
   // ----- List ops -----
+  // Cada mutação de LIST roda dentro de uma transação com pg_advisory_xact_lock
+  // por chave, garantindo serialização entre processos/conexões concorrentes.
 
+  private listLockKey(key: string): bigint {
+    // Hash determinístico (variante de djb2) → BIGINT do Postgres.
+    let h = 5381n;
+    const mask = (1n << 63n) - 1n;
+    for (let i = 0; i < key.length; i += 1) {
+      h = ((h << 5n) + h + BigInt(key.charCodeAt(i))) & mask;
+    }
+    // Mapeia para int64 signed (centra em torno de zero pra não estourar)
+    return h - (1n << 62n);
+  }
+
+  private async withListLock<T>(
+    key: string,
+    fn: (tx: any) => Promise<T>,
+  ): Promise<T> {
+    const lockId = this.listLockKey(key);
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockId})`;
+      return fn(tx);
+    });
+  }
+
+  private async readListInTx(tx: any, key: string): Promise<string[]> {
+    if (this.shouldBypassKey(key)) return [];
+    const row = await tx.telegramKv.findUnique({
+      where: { key },
+      select: { value: true, expiresAt: true },
+    });
+    if (!row) return [];
+    if (row.expiresAt && row.expiresAt.getTime() < Date.now()) {
+      await tx.telegramKv.deleteMany({ where: { key } }).catch(() => undefined);
+      return [];
+    }
+    if (Array.isArray(row.value)) return (row.value as any[]).map((v) => String(v));
+    return [];
+  }
+
+  private async writeListInTx(tx: any, key: string, list: string[]): Promise<void> {
+    if (this.shouldBypassKey(key)) return;
+    if (list.length === 0) {
+      await tx.telegramKv.deleteMany({ where: { key } });
+      return;
+    }
+    await tx.telegramKv.upsert({
+      where: { key },
+      create: { key, value: list as any, expiresAt: null },
+      update: { value: list as any, expiresAt: null },
+    });
+  }
+
+  // Versão não-transacional usada SOMENTE por leitura (lrange/llen) — sem mutação,
+  // não precisa de lock; uma leitura "suja" ainda é OK pro caller que só está exibindo.
   private async getList(key: string): Promise<string[]> {
     const value = await this.getRaw(key);
     if (Array.isArray(value)) return value.map((v) => String(v));
     return [];
-  }
-
-  private async setList(key: string, list: string[]): Promise<void> {
-    if (list.length === 0) {
-      await this.delRaw(key);
-      return;
-    }
-    await this.setRaw(key, list);
   }
 
   async listAppend(
@@ -378,19 +424,23 @@ export class RedisService {
     values: string[],
     side: 'left' | 'right',
   ): Promise<number> {
-    const list = await this.getList(key);
-    if (side === 'right') list.push(...values);
-    else list.unshift(...values);
-    await this.setList(key, list);
-    return list.length;
+    return this.withListLock(key, async (tx) => {
+      const list = await this.readListInTx(tx, key);
+      if (side === 'right') list.push(...values);
+      else list.unshift(...values);
+      await this.writeListInTx(tx, key, list);
+      return list.length;
+    });
   }
 
   async listPop(key: string, side: 'left' | 'right'): Promise<string | null> {
-    const list = await this.getList(key);
-    if (!list.length) return null;
-    const popped = side === 'left' ? list.shift()! : list.pop()!;
-    await this.setList(key, list);
-    return popped;
+    return this.withListLock(key, async (tx) => {
+      const list = await this.readListInTx(tx, key);
+      if (!list.length) return null;
+      const popped = side === 'left' ? list.shift()! : list.pop()!;
+      await this.writeListInTx(tx, key, list);
+      return popped;
+    });
   }
 
   async listRange(key: string, start: number, stop: number): Promise<string[]> {
@@ -404,50 +454,54 @@ export class RedisService {
   }
 
   async listRemove(key: string, count: number, value: string): Promise<number> {
-    const list = await this.getList(key);
-    let removed = 0;
-    if (count === 0) {
-      const filtered = list.filter((v) => v !== value);
-      removed = list.length - filtered.length;
-      await this.setList(key, filtered);
+    return this.withListLock(key, async (tx) => {
+      const list = await this.readListInTx(tx, key);
+      let removed = 0;
+      if (count === 0) {
+        const filtered = list.filter((v) => v !== value);
+        removed = list.length - filtered.length;
+        await this.writeListInTx(tx, key, filtered);
+        return removed;
+      }
+      const forward = count > 0;
+      const max = Math.abs(count);
+      const next: string[] = [];
+      if (forward) {
+        for (const v of list) {
+          if (removed < max && v === value) {
+            removed += 1;
+            continue;
+          }
+          next.push(v);
+        }
+      } else {
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          const v = list[i];
+          if (removed < max && v === value) {
+            removed += 1;
+            continue;
+          }
+          next.unshift(v);
+        }
+      }
+      await this.writeListInTx(tx, key, next);
       return removed;
-    }
-    const forward = count > 0;
-    const max = Math.abs(count);
-    const next: string[] = [];
-    if (forward) {
-      for (const v of list) {
-        if (removed < max && v === value) {
-          removed += 1;
-          continue;
-        }
-        next.push(v);
-      }
-    } else {
-      for (let i = list.length - 1; i >= 0; i -= 1) {
-        const v = list[i];
-        if (removed < max && v === value) {
-          removed += 1;
-          continue;
-        }
-        next.unshift(v);
-      }
-    }
-    await this.setList(key, next);
-    return removed;
+    });
   }
 
   async listTrim(key: string, start: number, stop: number): Promise<void> {
-    const list = await this.getList(key);
-    const length = list.length;
-    const normalizedStart = start < 0 ? Math.max(0, length + start) : start;
-    const normalizedStop =
-      stop < 0 ? length + stop : Math.min(length - 1, stop);
-    const next =
-      normalizedStop < normalizedStart
-        ? []
-        : list.slice(normalizedStart, normalizedStop + 1);
-    await this.setList(key, next);
+    await this.withListLock(key, async (tx) => {
+      const list = await this.readListInTx(tx, key);
+      const length = list.length;
+      const normalizedStart = start < 0 ? Math.max(0, length + start) : start;
+      const normalizedStop =
+        stop < 0 ? length + stop : Math.min(length - 1, stop);
+      const next =
+        normalizedStop < normalizedStart
+          ? []
+          : list.slice(normalizedStart, normalizedStop + 1);
+      await this.writeListInTx(tx, key, next);
+    });
   }
 }
 

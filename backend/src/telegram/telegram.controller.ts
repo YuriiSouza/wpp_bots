@@ -251,6 +251,19 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     const currentState = state ?? (await this.getState(chatId));
     const driverId = currentState?.driverId;
     if (!driverId) return false;
+
+    // Se a analista já aprovou a entrada na fila pelo frontend, NÃO é mais
+    // tratado como bloqueado — pode pegar rotas normalmente.
+    if (currentState?.blockedQueueApproved) return false;
+
+    // Verifica também direto no banco (caso a aprovação tenha sido feita por
+    // outro caminho e ainda não tenha refletido em blockedQueueApproved da sessão).
+    const queueRequest = await this.prisma.blockedQueueRequest.findUnique({
+      where: { driverId },
+      select: { status: true },
+    });
+    if (String(queueRequest?.status || '') === 'APPROVED') return false;
+
     const cacheKey = `${this.BLOCKLIST_CACHE_PREFIX}:${driverId}`;
     const cached = await this.redis.get<boolean>(cacheKey);
     if (cached !== null) return cached;

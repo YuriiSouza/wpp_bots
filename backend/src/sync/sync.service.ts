@@ -557,7 +557,21 @@ export class SyncService implements OnModuleInit {
       activeCount += missingActive.length;
     }
 
+    // Garante consistência: qualquer driver no banco que NÃO esteja na coluna K
+    // tem hasActiveRoute zerado. Cobre o edge case do motorista que foi removido
+    // tanto de "Perfil de Motorista" quanto de "Visão Geral Atribuições" mas
+    // ficou com a flag true de uma rodada anterior.
+    const activeIdsList = Array.from(activeDriverIds);
+    const clearedCount = await prisma.driver.updateMany({
+      where: {
+        hasActiveRoute: true,
+        ...(activeIdsList.length ? { id: { notIn: activeIdsList } } : {}),
+      },
+      data: { hasActiveRoute: false },
+    });
+
     this.logSync('Sync motoristas: concluido', {
+      hasActiveRouteCleared: clearedCount.count,
       rowsRead: driverRows.length - 1,
       driversProcessed: driverCount,
       driversWithActiveRoute: activeCount,

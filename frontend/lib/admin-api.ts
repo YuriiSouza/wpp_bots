@@ -479,6 +479,15 @@ export async function fetchBotHealth() {
   return response.data
 }
 
+export async function fetchBotEnabled(): Promise<boolean> {
+  const response = await api.get<{ enabled: boolean }>("/api/bot-enabled")
+  return response.data.enabled
+}
+
+export async function saveBotEnabled(enabled: boolean): Promise<void> {
+  await api.put("/api/bot-enabled", { enabled })
+}
+
 export async function fetchSettings() {
   const response = await api.get<SettingsPayload>("/api/settings")
   return response.data

@@ -314,6 +314,18 @@ export class AppController {
     return this.appService.getBotHealthData();
   }
 
+  @Get('api/bot-enabled')
+  async getBotEnabled() {
+    const enabled = await this.appService.getBotEnabled();
+    return { enabled };
+  }
+
+  @Put('api/bot-enabled')
+  async setBotEnabled(@Body('enabled') enabled: boolean) {
+    await this.appService.setBotEnabled(enabled);
+    return { ok: true, enabled };
+  }
+
   @Get('api/settings')
   async getSettings() {
     return this.appService.getSystemSettings();

@@ -5581,6 +5581,17 @@ export class AppService {
     };
   }
 
+  private readonly BOT_ENABLED_KEY = 'system:bot:enabled';
+
+  async getBotEnabled(): Promise<boolean> {
+    const value = await this.redisService.get<boolean>(this.BOT_ENABLED_KEY);
+    return value !== false;
+  }
+
+  async setBotEnabled(enabled: boolean): Promise<void> {
+    await this.redisService.set(this.BOT_ENABLED_KEY, enabled);
+  }
+
   async updateSystemSettings(payload: Record<string, unknown>) {
     const prisma = this.prisma as any;
     const algorithm = (payload.algorithm || {}) as Record<string, unknown>;

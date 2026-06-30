@@ -45,6 +45,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import {
   approveRouteRequest as approveRouteRequestApi,
   approveBlockedQueueRequest as approveBlockedQueueRequestApi,
@@ -53,6 +55,8 @@ import {
   fetchDrivers,
   fetchRouteRequestsBoard,
   fetchRoutes,
+  fetchBotEnabled,
+  saveBotEnabled,
   getApiErrorMessage,
   refreshRoutesFromSheet,
   markRouteNoShow,
@@ -325,6 +329,7 @@ export default function RoutesPage() {
 
   useEffect(() => {
     void loadData()
+    void fetchBotEnabled().then(setBotEnabledState).catch(() => undefined)
     const interval = window.setInterval(() => {
       void loadData(true)
     }, 5000)
@@ -861,6 +866,22 @@ export default function RoutesPage() {
     setSelectedRoute((current) => (current?.id === route.id ? null : route))
   }
 
+  const [botEnabled, setBotEnabledState] = useState(true)
+  const [isTogglingBot, setIsTogglingBot] = useState(false)
+
+  const handleToggleBot = async (enabled: boolean) => {
+    setIsTogglingBot(true)
+    try {
+      await saveBotEnabled(enabled)
+      setBotEnabledState(enabled)
+      toast.success(enabled ? "Bot ativado com sucesso" : "Bot desativado com sucesso")
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel alterar o estado do bot"))
+    } finally {
+      setIsTogglingBot(false)
+    }
+  }
+
   const [isRefreshingRoutes, setIsRefreshingRoutes] = useState(false)
   const handleRefreshRoutes = async () => {
     if (isRefreshingRoutes) return
@@ -890,6 +911,17 @@ export default function RoutesPage() {
             <p className="text-sm text-muted-foreground">{filtered.length} rotas encontradas</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${botEnabled ? "border-emerald-500/30 bg-emerald-500/10" : "border-destructive/30 bg-destructive/10"}`}>
+              <Switch
+                id="bot-enabled"
+                checked={botEnabled}
+                onCheckedChange={handleToggleBot}
+                disabled={isTogglingBot}
+              />
+              <Label htmlFor="bot-enabled" className={`text-sm font-medium cursor-pointer ${botEnabled ? "text-emerald-700" : "text-destructive"}`}>
+                Bot {botEnabled ? "Ativo" : "Inativo"}
+              </Label>
+            </div>
             <Button
               variant="default"
               onClick={handleRefreshRoutes}

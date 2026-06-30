@@ -1421,6 +1421,9 @@ Para encerrar, digite: "encerrar"
     const message = body.message;
     if (!message?.text) return { ok: true };
 
+    const botEnabled = await this.redis.get<boolean>('system:bot:enabled');
+    if (botEnabled === false) return { ok: true };
+
     const chatId = String(message.chat.id);
 
     // Throttling: ignora mensagens enquanto há outra do mesmo chat sendo processada.

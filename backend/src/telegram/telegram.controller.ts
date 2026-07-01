@@ -42,6 +42,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   private readonly BLOCKLIST_WAIT_SECONDS = 120;
 
   private timeoutWatcher?: NodeJS.Timeout;
+  private activeUpdates = 0;
+  private readonly MAX_CONCURRENT_UPDATES = 10;
 
   constructor(
     private readonly telegram: TelegramService,
@@ -1454,12 +1456,16 @@ Para encerrar, digite: "encerrar"
     const botEnabled = await this.redis.get<boolean>('system:bot:enabled');
     if (botEnabled === false) return { ok: true };
 
+    // Limite global de requisições concorrentes para proteger a memória.
+    if (this.activeUpdates >= this.MAX_CONCURRENT_UPDATES) return { ok: true };
+
     const chatId = String(message.chat.id);
 
     // Throttling: ignora mensagens enquanto há outra do mesmo chat sendo processada.
     const acquired = await this.acquireMessageSlot(chatId);
     if (!acquired) return { ok: true };
 
+    this.activeUpdates += 1;
     try {
       return await this.processUpdate(message, chatId);
     } catch (error) {
@@ -1477,6 +1483,7 @@ Para encerrar, digite: "encerrar"
       }
       return { ok: true };
     } finally {
+      this.activeUpdates -= 1;
       await this.releaseMessageSlot(chatId);
     }
   }
@@ -1484,7 +1491,6 @@ Para encerrar, digite: "encerrar"
   private async processUpdate(message: any, chatId: string) {
     const text = message.text.trim();
     const command = this.normalizeCommand(text);
-    console.log(`[tg-debug] processUpdate chatId=${chatId} text=${JSON.stringify(text)}`);
 
     if (command === '/meuchatid') {
       await this.telegram.sendMessage(
@@ -1629,7 +1635,6 @@ Para encerrar, digite: "encerrar"
 
     /* ===== ESPERANDO ID ===== */
     if (state.state === DriverState.WAITING_ID) {
-      console.log(`[tg-debug] chatId=${chatId} estado WAITING_ID, tentando ID=${text}`);
       const driverId = text.trim();
       if (!/^\d+$/.test(driverId)) {
         await this.telegram.sendMessage(Number(chatId), 'ID inválido.');
@@ -1638,11 +1643,9 @@ Para encerrar, digite: "encerrar"
 
       const driver = await this.drivers.findById(driverId);
       if (!driver) {
-        console.log(`[tg-debug] chatId=${chatId} ID=${driverId} NÃO encontrado no DB`);
         await this.telegram.sendMessage(Number(chatId), 'ID não encontrado.');
         return { ok: true };
       }
-      console.log(`[tg-debug] chatId=${chatId} driver encontrado, indo pro MENU`);
 
       await this.setState(chatId, {
         state: DriverState.MENU,
@@ -1724,12 +1727,9 @@ Para encerrar, digite: "encerrar"
         return { ok: true };
       }
 
-      console.log(`[tg-debug] chatId=${chatId} driverId=${state.driverId} acessou opção 1`);
       await this.logEvent('solicitou_rotas', state, { chatId });
 
-      console.log(`[tg-debug] chatId=${chatId} checando hasRoute...`);
       const hasRoute = await this.driverAlreadyAssigned(state.driverId!);
-      console.log(`[tg-debug] chatId=${chatId} hasRoute=${hasRoute}`);
       if (hasRoute) {
         const route = await this.routes.getCurrentRouteForDriver(state.driverId!);
         if (route) {
@@ -1782,11 +1782,8 @@ Para encerrar, digite: "encerrar"
       }
 
       const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
-      console.log(`[tg-debug] chatId=${chatId} entrando na fila group=${group}`);
       await this.enqueue(chatId, state.vehicleType, group);
-      console.log(`[tg-debug] chatId=${chatId} enqueue OK, tentando ativar`);
       const canStart = await this.tryAcquireQueue(chatId, group);
-      console.log(`[tg-debug] chatId=${chatId} canStart=${canStart}`);
       if (!canStart) {
         await this.setState(chatId, {
           ...state,
@@ -1797,7 +1794,6 @@ Para encerrar, digite: "encerrar"
         return { ok: true };
       }
 
-      console.log(`[tg-debug] chatId=${chatId} notificando próximo da fila`);
       await this.notifyQueueNext(chatId, group, false);
       return { ok: true };
     }

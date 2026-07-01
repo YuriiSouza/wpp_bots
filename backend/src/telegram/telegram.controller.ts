@@ -230,10 +230,40 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       void this.maintainQueueGroup('general');
       void this.maintainQueueGroup('moto');
     }, 5000);
+
+    // Limpa lixo do banco a cada 10 minutos:
+    // 1) TelegramKv com expiresAt no passado
+    // 2) TelegramSession com mais de 4 horas sem atividade
+    setInterval(() => {
+      void this.pruneExpiredDbRecords();
+    }, 10 * 60 * 1000);
   }
 
   onModuleDestroy() {
     if (this.timeoutWatcher) clearInterval(this.timeoutWatcher);
+  }
+
+  private async pruneExpiredDbRecords() {
+    try {
+      const now = new Date();
+      const [kvResult, sessionResult] = await Promise.all([
+        this.prisma.telegramKv.deleteMany({
+          where: { expiresAt: { lt: now } },
+        }),
+        this.prisma.telegramSession.deleteMany({
+          where: {
+            updatedAt: { lt: new Date(now.getTime() - 4 * 60 * 60 * 1000) },
+          },
+        }),
+      ]);
+      if (kvResult.count > 0 || sessionResult.count > 0) {
+        console.log(
+          `[telegram:prune] removidos ${kvResult.count} KV expirados, ${sessionResult.count} sessoes antigas`,
+        );
+      }
+    } catch (err) {
+      console.error('[telegram:prune] erro ao limpar registros:', err);
+    }
   }
 
   /* =======================

@@ -388,9 +388,10 @@ export class SyncService implements OnModuleInit {
             ? 'Score baixo'
             : null;
 
-      if (autoBlockReason && await this.applyAutomaticBlocklist(driver.id, autoBlockReason, algorithm)) {
-        changedAutoBlock = true;
-      }
+      // TODO: reativar quando o bloqueio automático for necessário novamente
+      // if (autoBlockReason && await this.applyAutomaticBlocklist(driver.id, autoBlockReason, algorithm)) {
+      //   changedAutoBlock = true;
+      // }
     }
 
     await this.clearRedisPatterns([

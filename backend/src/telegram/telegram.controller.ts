@@ -996,7 +996,6 @@ Ela já voltou a ficar disponível para outros motoristas.`,
 encerrar - Encerrar atendimento
 1 - Ver rotas disponíveis
 2 - Dúvidas frequentes
-3 - Falar com analista
 4 - Consultar minha rota
 5 - Cancelar solicitação da rota`,
     );
@@ -1694,30 +1693,11 @@ Para encerrar, digite: "encerrar"
       }
 
       if (text === '3' || command === 'falar' || command === 'analista') {
-        const support = await this.createOrResumeSupportTicket(chatId, state);
-        if (!support) {
-          await this.telegram.sendMessage(
-            Number(chatId),
-            'Nao foi possivel abrir atendimento com analista agora.',
-          );
-          await this.sendMainMenu(Number(chatId));
-          return { ok: true };
-        }
-
-        await this.setState(chatId, {
-          ...state,
-          state: DriverState.SUPPORT_CHAT,
-          supportTicketId: support.ticket.id,
-        });
-        await this.logEvent('solicitou_analista', state, {
-          protocolo: support.ticket.protocol,
-        });
         await this.telegram.sendMessage(
           Number(chatId),
-          support.created
-            ? `Seu atendimento foi aberto com sucesso.\nProtocolo: ${support.ticket.protocol}\n\nEscreva sua mensagem para o analista.\nPara encerrar, digite: encerrar`
-            : `Voce ja possui um atendimento em aberto.\nProtocolo: ${support.ticket.protocol}\n\nEscreva sua mensagem para continuar a conversa.\nPara encerrar, digite: encerrar`,
+          'Esta opção está temporariamente desativada.\n\nSe precisar falar com um analista, entre em contato diretamente pelo grupo.',
         );
+        await this.sendMainMenu(Number(chatId));
         return { ok: true };
       }
 

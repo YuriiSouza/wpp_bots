@@ -111,6 +111,25 @@ interface RoutePlanningAvailableDriver {
 
 @Injectable()
 export class AppService {
+  private readonly memCache = new Map<string, { value: unknown; expiresAt: number }>();
+
+  private memCacheGet<T>(key: string): T | null {
+    const entry = this.memCache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) { this.memCache.delete(key); return null; }
+    return entry.value as T;
+  }
+
+  private memCacheSet<T>(key: string, value: T, ttlSeconds: number): void {
+    this.memCache.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+  }
+
+  private memCacheDelPrefix(prefix: string): void {
+    for (const key of this.memCache.keys()) {
+      if (key.startsWith(prefix)) this.memCache.delete(key);
+    }
+  }
+
   private readonly QUEUE_LIST_KEY_GENERAL = 'telegram:queue:list:general';
   private readonly QUEUE_ACTIVE_KEY_GENERAL = 'telegram:queue:active:general';
   private readonly QUEUE_LIST_KEY_MOTO = 'telegram:queue:list:moto';
@@ -952,6 +971,7 @@ export class AppService {
   }
 
   private async invalidateDriversCaches() {
+    this.memCacheDelPrefix('mem:drivers:');
     await Promise.all([
       this.clearCacheByPrefix(this.DRIVERS_LIST_CACHE_PREFIX),
       this.clearCacheByPrefix(this.DRIVERS_ANALYTICS_CACHE_PREFIX),
@@ -959,10 +979,12 @@ export class AppService {
   }
 
   private async invalidateRoutesCache() {
+    this.memCacheDelPrefix('mem:routes:');
     await this.clearCacheByPrefix(this.ROUTES_CACHE_PREFIX);
   }
 
   private async invalidateBlocklistListCache() {
+    this.memCache.delete('mem:blocklist');
     await this.clearCacheByPrefix(this.BLOCKLIST_LIST_CACHE_PREFIX);
   }
 
@@ -1356,19 +1378,9 @@ export class AppService {
     const ds = String(params?.ds || '').trim();
     const sortBy = params?.sortBy || 'priorityScore';
     const sortDir = params?.sortDir === 'asc' ? 'asc' : 'desc';
-    const driversCacheKey = `${this.DRIVERS_LIST_CACHE_PREFIX}:${JSON.stringify({
-      page,
-      pageSize,
-      search,
-      vehicleType,
-      ds,
-      sortBy,
-      sortDir,
-    })}`;
-    const cachedDrivers = await this.redisService.get<any>(driversCacheKey);
-    if (cachedDrivers) {
-      return cachedDrivers;
-    }
+    const driversCacheKey = `mem:drivers:${JSON.stringify({ page, pageSize, search, vehicleType, ds, sortBy, sortDir })}`;
+    const cachedDrivers = this.memCacheGet<any>(driversCacheKey);
+    if (cachedDrivers) return cachedDrivers;
 
     const where = {
       ...(search
@@ -1416,12 +1428,7 @@ export class AppService {
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
     };
 
-    await this.redisService.set(
-      driversCacheKey,
-      payload,
-      this.DRIVERS_LIST_CACHE_TTL_SECONDS,
-    );
-
+    this.memCacheSet(driversCacheKey, payload, 30);
     return payload;
   }
 
@@ -1801,6 +1808,10 @@ export class AppService {
     const selectedDateTo = isValidDate(dateTo) ? String(dateTo).trim() : '';
     const hasExplicitDate = isValidDate(trimmedDate) || !!(selectedDateFrom && selectedDateTo);
 
+    const cacheKey = `mem:routes:${trimmedDate}:${selectedDateFrom}:${selectedDateTo}`;
+    const cached = this.memCacheGet<any[]>(cacheKey);
+    if (cached) return cached;
+
     // Sem filtro explícito → retorna TUDO (a Reatribuição é a fonte de verdade
     // e wipe+reload no sync já garante que só rotas válidas estejam na tabela).
     let where: any = {};
@@ -1844,12 +1855,14 @@ export class AppService {
         : null,
     }));
 
-    return normalized.sort((a: any, b: any) => {
+    const result = normalized.sort((a: any, b: any) => {
       const aPriority = a.noShow && a.status === RouteStatus.DISPONIVEL ? 0 : a.noShow ? 1 : 2;
       const bPriority = b.noShow && b.status === RouteStatus.DISPONIVEL ? 0 : b.noShow ? 1 : 2;
       if (aPriority !== bPriority) return aPriority - bPriority;
       return String(b.routeDate || '').localeCompare(String(a.routeDate || ''));
     });
+    this.memCacheSet(cacheKey, result, 20);
+    return result;
   }
 
   async getRouteRequestsBoard() {
@@ -4432,10 +4445,8 @@ export class AppService {
 
   async getBlocklist() {
     const cacheKey = `${this.BLOCKLIST_LIST_CACHE_PREFIX}:v2`;
-    const cached = await this.redisService.get<any[]>(cacheKey);
-    if (cached) {
-      return cached;
-    }
+    const memCached = this.memCacheGet<any[]>('mem:blocklist');
+    if (memCached) return memCached;
 
     const entries = await this.prisma.driverBlocklist.findMany({
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
@@ -4495,12 +4506,7 @@ export class AppService {
       driverName: driverNameById.get(entry.driverId) || null,
     }));
 
-    await this.redisService.set(
-      cacheKey,
-      payload,
-      this.BLOCKLIST_LIST_CACHE_TTL_SECONDS,
-    );
-
+    this.memCacheSet('mem:blocklist', payload, 30);
     return payload;
   }
 

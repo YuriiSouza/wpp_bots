@@ -1320,37 +1320,38 @@ Peça ao analista para cadastrar em /acess/duvidas.
     }
 
     const isBlocklisted = await this.isChatBlocklisted(chatId, state);
-    if (isBlocklisted && !state.blockedQueueApproved) {
-      const requestState = await this.createOrRefreshBlockedQueueRequest(chatId, state);
-      if (requestState.cooldownActive) {
-        await this.telegram.sendMessage(
-          Number(chatId),
-          'Converse com um analista para verificar as rotas disponiveis.',
-        );
-      } else {
-        if (requestState.created) {
-          await this.notifyAnalystsAboutBlockedQueueRequest({
-            driverId: state.driverId,
-            driverName: state.driverName,
-            vehicleType: state.vehicleType,
-            reason: requestState.request?.blockReason || null,
-          });
+    if (isBlocklisted) {
+      // Verifica aprovação fresh a cada tentativa.
+      const queueRequest = await this.getBlockedQueueRequest(state.driverId!);
+      if (String(queueRequest?.status || '') !== 'APPROVED') {
+        const requestState = await this.createOrRefreshBlockedQueueRequest(chatId, state);
+        if (requestState.cooldownActive) {
+          await this.telegram.sendMessage(
+            Number(chatId),
+            'Converse com um analista para verificar as rotas disponiveis.',
+          );
+        } else {
+          if (requestState.created) {
+            await this.notifyAnalystsAboutBlockedQueueRequest({
+              driverId: state.driverId,
+              driverName: state.driverName,
+              vehicleType: state.vehicleType,
+              reason: requestState.request?.blockReason || null,
+            });
+          }
+          await this.telegram.sendMessage(
+            Number(chatId),
+            `Sua entrada na fila precisa de validacao da analista.\nMotivo: ${this.getBusinessBlockReasonLabel(requestState.request?.blockReason)}\n\nAguarde a analise.`,
+          );
         }
-        await this.telegram.sendMessage(
-          Number(chatId),
-          `Sua entrada na fila precisa de validacao da analista.\nMotivo: ${this.getBusinessBlockReasonLabel(requestState.request?.blockReason)}\n\nAguarde a analise.`,
-        );
+        await this.setState(chatId, { ...state, state: DriverState.MENU, inQueue: false });
+        const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
+        await this.releaseAndNotifyNext(group);
+        await this.sendMainMenu(Number(chatId));
+        return;
       }
-      await this.setState(chatId, {
-        ...state,
-        state: DriverState.MENU,
-        inQueue: false,
-        blockedQueueApproved: false,
-      });
-      const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
-      await this.releaseAndNotifyNext(group);
-      await this.sendMainMenu(Number(chatId));
-      return;
+      // Aprovação válida — consome para não reutilizar
+      await this.consumeBlockedQueueApproval(state.driverId!);
     }
 
     const routes = await this.routes.getAvailableRoutesForDriver(state.vehicleType);
@@ -1728,7 +1729,8 @@ Para encerrar, digite: "encerrar"
       }
 
       const isBlocklisted = await this.isChatBlocklisted(chatId, state);
-      if (isBlocklisted && !state.blockedQueueApproved) {
+      if (isBlocklisted) {
+        // Verifica aprovação fresh a cada tentativa — aprovação não é persistida na sessão.
         const queueRequest = await this.getBlockedQueueRequest(state.driverId!);
         if (String(queueRequest?.status || '') !== 'APPROVED') {
           const requestState = await this.createOrRefreshBlockedQueueRequest(chatId, state);
@@ -1754,11 +1756,8 @@ Para encerrar, digite: "encerrar"
           await this.sendMainMenu(Number(chatId));
           return { ok: true };
         }
-        state = {
-          ...state,
-          blockedQueueApproved: true,
-        };
-        await this.setState(chatId, state);
+        // Aprovação válida — consome para não reutilizar
+        await this.consumeBlockedQueueApproval(state.driverId!);
       }
 
       const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);

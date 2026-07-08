@@ -304,6 +304,33 @@ export class SyncService implements OnModuleInit {
     return true;
   }
 
+  private async autoUnblockDriver(driverId: string): Promise<boolean> {
+    const prisma = this.prisma as any;
+    const existing = await prisma.driverBlocklist.findUnique({
+      where: { driverId },
+      select: { status: true, reason: true },
+    });
+
+    if (!existing) return false;
+    const currentStatus = String(existing.status || '');
+    if (currentStatus !== 'BLOCKED' && currentStatus !== 'ACTIVE') return false;
+
+    // Só desbloqueia automaticamente os que foram bloqueados pelo sistema (score ou novato)
+    const autoReasons = ['Score baixo', 'Sem DS (novato - rota direto com analista)'];
+    const reason = String(existing.reason || '');
+    if (!autoReasons.includes(reason)) return false;
+
+    await prisma.driverBlocklist.update({
+      where: { driverId },
+      data: {
+        status: 'UNBLOCKED' as any,
+        lastInactivatedAt: new Date(),
+      },
+    });
+    await this.redis.del(`telegram:blocklist:cache:driver:${driverId}`);
+    return true;
+  }
+
   private async getRowsFromAnyRange(ranges: string[]): Promise<string[][]> {
     for (const range of ranges) {
       try {
@@ -388,10 +415,16 @@ export class SyncService implements OnModuleInit {
             ? 'Score baixo'
             : null;
 
-      // TODO: reativar quando o bloqueio automático for necessário novamente
-      // if (autoBlockReason && await this.applyAutomaticBlocklist(driver.id, autoBlockReason, algorithm)) {
-      //   changedAutoBlock = true;
-      // }
+      if (autoBlockReason) {
+        if (await this.applyAutomaticBlocklist(driver.id, autoBlockReason, algorithm)) {
+          changedAutoBlock = true;
+        }
+      } else {
+        // DS bom e score acima do threshold → desbloquear se estava bloqueado automaticamente
+        if (await this.autoUnblockDriver(driver.id)) {
+          changedAutoBlock = true;
+        }
+      }
     }
 
     await this.clearRedisPatterns([

@@ -58,13 +58,14 @@ import {
   fetchBotEnabled,
   saveBotEnabled,
   getApiErrorMessage,
-  refreshRoutesFromSheet,
+  runSync,
   markRouteNoShow,
   rejectRouteRequest as rejectRouteRequestApi,
   rejectBlockedQueueRequest as rejectBlockedQueueRequestApi,
   releaseRouteToBot as releaseRouteToBotRequest,
   releaseRoutesToBotByAt as releaseRoutesToBotByAtRequest,
 } from "@/lib/admin-api"
+import { getCurrentRouteWindow } from "@/lib/route-window"
 import type { BlockedQueueRequest, Driver, PendingRouteRequest, Route } from "@/lib/types"
 import { toast } from "sonner"
 
@@ -887,12 +888,9 @@ export default function RoutesPage() {
     if (isRefreshingRoutes) return
     setIsRefreshingRoutes(true)
     try {
-      const result = await refreshRoutesFromSheet()
-      toast.success(
-        `Rotas atualizadas. Disponíveis: ${result.routesAvailable ?? 0} • Atribuídas: ${
-          result.routesAssigned ?? 0
-        }`,
-      )
+      const { date, shift } = getCurrentRouteWindow()
+      await runSync('routes', date, shift)
+      toast.success(`Rotas sincronizadas (${shift} ${date})`)
       await loadData(true)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel atualizar as rotas"))

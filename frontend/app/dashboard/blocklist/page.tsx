@@ -56,6 +56,10 @@ export default function BlocklistPage() {
   const [actionItem, setActionItem] = useState<BlocklistRow | null>(null)
   const [justification, setJustification] = useState("")
   const [isLoading, setIsLoading] = useState(true)
+  const [bulkBlockOpen, setBulkBlockOpen] = useState(false)
+  const [bulkIdInput, setBulkIdInput] = useState("")
+  const [bulkReason, setBulkReason] = useState("")
+  const [isBulkBlocking, setIsBulkBlocking] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -256,6 +260,31 @@ export default function BlocklistPage() {
     }
   }
 
+  const handleBulkBlock = async () => {
+    const ids = bulkIdInput
+      .split(/[\n,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (ids.length === 0) { toast.error("Nenhum ID informado"); return }
+    if (!bulkReason.trim()) { toast.error("Justificativa obrigatoria"); return }
+    setIsBulkBlocking(true)
+    let ok = 0
+    let fail = 0
+    for (const id of ids) {
+      try {
+        const res = await addBlocklistDriver(id, bulkReason.trim())
+        if (res.ok) { ok++ } else { fail++ }
+      } catch { fail++ }
+    }
+    setIsBulkBlocking(false)
+    setBulkBlockOpen(false)
+    setBulkIdInput("")
+    setBulkReason("")
+    toast.success(`Bloqueio em lote: ${ok} bloqueados${fail > 0 ? `, ${fail} falhas` : ""}`)
+    const [bl] = await Promise.all([fetchBlocklist()])
+    setBlocklist(bl)
+  }
+
   return (
     <div className="flex flex-col">
       <PageHeader title="Blocklist" breadcrumbs={[{ label: "Blocklist" }]} />
@@ -265,6 +294,9 @@ export default function BlocklistPage() {
             <h2 className="text-2xl font-bold text-foreground">Gestao de Blocklist</h2>
             <p className="text-sm text-muted-foreground">Controle de bloqueio de motoristas</p>
           </div>
+          <Button variant="destructive" onClick={() => setBulkBlockOpen(true)}>
+            Bloquear em lote
+          </Button>
         </div>
 
         <Card>
@@ -377,6 +409,41 @@ export default function BlocklistPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => { setActionItem(null); setJustification("") }}>Cancelar</Button>
             <Button onClick={handleToggle} disabled={actionItem?.displayStatus !== "BLOCKED" && !justification.trim()}>Confirmar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkBlockOpen} onOpenChange={(o) => { if (!isBulkBlocking) { setBulkBlockOpen(o); if (!o) { setBulkIdInput(""); setBulkReason("") } } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Bloquear em lote</DialogTitle>
+            <DialogDescription>Cole os IDs dos motoristas (um por linha) e informe o motivo. Todos serao bloqueados com o mesmo motivo.</DialogDescription>
+          </DialogHeader>
+          <div className="py-4 flex flex-col gap-3">
+            <div className="flex flex-col gap-2">
+              <Label>IDs dos motoristas (um por linha)</Label>
+              <Textarea
+                value={bulkIdInput}
+                onChange={(e) => setBulkIdInput(e.target.value)}
+                placeholder={"abc123\ndef456\nghi789"}
+                rows={6}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label>Motivo do bloqueio</Label>
+              <Textarea
+                value={bulkReason}
+                onChange={(e) => setBulkReason(e.target.value)}
+                placeholder="Descreva o motivo..."
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setBulkBlockOpen(false); setBulkIdInput(""); setBulkReason("") }} disabled={isBulkBlocking}>Cancelar</Button>
+            <Button variant="destructive" onClick={handleBulkBlock} disabled={isBulkBlocking || !bulkIdInput.trim() || !bulkReason.trim()}>
+              {isBulkBlocking ? "Bloqueando..." : "Bloquear todos"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

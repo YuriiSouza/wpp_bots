@@ -3,6 +3,7 @@ export enum DriverState {
   WAITING_ID = 'WAITING_ID',
   MENU = 'MENU',
   HELP_MENU = 'HELP_MENU',
+  CHOOSING_CITY = 'CHOOSING_CITY',
   CHOOSING_ROUTE = 'CHOOSING_ROUTE',
   SUPPORT_CHAT = 'SUPPORT_CHAT',
 }
@@ -17,7 +18,8 @@ export interface DriverSession {
   availableRoutes?: AvailableRoute[];
   inQueue?: boolean;
   blockedQueueApproved?: boolean;
-  queueGroup?: 'moto' | 'general';
+  queueGroup?: string;
+  selectedCity?: string;
   supportTicketId?: string;
 }
 

@@ -2,7 +2,7 @@ import { Body, Controller, OnModuleDestroy, OnModuleInit, Post } from '@nestjs/c
 import { TelegramService } from './telegram.service';
 import { RedisService } from '../redis/redis.service';
 import { sortRoutes } from '../utils/sort-routes';
-import { DriverSession, DriverState } from './telegram.state';
+import { AvailableRoute, DriverSession, DriverState } from './telegram.state';
 import { DriverService } from '../data/driver.service';
 import { RouteService } from '../data/route.service';
 import { normalizeVehicleType } from '../utils/normalize-vehicle';
@@ -44,6 +44,10 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   private timeoutWatcher?: NodeJS.Timeout;
   private activeUpdates = 0;
   private readonly MAX_CONCURRENT_UPDATES = 10;
+
+  // Cache local em memória — evita DB queries repetidas no mesmo instante
+  private readonly localRouteCache = new Map<string, { routes: AvailableRoute[]; exp: number }>();
+  private readonly localFaqCache = { data: null as Awaited<ReturnType<typeof this.getDynamicHelp>> | null, exp: 0 };
 
   constructor(
     private readonly telegram: TelegramService,
@@ -194,18 +198,28 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     return this.isMoto(vehicleType) ? 'moto' : 'general';
   }
 
-  private queueListKey(group: 'moto' | 'general') {
-    return group === 'moto' ? this.QUEUE_LIST_KEY_MOTO : this.QUEUE_LIST_KEY_GENERAL;
+  private normalizeGroupCity(city: string): string {
+    return (
+      'city:' +
+      city
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, '-')
+    );
   }
 
-  private queueActiveKey(group: 'moto' | 'general') {
-    return group === 'moto' ? this.QUEUE_ACTIVE_KEY_MOTO : this.QUEUE_ACTIVE_KEY_GENERAL;
+  private queueListKey(group: string) {
+    return `telegram:queue:list:${group}`;
   }
 
-  private queueActiveMetaKey(group: 'moto' | 'general') {
-    return group === 'moto'
-      ? this.QUEUE_ACTIVE_META_KEY_MOTO
-      : this.QUEUE_ACTIVE_META_KEY_GENERAL;
+  private queueActiveKey(group: string) {
+    return `telegram:queue:active:${group}`;
+  }
+
+  private queueActiveMetaKey(group: string) {
+    return `telegram:queue:active:meta:${group}`;
   }
 
   private routeTimeoutKey(chatId: string) {
@@ -229,8 +243,8 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.timeoutWatcher = setInterval(() => {
-      void this.maintainQueueGroup('general');
       void this.maintainQueueGroup('moto');
+      void this.maintainCityQueues();
     }, 5000);
 
     // Limpa lixo do banco a cada 10 minutos:
@@ -272,8 +286,31 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
       FILA
   ======================== */
 
-  private queueEmptySinceKey(group: 'moto' | 'general') {
+  private queueEmptySinceKey(group: string) {
     return `telegram:queue:empty_since:${group}`;
+  }
+
+  private async getAvailableRoutesCached(vehicleType?: string): Promise<AvailableRoute[]> {
+    const key = this.isMoto(vehicleType) ? 'moto' : 'all';
+    const now = Date.now();
+    const cached = this.localRouteCache.get(key);
+    if (cached && cached.exp > now) return cached.routes;
+    const routes = await this.routes.getAvailableRoutesForDriver(vehicleType);
+    this.localRouteCache.set(key, { routes, exp: now + 15_000 });
+    return routes;
+  }
+
+  private invalidateLocalRouteCache() {
+    this.localRouteCache.clear();
+  }
+
+  private async getCachedFaq() {
+    const now = Date.now();
+    if (this.localFaqCache.data && this.localFaqCache.exp > now) return this.localFaqCache.data;
+    const data = await this.getDynamicHelp();
+    this.localFaqCache.data = data;
+    this.localFaqCache.exp = now + 60_000;
+    return data;
   }
 
   private async isChatBlocklisted(
@@ -597,7 +634,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
     await this.sendMainMenu(Number(chatId));
   }
 
-  private async pickNextFromQueue(group: 'moto' | 'general'): Promise<string | null> {
+  private async pickNextFromQueue(group: string): Promise<string | null> {
     const client = this.redis.client();
     const queue = await client.lrange(this.queueListKey(group), 0, -1);
     const emptySinceKey = this.queueEmptySinceKey(group);
@@ -661,11 +698,11 @@ Ela já voltou a ficar disponível para outros motoristas.`,
     return next;
   }
 
-  private queueLockKey(group: 'moto' | 'general') {
+  private queueLockKey(group: string) {
     return `telegram:queue:lock:${group}`;
   }
 
-  private async maintainQueueGroup(group: 'moto' | 'general') {
+  private async maintainQueueGroup(group: string) {
     const active = await this.redis.client().get(this.queueActiveKey(group));
     if (active) {
       await this.requeueExpiredActive(group);
@@ -675,8 +712,24 @@ Ela já voltou a ficar disponível para outros motoristas.`,
     await this.tryActivateWaitingQueue(group);
   }
 
+  private async maintainCityQueues() {
+    const keys = await this.redis.client().keys('telegram:queue:active:city:*');
+    const groups = new Set<string>();
+    keys.forEach((k) => {
+      const m = k.match(/^telegram:queue:active:(.+)$/);
+      if (m) groups.add(m[1]);
+    });
+    // Also check city lists that might have people waiting without an active slot
+    const listKeys = await this.redis.client().keys('telegram:queue:list:city:*');
+    listKeys.forEach((k) => {
+      const m = k.match(/^telegram:queue:list:(.+)$/);
+      if (m) groups.add(m[1]);
+    });
+    await Promise.all([...groups].map((g) => this.maintainQueueGroup(g)));
+  }
+
   private async withQueueLock<T>(
-    group: 'moto' | 'general',
+    group: string,
     fn: () => Promise<T>,
   ): Promise<T> {
     const client = this.redis.client();
@@ -700,7 +753,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
   }
 
   private async activateNextInQueue(
-    group: 'moto' | 'general',
+    group: string,
   ): Promise<string | null> {
     return this.withQueueLock(group, async () => {
       const client = this.redis.client();
@@ -732,12 +785,12 @@ Ela já voltou a ficar disponível para outros motoristas.`,
     if (lock !== 'OK') return;
     await this.telegram.sendMessage(
       Number(chatId),
-      'Você está na fila. Aguarde atendimento.',
+      'Você está na fila. Aguarde atendimento.\n\n📊 A ordem da fila é definida pela sua performance (DS e histórico de entregas). Motoristas com melhor desempenho são atendidos primeiro.',
     );
   }
 
   private async setActiveQueueChat(
-    group: 'moto' | 'general',
+    group: string,
     chatId: string,
   ) {
     const client = this.redis.client();
@@ -761,7 +814,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
   private async setRouteTimeout(
     chatId: string,
     vehicleType: string | undefined,
-    group: 'moto' | 'general',
+    group: string,
   ) {
     const client = this.redis.client();
     const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -794,7 +847,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
   private async handleTimeout(
     chatId: string,
     vehicleType: string | undefined,
-    group: 'moto' | 'general',
+    group: string,
   ) {
     await this.releaseAndNotifyNext(group);
     const state = await this.getState(chatId);
@@ -810,7 +863,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
   }
 
   private async requeueExpiredActive(
-    group: 'moto' | 'general',
+    group: string,
   ): Promise<boolean> {
     const client = this.redis.client();
     const lockKey = `${this.ROUTE_TIMEOUT_LOCK_KEY}:${group}`;
@@ -844,7 +897,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
 
   private async notifyQueueNext(
     next: string,
-    group: 'moto' | 'general',
+    group: string,
     announce = true,
   ) {
     const state = await this.getState(next);
@@ -874,7 +927,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
     await this.sendRoutes(next, state);
   }
 
-  private async tryActivateWaitingQueue(group: 'moto' | 'general') {
+  private async tryActivateWaitingQueue(group: string) {
     const active = await this.redis.client().get(this.queueActiveKey(group));
     if (active) return;
 
@@ -885,7 +938,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
 
   private async tryAcquireQueue(
     chatId: string,
-    group: 'moto' | 'general',
+    group: string,
   ): Promise<boolean> {
     const client = this.redis.client();
     const active = await client.get(this.queueActiveKey(group));
@@ -906,7 +959,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
   private async enqueue(
     chatId: string,
     vehicleType?: string,
-    group: 'moto' | 'general' = 'general',
+    group: string = 'general',
   ): Promise<number> {
     return this.withQueueLock(group, async () => {
       const client = this.redis.client();
@@ -959,13 +1012,13 @@ Ela já voltou a ficar disponível para outros motoristas.`,
     });
   }
 
-  private async removeFromQueue(chatId: string, group: 'moto' | 'general') {
+  private async removeFromQueue(chatId: string, group: string) {
     const client = this.redis.client();
     await client.lrem(this.queueListKey(group), 0, chatId);
     await client.del(this.queueMarker(chatId));
   }
 
-  private async releaseAndNotifyNext(group: 'moto' | 'general') {
+  private async releaseAndNotifyNext(group: string) {
     await this.withQueueLock(group, async () => {
       const client = this.redis.client();
       const active = await client.get(this.queueActiveKey(group));
@@ -1307,6 +1360,50 @@ Peça ao analista para cadastrar em /acess/duvidas.
       ROTAS
   ======================== */
 
+  private async sendCitySelection(chatId: string, state: DriverSession) {
+    const allRoutes = await this.getAvailableRoutesCached(undefined);
+    const nonMoto = allRoutes.filter(
+      (r) => !(r.vehicleType || '').toLowerCase().includes('moto'),
+    );
+
+    if (!nonMoto.length) {
+      await this.telegram.sendMessage(Number(chatId), NO_ROUTES_AVAILABLE);
+      await this.sendMainMenu(Number(chatId));
+      return;
+    }
+
+    const cityCount = new Map<string, number>();
+    nonMoto.forEach((r) => {
+      const city = (r.cidade || 'Sem cidade').trim() || 'Sem cidade';
+      cityCount.set(city, (cityCount.get(city) || 0) + 1);
+    });
+    const cities = Array.from(cityCount.keys()).sort((a, b) =>
+      a.localeCompare(b, 'pt-BR'),
+    );
+
+    const client = this.redis.client();
+    const cityMeta = await Promise.all(
+      cities.map(async (city, i) => {
+        const group = this.normalizeGroupCity(city);
+        const queueLen = await client.llen(this.queueListKey(group));
+        return { city, routeCount: cityCount.get(city)!, queueLen, index: i + 1 };
+      }),
+    );
+
+    let msg = `Escolha a cidade:\n`;
+    cityMeta.forEach(({ city, routeCount, queueLen, index }) => {
+      msg += `${index}. ${city} — ${routeCount} rota${routeCount > 1 ? 's' : ''} | ${queueLen} na fila\n`;
+    });
+    msg += `\n0. Sair`;
+
+    await this.setState(chatId, {
+      ...state,
+      state: DriverState.CHOOSING_CITY,
+      availableRoutes: nonMoto,
+    });
+    await this.telegram.sendMessage(Number(chatId), msg);
+  }
+
   private async sendRoutes(chatId: string, state: DriverSession) {
     if (!state.driverId || !state.vehicleType) {
       await this.telegram.sendMessage(
@@ -1354,14 +1451,36 @@ Peça ao analista para cadastrar em /acess/duvidas.
       await this.consumeBlockedQueueApproval(state.driverId!);
     }
 
-    const routes = await this.routes.getAvailableRoutesForDriver(state.vehicleType);
-    const sorted = sortRoutes(routes);
+    const allRoutes = await this.getAvailableRoutesCached(state.vehicleType);
+    let sorted = sortRoutes(allRoutes);
+
+    // Motoristas de veículo geral com cidade escolhida só veem rotas daquela cidade
+    if (state.selectedCity) {
+      sorted = sorted.filter(
+        (r) => (r.cidade || '').trim() === state.selectedCity,
+      );
+    }
 
     if (!sorted.length) {
-      await this.telegram.sendMessage(Number(chatId), NO_ROUTES_AVAILABLE);
-      await this.sendMainMenu(Number(chatId));
       const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
       await this.releaseAndNotifyNext(group);
+      if (state.selectedCity) {
+        await this.telegram.sendMessage(
+          Number(chatId),
+          `Não há mais rotas disponíveis para ${state.selectedCity}.\nEscolha outra cidade ou saia.`,
+        );
+        await this.setState(chatId, {
+          ...state,
+          state: DriverState.MENU,
+          selectedCity: undefined,
+          queueGroup: undefined,
+          inQueue: false,
+        });
+        await this.sendCitySelection(chatId, { ...state, state: DriverState.MENU, selectedCity: undefined, queueGroup: undefined });
+        return;
+      }
+      await this.telegram.sendMessage(Number(chatId), NO_ROUTES_AVAILABLE);
+      await this.sendMainMenu(Number(chatId));
       return;
     }
 
@@ -1376,7 +1495,7 @@ Peça ao analista para cadastrar em /acess/duvidas.
       ),
     );
 
-    const ordered = [...nonMoto, ...moto];
+    const ordered = state.selectedCity ? sorted : [...nonMoto, ...moto];
 
     await this.setState(chatId, {
       ...state,
@@ -1688,7 +1807,7 @@ Para encerrar, digite: "encerrar"
 
       if (text === '2') {
         await this.setState(chatId, { ...state, state: DriverState.HELP_MENU });
-        const help = await this.getDynamicHelp();
+        const help = await this.getCachedFaq();
         await this.telegram.sendMessage(Number(chatId), help.menu);
         return { ok: true };
       }
@@ -1760,7 +1879,49 @@ Para encerrar, digite: "encerrar"
         await this.consumeBlockedQueueApproval(state.driverId!);
       }
 
-      const group = state.queueGroup || this.queueGroupFromVehicle(state.vehicleType);
+      // Moto entra direto na fila moto; geral escolhe cidade primeiro.
+      if (this.isMoto(state.vehicleType)) {
+        const group = 'moto';
+        await this.enqueue(chatId, state.vehicleType, group);
+        const canStart = await this.tryAcquireQueue(chatId, group);
+        if (!canStart) {
+          await this.setState(chatId, { ...state, inQueue: true, queueGroup: group });
+          await this.sendQueueWaitingNotice(chatId);
+          return { ok: true };
+        }
+        await this.notifyQueueNext(chatId, group, false);
+      } else {
+        await this.sendCitySelection(chatId, state);
+      }
+      return { ok: true };
+    }
+
+    /* ===== ESCOLHA DE CIDADE ===== */
+    if (state.state === DriverState.CHOOSING_CITY) {
+      if (command === 'encerrar' || text === '0') {
+        await this.clearState(chatId);
+        await this.telegram.sendMessage(Number(chatId), 'Atendimento encerrado.');
+        return { ok: true };
+      }
+
+      const cityRoutes = state.availableRoutes || [];
+      const cityMap = new Map<string, string>();
+      cityRoutes.forEach((r) => {
+        const city = (r.cidade || 'Sem cidade').trim() || 'Sem cidade';
+        cityMap.set(city, city);
+      });
+      const cities = Array.from(cityMap.keys()).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+      const choice = Number(text) - 1;
+      if (isNaN(choice) || choice < 0 || !cities[choice]) {
+        await this.telegram.sendMessage(Number(chatId), 'Opção inválida.');
+        await this.sendCitySelection(chatId, state);
+        return { ok: true };
+      }
+
+      const selectedCity = cities[choice];
+      const group = this.normalizeGroupCity(selectedCity);
+
       await this.enqueue(chatId, state.vehicleType, group);
       const canStart = await this.tryAcquireQueue(chatId, group);
       if (!canStart) {
@@ -1768,11 +1929,13 @@ Para encerrar, digite: "encerrar"
           ...state,
           inQueue: true,
           queueGroup: group,
+          selectedCity,
         });
         await this.sendQueueWaitingNotice(chatId);
         return { ok: true };
       }
 
+      await this.setState(chatId, { ...state, selectedCity, queueGroup: group });
       await this.notifyQueueNext(chatId, group, false);
       return { ok: true };
     }
@@ -1826,9 +1989,12 @@ Para encerrar, digite: "encerrar"
 
       if (!ok) {
         await this.telegram.sendMessage(Number(chatId), 'Rota indisponível.');
+        this.invalidateLocalRouteCache();
         await this.sendRoutes(chatId, state);
         return { ok: true };
       }
+
+      this.invalidateLocalRouteCache();
 
       await this.telegram.sendMessage(
         Number(chatId),
@@ -1958,7 +2124,7 @@ Como pegar a rota:
         return { ok: true };
       }
 
-      const help = await this.getDynamicHelp();
+      const help = await this.getCachedFaq();
       const answer = help.answers[text];
       if (!answer) {
         await this.telegram.sendMessage(Number(chatId), 'Opção inválida.');

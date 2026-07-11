@@ -1927,6 +1927,7 @@ Para encerrar, digite: "encerrar"
       if (!canStart) {
         await this.setState(chatId, {
           ...state,
+          state: DriverState.MENU,
           inQueue: true,
           queueGroup: group,
           selectedCity,
@@ -1935,7 +1936,7 @@ Para encerrar, digite: "encerrar"
         return { ok: true };
       }
 
-      await this.setState(chatId, { ...state, selectedCity, queueGroup: group });
+      await this.setState(chatId, { ...state, state: DriverState.MENU, selectedCity, queueGroup: group });
       await this.notifyQueueNext(chatId, group, false);
       return { ok: true };
     }

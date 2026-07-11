@@ -5447,6 +5447,7 @@ export class AppService {
     await this.ensureSupportSeedData();
     const prisma = this.prisma as any;
     const redis = this.redisService.client();
+
     const [syncLogs, lastMinuteMessages, activeTickets, openRoutes] =
       await Promise.all([
         this.prisma.syncLog.findMany({ orderBy: { startedAt: 'desc' }, take: 20 }),
@@ -5461,90 +5462,87 @@ export class AppService {
         }),
       ]);
 
-    const [queue, motoQueue, activeChatId, activeMotoChatId] = await Promise.all([
-      redis.lrange(this.QUEUE_LIST_KEY_GENERAL, 0, -1),
+    // Descobre todos os grupos de cidade ativos (filas e activos)
+    const [cityListKeys, cityActiveKeys, motoWaiting, motoActiveChatId] = await Promise.all([
+      redis.keys('telegram:queue:list:city:*'),
+      redis.keys('telegram:queue:active:city:*'),
       redis.lrange(this.QUEUE_LIST_KEY_MOTO, 0, -1),
-      redis.get(this.QUEUE_ACTIVE_KEY_GENERAL),
       redis.get(this.QUEUE_ACTIVE_KEY_MOTO),
     ]);
 
-    const queueEntries = [
-      ...queue.map((chatId, index) => ({ chatId, position: index + 1, group: 'general' as const })),
-      ...motoQueue.map((chatId, index) => ({ chatId, position: index + 1, group: 'moto' as const })),
-    ];
+    // Monta set de grupos de cidade
+    const cityGroups = new Set<string>();
+    cityListKeys.forEach((k) => { const m = k.match(/^telegram:queue:list:(.+)$/); if (m) cityGroups.add(m[1]); });
+    cityActiveKeys.forEach((k) => { const m = k.match(/^telegram:queue:active:(.+)$/); if (m) cityGroups.add(m[1]); });
 
-    const queueStates = await Promise.all(
-      queueEntries.map(async (entry) => {
-        const state = await this.redisService.get<any>(this.stateKey(entry.chatId));
-        return {
-          chatId: entry.chatId,
-          position: entry.position,
-          group: entry.group,
-          driverId: state?.driverId || null,
-          driverName: state?.driverName || null,
-          vehicleType: state?.vehicleType || null,
-          step: state?.step || null,
-        };
+    const resolveEntry = async (chatId: string) => {
+      const s = await this.redisService.get<any>(this.stateKey(chatId));
+      return {
+        chatId,
+        driverId: s?.driverId || null,
+        driverName: s?.driverName || null,
+        vehicleType: s?.vehicleType || null,
+        currentState: s?.state || null,
+        selectedCity: s?.selectedCity || null,
+        priorityScore: typeof s?.priorityScore === 'number' ? s.priorityScore : null,
+      };
+    };
+
+    // Lê cada fila de cidade
+    const cityQueues = await Promise.all(
+      [...cityGroups].map(async (group) => {
+        const label = group.replace(/^city:/, '').replace(/-/g, ' ');
+        const city = label.charAt(0).toUpperCase() + label.slice(1);
+        const [waitingIds, activeChatId] = await Promise.all([
+          redis.lrange(`telegram:queue:list:${group}`, 0, -1),
+          redis.get(`telegram:queue:active:${group}`),
+        ]);
+        const [active, waiting] = await Promise.all([
+          activeChatId ? resolveEntry(activeChatId) : Promise.resolve(null),
+          Promise.all(waitingIds.map(resolveEntry)),
+        ]);
+        return { city, group, active, waiting };
       }),
     );
 
-    const activeEntries = (
-      await Promise.all(
-        [
-          activeChatId ? { chatId: activeChatId, group: 'general' as const } : null,
-          activeMotoChatId ? { chatId: activeMotoChatId, group: 'moto' as const } : null,
-        ]
-          .filter((value): value is { chatId: string; group: 'general' | 'moto' } => Boolean(value))
-          .map(async (entry) => {
-            const state = await this.redisService.get<any>(this.stateKey(entry.chatId));
-            return {
-              chatId: entry.chatId,
-              group: entry.group,
-              driverId: state?.driverId || null,
-              driverName: state?.driverName || null,
-              vehicleType: state?.vehicleType || null,
-              step: state?.step || null,
-            };
-          }),
-      )
-    );
-
-    const trackedChatIds = new Set([
-      ...queueStates.map((entry) => entry.chatId),
-      ...activeEntries.map((entry) => entry.chatId),
+    // Fila moto
+    const [motoActive, motoWaitingEntries] = await Promise.all([
+      motoActiveChatId ? resolveEntry(motoActiveChatId) : Promise.resolve(null),
+      Promise.all(motoWaiting.map(resolveEntry)),
     ]);
 
+    const allChatIds = new Set<string>();
+    if (motoActive) allChatIds.add(motoActive.chatId);
+    motoWaitingEntries.forEach((e) => allChatIds.add(e.chatId));
+    cityQueues.forEach(({ active, waiting }) => {
+      if (active) allChatIds.add(active.chatId);
+      waiting.forEach((e) => allChatIds.add(e.chatId));
+    });
+
+    const activeConversations = (motoActive ? 1 : 0) + cityQueues.filter((c) => c.active).length;
     const recentErrors = syncLogs.filter((item) => item.status === 'FAILED').length;
+
     return {
       messagesPerMin: lastMinuteMessages,
       uptime: recentErrors > 3 ? 96.2 : 99.7,
       status: recentErrors > 5 ? 'DEGRADED' : 'ONLINE',
-      activeConversations: activeEntries.length,
-      totalUsers: trackedChatIds.size,
+      activeConversations,
+      totalUsers: allChatIds.size,
       recentErrors,
-      queue: queueStates,
-      activeQueue: activeEntries,
+      motoQueue: { active: motoActive, waiting: motoWaitingEntries },
+      cityQueues: cityQueues.sort((a, b) => a.city.localeCompare(b.city, 'pt-BR')),
+      // Campos legados vazios para não quebrar clientes antigos
+      queue: [],
+      activeQueue: [],
       alerts: [
         activeTickets > 0
-          ? {
-              type: 'info',
-              message: `${activeTickets} atendimento(s) em andamento na central de suporte.`,
-              time: 'agora',
-            }
+          ? { type: 'info', message: `${activeTickets} atendimento(s) em andamento na central de suporte.`, time: 'agora' }
           : null,
         recentErrors > 0
-          ? {
-              type: 'error',
-              message: `${recentErrors} sync(s) recentes falharam. Verificar planilha e redis.`,
-              time: 'recente',
-            }
+          ? { type: 'error', message: `${recentErrors} sync(s) recentes falharam. Verificar planilha e redis.`, time: 'recente' }
           : null,
         openRoutes > 0
-          ? {
-              type: 'warning',
-              message: `${openRoutes} rotas disponiveis estao sem atribuicao ha mais de 30 minutos.`,
-              time: '30min',
-            }
+          ? { type: 'warning', message: `${openRoutes} rotas disponiveis estao sem atribuicao ha mais de 30 minutos.`, time: '30min' }
           : null,
       ].filter(Boolean),
     };

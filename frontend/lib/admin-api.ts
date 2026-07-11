@@ -181,6 +181,16 @@ export interface RouteRequestsBoardPayload {
   blockedQueueRequests: BlockedQueueRequest[]
 }
 
+export interface QueueEntry {
+  chatId: string
+  driverId: string | null
+  driverName: string | null
+  vehicleType: string | null
+  currentState: string | null
+  selectedCity: string | null
+  priorityScore: number | null
+}
+
 export interface BotHealthPayload {
   messagesPerMin: number
   uptime: number
@@ -188,23 +198,19 @@ export interface BotHealthPayload {
   activeConversations: number
   totalUsers: number
   recentErrors: number
-  queue: Array<{
-    chatId: string
-    position: number
-    group: "general" | "moto"
-    driverId: string | null
-    driverName: string | null
-    vehicleType: string | null
-    step: string | null
+  motoQueue: {
+    active: QueueEntry | null
+    waiting: QueueEntry[]
+  }
+  cityQueues: Array<{
+    city: string
+    group: string
+    active: QueueEntry | null
+    waiting: QueueEntry[]
   }>
-  activeQueue: Array<{
-    chatId: string
-    group: "general" | "moto"
-    driverId: string | null
-    driverName: string | null
-    vehicleType: string | null
-    step: string | null
-  }>
+  // legado
+  queue: unknown[]
+  activeQueue: unknown[]
   alerts: Array<{ type: "warning" | "error" | "info"; message: string; time: string }>
 }
 

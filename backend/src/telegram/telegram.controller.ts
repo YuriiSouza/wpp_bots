@@ -703,29 +703,36 @@ A região voltou a ficar disponível para outros motoristas.`,
   }
 
   private async maintainQueueGroup(group: string) {
-    const active = await this.redis.client().get(this.queueActiveKey(group));
-    if (active) {
-      await this.requeueExpiredActive(group);
-      return;
+    try {
+      const active = await this.redis.client().get(this.queueActiveKey(group));
+      if (active) {
+        await this.requeueExpiredActive(group);
+        return;
+      }
+      await this.tryActivateWaitingQueue(group);
+    } catch (err) {
+      console.warn(`[telegram:queue] maintainQueueGroup(${group}) error: ${err?.message ?? err}`);
     }
-
-    await this.tryActivateWaitingQueue(group);
   }
 
   private async maintainCityQueues() {
-    const keys = await this.redis.client().keys('telegram:queue:active:city:*');
-    const groups = new Set<string>();
-    keys.forEach((k) => {
-      const m = k.match(/^telegram:queue:active:(.+)$/);
-      if (m) groups.add(m[1]);
-    });
-    // Also check city lists that might have people waiting without an active slot
-    const listKeys = await this.redis.client().keys('telegram:queue:list:city:*');
-    listKeys.forEach((k) => {
-      const m = k.match(/^telegram:queue:list:(.+)$/);
-      if (m) groups.add(m[1]);
-    });
-    await Promise.all([...groups].map((g) => this.maintainQueueGroup(g)));
+    try {
+      const keys = await this.redis.client().keys('telegram:queue:active:city:*');
+      const groups = new Set<string>();
+      keys.forEach((k) => {
+        const m = k.match(/^telegram:queue:active:(.+)$/);
+        if (m) groups.add(m[1]);
+      });
+      // Also check city lists that might have people waiting without an active slot
+      const listKeys = await this.redis.client().keys('telegram:queue:list:city:*');
+      listKeys.forEach((k) => {
+        const m = k.match(/^telegram:queue:list:(.+)$/);
+        if (m) groups.add(m[1]);
+      });
+      await Promise.all([...groups].map((g) => this.maintainQueueGroup(g)));
+    } catch (err) {
+      console.warn(`[telegram:queue] maintainCityQueues error: ${err?.message ?? err}`);
+    }
   }
 
   private async withQueueLock<T>(

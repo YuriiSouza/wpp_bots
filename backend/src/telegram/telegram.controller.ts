@@ -559,14 +559,14 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
     requiredVehicleType?: string | null;
     assignmentSource?: string | null;
   }) {
-    let message = `Você já possui uma rota ativa:
+    let message = `Você já marcou disponibilidade para uma região:
 Gaiola: ${route.gaiola || '-'}
 Data: ${route.routeDate || '-'}
 Cidade: ${route.cidade || '-'}
 Cluster: ${route.cluster || '-'}`;
 
     if (String(route.assignmentSource || '') === 'TELEGRAM_BOT') {
-      message += '\n\nSe quiser cancelar esta solicitação, digite: 5';
+      message += '\n\nDeseja desmarcar sua disponibilidade para essa região? Digite: 4';
     }
 
     return message;
@@ -581,7 +581,7 @@ Cluster: ${route.cluster || '-'}`;
 
     const route = await this.routes.getCurrentRouteForDriver(state.driverId);
     if (!route) {
-      await this.telegram.sendMessage(Number(chatId), 'Você não possui rota ativa no momento.');
+      await this.telegram.sendMessage(Number(chatId), 'Você não possui disponibilidade registrada no momento.');
       await this.sendMainMenu(Number(chatId));
       return;
     }
@@ -600,11 +600,11 @@ Cluster: ${route.cluster || '-'}`;
     const result = await this.routes.cancelTelegramRouteRequest(state.driverId);
     if (!result.ok) {
       if (result.reason === 'NO_ROUTE') {
-        await this.telegram.sendMessage(Number(chatId), 'Você não possui rota ativa para cancelar.');
+        await this.telegram.sendMessage(Number(chatId), 'Você não possui disponibilidade registrada para desmarcar.');
       } else {
         await this.telegram.sendMessage(
           Number(chatId),
-          'Sua rota atual não foi solicitada pelo bot e não pode ser cancelada por aqui.',
+          'Sua disponibilidade atual não foi registrada pelo bot e não pode ser desmarcada por aqui.',
         );
       }
       await this.sendMainMenu(Number(chatId));
@@ -627,9 +627,9 @@ Cluster: ${route.cluster || '-'}`;
     });
     await this.telegram.sendMessage(
       Number(chatId),
-      `Solicitação da rota ${cancelledRoute.gaiola || cancelledRoute.atId || cancelledRoute.id} cancelada com sucesso.
+      `Disponibilidade para a região ${cancelledRoute.gaiola || cancelledRoute.atId || cancelledRoute.id} desmarcada com sucesso.
 
-Ela já voltou a ficar disponível para outros motoristas.`,
+A região voltou a ficar disponível para outros motoristas.`,
     );
     await this.sendMainMenu(Number(chatId));
   }
@@ -785,7 +785,7 @@ Ela já voltou a ficar disponível para outros motoristas.`,
     if (lock !== 'OK') return;
     await this.telegram.sendMessage(
       Number(chatId),
-      'Você está na fila. Aguarde atendimento.\n\n📊 A ordem da fila é definida pela sua performance (DS e histórico de entregas). Motoristas com melhor desempenho são atendidos primeiro.',
+      `✅ Disponibilidade registrada! Você entrou na fila e será atendido em breve.\n\n📊 A ordem da fila é definida pelo seu score de performance, calculado automaticamente a cada atualização com base em:\n• DS (taxa de pacotes entregues com sucesso)\n• Histórico de NoShow (rotas não carregadas no prazo)\n• Recusas de rota\n\nQuanto melhor sua performance, maior seu score e mais à frente na fila você fica.`,
     );
   }
 
@@ -1047,10 +1047,10 @@ Ela já voltou a ficar disponível para outros motoristas.`,
       chatId,
       `Menu principal:
 encerrar - Encerrar atendimento
-1 - Ver rotas disponíveis
+1 - Ver regiões disponíveis
 2 - Dúvidas frequentes
-4 - Consultar minha rota
-5 - Cancelar solicitação da rota`,
+3 - Consultar minha disponibilidade
+4 - Cancelar disponibilidade`,
     );
   }
 
@@ -1390,11 +1390,12 @@ Peça ao analista para cadastrar em /acess/duvidas.
       }),
     );
 
-    let msg = `Escolha a cidade:\n`;
-    cityMeta.forEach(({ city, routeCount, queueLen, index }) => {
-      msg += `${index}. ${city} — ${routeCount} rota${routeCount > 1 ? 's' : ''} | ${queueLen} na fila\n`;
+    let msg = `📍 Selecione a cidade para entrar na fila:\n\n`;
+    cityMeta.forEach(({ city, index }) => {
+      msg += `${index}. ${city}\n`;
     });
-    msg += `\n0. Sair`;
+    msg += `\n0. Sair\n\n`;
+    msg += `ℹ️ Ao escolher uma cidade você está sinalizando sua disponibilidade para atuar naquela região. Isso não garante a rota — sua disponibilidade será analisada pela empresa, que definirá o motorista mais adequado para cada região.`;
 
     await this.setState(chatId, {
       ...state,
@@ -1438,7 +1439,7 @@ Peça ao analista para cadastrar em /acess/duvidas.
           }
           await this.telegram.sendMessage(
             Number(chatId),
-            `Sua entrada na fila precisa de validacao da analista.\nMotivo: ${this.getBusinessBlockReasonLabel(requestState.request?.blockReason)}\n\nAguarde a analise.`,
+            `Sua entrada na fila precisa de validação da analista.\n\nAguarde a análise.`,
           );
         }
         await this.setState(chatId, { ...state, state: DriverState.MENU, inQueue: false });
@@ -1515,14 +1516,15 @@ Peça ao analista para cadastrar em /acess/duvidas.
     const routesNote = (await this.redis.get<string>(this.ROUTES_NOTE_KEY)) || '';
 
     let msg = `Olá, ${state.driverName} 👋
-Escolha a rota desejada digitando o número:
+Marque a região que tem disponibilidade para fazer:
 Veículo: ${state.vehicleType}
-DS: ${state.ds || '-'} (DS = taxa de pacotes entregues)
+
+📊 Seu score de performance: ${state.priorityScore ?? '-'}
+• DS: ${state.ds || '-'}
+• NoShow: ${state.noShowCount ?? '-'}
+
 Para encerrar, digite: "encerrar"
 `;
-    if (routesNote.trim()) {
-      msg += `\n📢 Informações do dia:\n${routesNote.trim()}\n`;
-    }
 
     const pushCityGroups = (title: string, list: typeof ordered) => {
       if (!list.length) return;
@@ -1772,6 +1774,7 @@ Para encerrar, digite: "encerrar"
         driverName: driver.name || '',
         vehicleType: driver.vehicleType || '',
         ds: driver.ds || '',
+        noShowCount: driver.noShowCount ?? 0,
         priorityScore: this.parsePriorityScore(driver.priorityScore),
         queueGroup: this.queueGroupFromVehicle(driver.vehicleType || undefined),
       });
@@ -1795,16 +1798,6 @@ Para encerrar, digite: "encerrar"
         return { ok: true };
       }
 
-      if (text === '4') {
-        await this.showCurrentRoute(chatId, state);
-        return { ok: true };
-      }
-
-      if (text === '5') {
-        await this.cancelCurrentTelegramRoute(chatId, state);
-        return { ok: true };
-      }
-
       if (text === '2') {
         await this.setState(chatId, { ...state, state: DriverState.HELP_MENU });
         const help = await this.getCachedFaq();
@@ -1812,12 +1805,13 @@ Para encerrar, digite: "encerrar"
         return { ok: true };
       }
 
-      if (text === '3' || command === 'falar' || command === 'analista') {
-        await this.telegram.sendMessage(
-          Number(chatId),
-          'Esta opção está temporariamente desativada.\n\nSe precisar falar com um analista, entre em contato diretamente pelo grupo.',
-        );
-        await this.sendMainMenu(Number(chatId));
+      if (text === '3') {
+        await this.showCurrentRoute(chatId, state);
+        return { ok: true };
+      }
+
+      if (text === '4') {
+        await this.cancelCurrentTelegramRoute(chatId, state);
         return { ok: true };
       }
 
@@ -1840,7 +1834,7 @@ Para encerrar, digite: "encerrar"
         } else {
           await this.telegram.sendMessage(
             Number(chatId),
-            'Você já possui rota solicitada no turno atual. O bot não realiza trocas.',
+            'Você já marcou disponibilidade para uma região neste turno. Não é possível alterar após o registro.',
           );
         }
         await this.sendMainMenu(Number(chatId));
@@ -1869,7 +1863,7 @@ Para encerrar, digite: "encerrar"
             }
             await this.telegram.sendMessage(
               Number(chatId),
-              `Sua entrada na fila precisa de validacao da analista.\nMotivo: ${this.getBusinessBlockReasonLabel(requestState.request?.blockReason)}\n\nAguarde a analise.`,
+              `Sua entrada na fila precisa de validação da analista.\n\nAguarde a análise.`,
             );
           }
           await this.sendMainMenu(Number(chatId));
@@ -1978,7 +1972,7 @@ Para encerrar, digite: "encerrar"
           Number(chatId),
           currentRoute
             ? this.formatCurrentRouteMessage(currentRoute)
-            : 'Você já possui rota solicitada. O bot não realiza trocas.',
+            : 'Você já marcou disponibilidade para uma região neste turno. Não é possível alterar após o registro.',
         );
         await this.setState(chatId, { ...state, state: DriverState.MENU });
         await this.releaseAndNotifyNext(group);
@@ -1999,14 +1993,14 @@ Para encerrar, digite: "encerrar"
 
       await this.telegram.sendMessage(
         Number(chatId),
-        `✅ Rota ${route.gaiola || route.atId} solicitada com sucesso.
+        `✅ Disponibilidade registrada com sucesso para a região ${route.gaiola || route.atId}.
 
-Sua solicitação foi enviada para validação do analista.
+Sua disponibilidade foi enviada para análise. A empresa irá avaliar e definir o motorista mais adequado para cada região.
 
-Como pegar a rota:
-1. Aguarde a confirmação do analista.
-2. Após confirmar, siga o dia/horário de carregamento informado.
-3. Em caso de dúvida, responda esta conversa para suporte.`,
+Próximos passos:
+1. Aguarde o contato do analista.
+2. Caso seja confirmado, siga o dia/horário de carregamento informado.
+3. Em caso de dúvida, entre em contato pelo grupo.`,
       );
       await this.logEvent('rota_solicitada', state, { rota: route.atId });
       await this.notifyAnalystsAboutRouteEvent({
@@ -2032,7 +2026,7 @@ Como pegar a rota:
       await this.releaseAndNotifyNext(group);
       await this.telegram.sendMessage(
         Number(chatId),
-        'Atendimento encerrado automaticamente após a solicitação da rota.',
+        'Atendimento encerrado automaticamente após o registro de disponibilidade.',
       );
       return { ok: true };
     }

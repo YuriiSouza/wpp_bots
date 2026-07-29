@@ -14,6 +14,7 @@ export interface DriverSession {
   driverName?: string;
   vehicleType?: string;
   ds?: string;
+  noShowCount?: number;
   priorityScore?: number;
   availableRoutes?: AvailableRoute[];
   inQueue?: boolean;

@@ -1018,7 +1018,7 @@ export default function RoutesPage() {
 
                         {/* Driver availability info cell */}
                         <TableCell className="py-2" onClick={(e) => e.stopPropagation()}>
-                          {isTgReq && pendingRequest ? (
+                          {pendingRequest ? (
                             <div className="flex items-start gap-4">
                               {/* Driver info */}
                               <div className="min-w-0 flex-1 space-y-1.5">
@@ -1090,7 +1090,7 @@ export default function RoutesPage() {
 
                         <TableCell className="py-2.5" onClick={(e) => e.stopPropagation()}>
                           <div className="flex flex-wrap gap-1.5">
-                            {!isTgReq && (
+                            {!isTgReq && !pendingRequest && (
                               <Button
                                 variant="outline"
                                 size="sm"

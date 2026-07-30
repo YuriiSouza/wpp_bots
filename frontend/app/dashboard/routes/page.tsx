@@ -957,22 +957,21 @@ export default function RoutesPage() {
           <div className="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">Carregando rotas...</div>
         ) : (
           <div className="min-w-0 w-full max-w-full overflow-x-auto rounded-xl border bg-card">
-            <Table className="min-w-[860px]">
+            <Table className="min-w-[900px]">
               <TableHeader>
                 <TableRow className="hover:bg-transparent border-b border-border/60">
-                  <TableHead className="w-[150px] text-xs font-semibold">Motorista</TableHead>
-                  <TableHead className="w-[120px] text-xs font-semibold">AT</TableHead>
-                  <TableHead className="w-[100px] text-xs font-semibold">Gaiola</TableHead>
+                  <TableHead className="w-[140px] text-xs font-semibold">Motorista</TableHead>
+                  <TableHead className="w-[110px] text-xs font-semibold">AT / Gaiola</TableHead>
                   <TableHead className="w-[110px] text-xs font-semibold">Status</TableHead>
-                  <TableHead className="w-[120px] text-xs font-semibold">Cidade</TableHead>
-                  <TableHead className="w-[160px] text-xs font-semibold">Solicitante</TableHead>
-                  <TableHead className="text-xs font-semibold">Acoes</TableHead>
+                  <TableHead className="w-[110px] text-xs font-semibold">Cidade</TableHead>
+                  <TableHead className="text-xs font-semibold">Disponibilidade solicitada</TableHead>
+                  <TableHead className="w-[160px] text-xs font-semibold">Acoes</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filtered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
                       Nenhuma rota encontrada para os filtros aplicados.
                     </TableCell>
                   </TableRow>
@@ -984,6 +983,14 @@ export default function RoutesPage() {
                     const isApprovingThis = approvingRouteRequestId === route.id
                     const isRejectingThis = rejectingRouteRequestId === route.id
                     const isBusyThis = isApprovingThis || isRejectingThis
+
+                    // Vehicle match check
+                    const routeVehicle = (route.requiredVehicleType || "").trim().toUpperCase()
+                    const driverVehicle = (pendingRequest?.requestedDriverVehicleType || "").trim().toUpperCase()
+                    const vehicleMatch = routeVehicle && driverVehicle
+                      ? routeVehicle === driverVehicle || driverVehicle.includes(routeVehicle) || routeVehicle.includes(driverVehicle)
+                      : null
+                    const dsMeta = getDsMeta(pendingRequest?.requestedDriverDs)
 
                     return (
                       <TableRow
@@ -997,21 +1004,67 @@ export default function RoutesPage() {
                             <span className="truncate font-mono text-xs text-card-foreground">{route.driverId || <span className="text-muted-foreground">—</span>}</span>
                           </div>
                         </TableCell>
-                        <TableCell className="py-2.5 font-mono text-xs text-muted-foreground">{route.atId || route.id}</TableCell>
-                        <TableCell className="py-2.5 text-sm text-card-foreground">{route.gaiola || <span className="text-muted-foreground">—</span>}</TableCell>
+                        <TableCell className="py-2.5">
+                          <p className="font-mono text-xs text-muted-foreground">{route.atId || route.id}</p>
+                          <p className="text-xs text-muted-foreground/70">{route.gaiola || "—"}</p>
+                        </TableCell>
                         <TableCell className="py-2.5">
                           <Badge variant="outline" className={`text-xs font-medium ${meta.badgeClass}`}>{meta.label}</Badge>
+                          {route.requiredVehicleType && (
+                            <p className="mt-1 text-[10px] text-muted-foreground">{route.requiredVehicleType}</p>
+                          )}
                         </TableCell>
                         <TableCell className="py-2.5 text-sm text-card-foreground">{route.cidade || <span className="text-muted-foreground">—</span>}</TableCell>
-                        <TableCell className="py-2.5 text-sm text-card-foreground truncate">{route.requestedDriverName || <span className="text-muted-foreground">—</span>}</TableCell>
-                        <TableCell className="py-2.5" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex flex-wrap gap-1.5">
-                            {/* Inline approve/reject for telegram-requested routes */}
-                            {isTgReq && pendingRequest ? (
-                              <>
+
+                        {/* Driver availability info cell */}
+                        <TableCell className="py-2" onClick={(e) => e.stopPropagation()}>
+                          {isTgReq && pendingRequest ? (
+                            <div className="flex items-start gap-4">
+                              {/* Driver info */}
+                              <div className="min-w-0 flex-1 space-y-1.5">
+                                <p className="text-sm font-semibold text-foreground truncate">
+                                  {pendingRequest.requestedDriverName || pendingRequest.requestedDriverId || "—"}
+                                </p>
+                                <p className="text-xs text-muted-foreground font-mono">{pendingRequest.requestedDriverId}</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {/* Vehicle match */}
+                                  {driverVehicle && (
+                                    <Badge
+                                      variant="outline"
+                                      className={`text-xs font-medium ${
+                                        vehicleMatch === true
+                                          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700"
+                                          : vehicleMatch === false
+                                          ? "border-red-500/40 bg-red-500/10 text-red-700"
+                                          : "border-border text-muted-foreground"
+                                      }`}
+                                    >
+                                      {vehicleMatch === false && "⚠ "}
+                                      {driverVehicle}
+                                      {vehicleMatch === false && ` ≠ ${routeVehicle}`}
+                                    </Badge>
+                                  )}
+                                  {/* DS */}
+                                  <Badge variant="outline" className={`text-xs ${dsMeta.className}`}>
+                                    DS {dsMeta.valueLabel}
+                                  </Badge>
+                                  {/* Score */}
+                                  <Badge variant="outline" className="text-xs">
+                                    Score {pendingRequest.requestedDriverPriorityScore.toFixed(0)}
+                                  </Badge>
+                                  {/* NoShows */}
+                                  {(pendingRequest.requestedDriverNoShowCount ?? 0) > 0 && (
+                                    <Badge variant="outline" className="text-xs border-red-500/30 bg-red-500/10 text-red-700">
+                                      {pendingRequest.requestedDriverNoShowCount} no-show{pendingRequest.requestedDriverNoShowCount !== 1 ? "s" : ""}
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                              {/* Approve/reject buttons */}
+                              <div className="flex shrink-0 flex-col gap-1.5">
                                 <Button
                                   size="sm"
-                                  className="h-7 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700"
+                                  className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700"
                                   disabled={isBusyThis}
                                   onClick={() => void handleApproveRouteRequest(pendingRequest)}
                                 >
@@ -1021,22 +1074,30 @@ export default function RoutesPage() {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  className="h-7 px-2.5 text-xs border-red-500/40 text-red-600 hover:bg-red-500/10"
+                                  className="h-7 px-3 text-xs border-red-500/40 text-red-600 hover:bg-red-500/10"
                                   disabled={isBusyThis}
                                   onClick={() => void handleRejectRouteRequest(pendingRequest)}
                                 >
                                   <X className="mr-1 h-3.5 w-3.5" />
                                   {isRejectingThis ? "..." : "Recusar"}
                                 </Button>
-                              </>
-                            ) : (
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="py-2.5" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-wrap gap-1.5">
+                            {!isTgReq && (
                               <Button
                                 variant="outline"
                                 size="sm"
                                 className="h-7 px-2.5 text-xs"
                                 onClick={() => {
                                   setAssignRoute(route)
-                                  setSelectedDriver(isTgReq ? route.requestedDriverId || "" : "")
+                                  setSelectedDriver("")
                                   setAssignDriverSearch("")
                                 }}
                               >

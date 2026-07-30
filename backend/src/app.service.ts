@@ -1927,6 +1927,7 @@ export class AppService {
               vehicleType: true,
               ds: true,
               priorityScore: true,
+              noShowCount: true,
             },
           })
         : [],
@@ -1965,6 +1966,7 @@ export class AppService {
       vehicleType: string | null;
       ds: string | null;
       priorityScore: number;
+      noShowCount: number;
     }>(
       requestedDrivers.map((driver: {
         id: string;
@@ -1972,6 +1974,7 @@ export class AppService {
         vehicleType: string | null;
         ds: string | null;
         priorityScore: number;
+        noShowCount: number;
       }) => [
         driver.id,
         driver,
@@ -2026,6 +2029,7 @@ export class AppService {
             requestedDriverVehicleType: requestedDriver?.vehicleType || null,
             requestedDriverDs: requestedDriver?.ds || null,
             requestedDriverPriorityScore: requestedDriver?.priorityScore ?? 0,
+            requestedDriverNoShowCount: requestedDriver?.noShowCount ?? 0,
             blockReason: blockReasonByDriverId.get(String(route.requestedDriverId || '').trim()) || null,
             requestedAt: this.toIsoString(route.updatedAt),
           };

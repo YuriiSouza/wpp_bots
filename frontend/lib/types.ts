@@ -99,6 +99,7 @@ export interface PendingRouteRequest {
   requestedDriverVehicleType: string | null
   requestedDriverDs: string | null
   requestedDriverPriorityScore: number
+  requestedDriverNoShowCount: number
   blockReason: string | null
   requestedAt: string | null
 }

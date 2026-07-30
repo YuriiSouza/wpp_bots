@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Search,
   Download,
@@ -17,6 +17,13 @@ import {
   Package,
   User,
   Truck,
+  Check,
+  MapPin,
+  Bike,
+  Eye,
+  ArrowUp,
+  ArrowDown,
+  Minus,
 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent } from "@/components/ui/card"
@@ -58,6 +65,7 @@ import {
   fetchRouteRequestsBoard,
   fetchRoutes,
   fetchBotEnabled,
+  fetchBotHealth,
   saveBotEnabled,
   getApiErrorMessage,
   runSync,
@@ -66,6 +74,8 @@ import {
   rejectBlockedQueueRequest as rejectBlockedQueueRequestApi,
   releaseRouteToBot as releaseRouteToBotRequest,
   releaseRoutesToBotByAt as releaseRoutesToBotByAtRequest,
+  type BotHealthPayload,
+  type QueueEntry,
 } from "@/lib/admin-api"
 import { getCurrentRouteWindow } from "@/lib/route-window"
 import type { BlockedQueueRequest, Driver, PendingRouteRequest, Route } from "@/lib/types"
@@ -74,15 +84,22 @@ import { toast } from "sonner"
 const ROUTES_FILTERS_STORAGE_KEY = "routes-page-filters"
 type RouteStatusFilter = Route["status"] | "SOLICITADA" | "NO_BOT"
 
+const STATE_LABEL: Record<string, string> = {
+  MENU: "No menu",
+  CHOOSING_CITY: "Escolhendo cidade",
+  CHOOSING_ROUTE: "Escolhendo regiao",
+  WAITING_ID: "Aguardando ID",
+  HELP_MENU: "Duvidas",
+  SUPPORT_CHAT: "Suporte",
+}
+
+function stateLabel(s: string | null | undefined) {
+  return s ? (STATE_LABEL[s] ?? s) : "-"
+}
+
 function normalizeStoredFilter(value: unknown) {
   if (Array.isArray(value)) {
-    return Array.from(
-      new Set(
-        value
-          .map((item) => String(item || "").trim())
-          .filter(Boolean)
-      )
-    )
+    return Array.from(new Set(value.map((item) => String(item || "").trim()).filter(Boolean)))
   }
   const single = String(value || "").trim()
   if (!single || single === "all") return []
@@ -112,20 +129,12 @@ function formatRequestTimestamp(value?: string | null) {
   if (!value) return "-"
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toLocaleString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
+  return parsed.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
 }
 
 function getBlockedQueueStatusMeta(status?: string, cooldownUntil?: string | null) {
   if (status === "REJECTED") {
-    return {
-      label: cooldownUntil ? `Cooldown ate ${formatRequestTimestamp(cooldownUntil)}` : "Reprovada",
-      className: "border-red-500/30 bg-red-500/10 text-red-700",
-    }
+    return { label: cooldownUntil ? `Cooldown ate ${formatRequestTimestamp(cooldownUntil)}` : "Reprovada", className: "border-red-500/30 bg-red-500/10 text-red-700" }
   }
   return { label: "Pendente", className: "border-amber-500/30 bg-amber-500/10 text-amber-700" }
 }
@@ -160,18 +169,8 @@ function getDsMeta(value?: string | null) {
 type StatusMeta = { label: string; badgeClass: string; rowAccent: string; dotColor: string }
 
 function getStatusMeta(route: Route, isTelegramReq: boolean): StatusMeta {
-  if (route.noShow) return {
-    label: "No-Show",
-    badgeClass: "border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-400",
-    rowAccent: "border-l-4 border-l-red-500 bg-red-500/5",
-    dotColor: "bg-red-500",
-  }
-  if (isTelegramReq) return {
-    label: "Solicitada",
-    badgeClass: "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-400",
-    rowAccent: "border-l-4 border-l-amber-400 bg-amber-500/5",
-    dotColor: "bg-amber-400",
-  }
+  if (route.noShow) return { label: "No-Show", badgeClass: "border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-400", rowAccent: "border-l-4 border-l-red-500 bg-red-500/5", dotColor: "bg-red-500" }
+  if (isTelegramReq) return { label: "Solicitada", badgeClass: "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-400", rowAccent: "border-l-4 border-l-amber-400 bg-amber-500/5", dotColor: "bg-amber-400" }
   switch (route.status) {
     case "DISPONIVEL": return { label: "Disponivel", badgeClass: "border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-400", rowAccent: "", dotColor: "bg-sky-400" }
     case "APROVADA": return { label: "Aprovada", badgeClass: "border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-400", rowAccent: "border-l-4 border-l-violet-400 bg-violet-500/5", dotColor: "bg-violet-500" }
@@ -210,6 +209,291 @@ function DetailField({ label, value }: { label: string; value: React.ReactNode }
   )
 }
 
+// ---- Queue Modal ----
+
+type QueueSnapshot = {
+  chatId: string
+  position: number
+  driverName?: string | null
+  driverId?: string | null
+  vehicleType?: string | null
+  currentState?: string | null
+  priorityScore?: number | null
+}
+
+function buildQueueSnapshot(active: QueueEntry | null, waiting: QueueEntry[]): QueueSnapshot[] {
+  const result: QueueSnapshot[] = []
+  if (active) result.push({ chatId: active.chatId, position: 0, driverName: active.driverName, driverId: active.driverId, vehicleType: active.vehicleType, currentState: active.currentState, priorityScore: active.priorityScore })
+  waiting.forEach((e, i) => result.push({ chatId: e.chatId, position: i + 1, driverName: e.driverName, driverId: e.driverId, vehicleType: e.vehicleType, currentState: e.currentState, priorityScore: e.priorityScore }))
+  return result
+}
+
+function QueueModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [health, setHealth] = useState<BotHealthPayload | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<string>("")
+  const prevSnapshotsRef = useRef<Record<string, number>>({})
+
+  const load = useCallback(async () => {
+    try {
+      const data = await fetchBotHealth()
+      setHealth(data)
+      setLastUpdated(new Date().toLocaleTimeString("pt-BR"))
+    } catch {
+      // silently ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    void load()
+    const interval = setInterval(() => void load(), 3000)
+    return () => clearInterval(interval)
+  }, [open, load])
+
+  const allQueues = useMemo(() => {
+    if (!health) return []
+    const queues: { title: string; icon: "moto" | "city"; active: QueueEntry | null; waiting: QueueEntry[] }[] = []
+    if (health.motoQueue.active || health.motoQueue.waiting.length > 0) {
+      queues.push({ title: "Fila Moto", icon: "moto", active: health.motoQueue.active, waiting: health.motoQueue.waiting })
+    }
+    health.cityQueues.forEach((cq) => {
+      queues.push({ title: cq.city, icon: "city", active: cq.active, waiting: cq.waiting })
+    })
+    return queues
+  }, [health])
+
+  // Track position changes
+  const positionChanges = useMemo(() => {
+    const changes: Record<string, "up" | "down" | "same" | "new"> = {}
+    if (!health) return changes
+
+    const current: Record<string, number> = {}
+    allQueues.forEach((q) => {
+      const snap = buildQueueSnapshot(q.active, q.waiting)
+      snap.forEach((s) => { current[s.chatId] = s.position })
+    })
+
+    Object.entries(current).forEach(([chatId, pos]) => {
+      const prev = prevSnapshotsRef.current[chatId]
+      if (prev === undefined) changes[chatId] = "new"
+      else if (pos < prev) changes[chatId] = "up"
+      else if (pos > prev) changes[chatId] = "down"
+      else changes[chatId] = "same"
+    })
+
+    prevSnapshotsRef.current = current
+    return changes
+  }, [health])
+
+  const totalInQueues = allQueues.reduce((s, q) => s + (q.active ? 1 : 0) + q.waiting.length, 0)
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose() }}>
+      <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Bot className="h-5 w-5 text-sky-500" />
+            Filas ao vivo
+            <Badge variant="secondary" className="ml-1">{totalInQueues} motoristas</Badge>
+          </DialogTitle>
+          <DialogDescription className="flex items-center gap-2">
+            <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            Atualiza a cada 3 segundos · Ultima atualização: {lastUpdated || "..."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto space-y-4 min-h-0 pr-1">
+          {!health ? (
+            <p className="text-sm text-muted-foreground p-4 text-center">Carregando filas...</p>
+          ) : allQueues.length === 0 ? (
+            <p className="text-sm text-muted-foreground p-4 text-center">Nenhum motorista nas filas agora.</p>
+          ) : (
+            allQueues.map((queue) => {
+              const snap = buildQueueSnapshot(queue.active, queue.waiting)
+              return (
+                <div key={queue.title} className="rounded-xl border border-border/60 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-muted/30 border-b border-border/60">
+                    <div className="flex items-center gap-2">
+                      {queue.icon === "moto"
+                        ? <Bike className="h-4 w-4 text-orange-500" />
+                        : <MapPin className="h-4 w-4 text-sky-500" />
+                      }
+                      <span className="text-sm font-semibold text-foreground">{queue.title}</span>
+                    </div>
+                    <Badge variant="secondary" className="text-xs">
+                      {snap.length} {snap.length === 1 ? "motorista" : "motoristas"}
+                    </Badge>
+                  </div>
+                  {snap.length === 0 ? (
+                    <p className="px-4 py-3 text-xs text-muted-foreground">Fila vazia</p>
+                  ) : (
+                    <div className="divide-y divide-border/40">
+                      {snap.map((entry) => {
+                        const change = positionChanges[entry.chatId]
+                        const isActive = entry.position === 0
+                        return (
+                          <div
+                            key={entry.chatId}
+                            className={`flex items-center gap-3 px-4 py-2.5 transition-colors ${isActive ? "bg-emerald-500/5" : "hover:bg-muted/20"}`}
+                          >
+                            <div className="w-7 shrink-0 text-center">
+                              {isActive
+                                ? <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                                : <span className="text-xs font-bold text-muted-foreground">#{entry.position}</span>
+                              }
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-foreground truncate">
+                                {entry.driverName || entry.driverId || entry.chatId}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {entry.vehicleType || "-"} · {stateLabel(entry.currentState)}
+                                {typeof entry.priorityScore === "number" ? ` · Score ${entry.priorityScore}` : ""}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {isActive && (
+                                <Badge className="text-xs bg-emerald-500/15 text-emerald-700 border-emerald-500/30">Em atendimento</Badge>
+                              )}
+                              {change === "up" && <ArrowUp className="h-3.5 w-3.5 text-emerald-500" />}
+                              {change === "down" && <ArrowDown className="h-3.5 w-3.5 text-red-500" />}
+                              {change === "new" && <Badge variant="outline" className="text-xs border-sky-500/30 text-sky-600">Novo</Badge>}
+                              {change === "same" && <Minus className="h-3.5 w-3.5 text-muted-foreground/40" />}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---- Route Detail Modal ----
+
+function RouteDetailModal({
+  route,
+  onClose,
+  onAssign,
+  onRelease,
+  isTelegramRequested,
+  isTelegramApproved,
+  isReleasedToBot,
+}: {
+  route: Route | null
+  onClose: () => void
+  onAssign: (route: Route) => void
+  onRelease: (route: Route) => void
+  isTelegramRequested: (r: Route) => boolean
+  isTelegramApproved: (r: Route) => boolean
+  isReleasedToBot: (r: Route) => boolean
+}) {
+  if (!route) return null
+  const isTgReq = isTelegramRequested(route)
+  const meta = getStatusMeta(route, isTgReq)
+
+  return (
+    <Dialog open={!!route} onOpenChange={(v) => { if (!v) onClose() }}>
+      <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <RouteIcon className="h-4 w-4 text-muted-foreground" />
+            {route.atId || route.id}
+          </DialogTitle>
+          <DialogDescription className="flex flex-wrap gap-2 pt-1">
+            <Badge variant="outline" className={`${meta.badgeClass} px-2.5 py-1`}>{meta.label}</Badge>
+            {route.noShow && <Badge variant="outline" className="border-red-500/40 bg-red-500/15 text-red-700 px-2.5 py-1">No-Show</Badge>}
+            {isReleasedToBot(route) && <Badge variant="outline" className="border-sky-500/40 bg-sky-500/15 text-sky-700 text-xs"><Bot className="mr-1 h-3 w-3" />Bot</Badge>}
+            {isTelegramApproved(route) && <Badge variant="outline" className="border-violet-500/40 bg-violet-500/15 text-violet-700 text-xs">Aprovado</Badge>}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+            <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+              <RouteIcon className="h-3 w-3" /> Rota
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <DetailField label="Data" value={route.routeDate} />
+              <DetailField label="Turno" value={route.shift} />
+              <DetailField label="Cidade" value={route.cidade} />
+              <DetailField label="Bairro" value={route.bairro} />
+              <DetailField label="Gaiola" value={route.gaiola} />
+              <DetailField label="Veiculo" value={route.requiredVehicleType} />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+            <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+              <Package className="h-3 w-3" /> Operacao
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <DetailField label="KM" value={route.km} />
+              <DetailField label="SPR" value={route.spr} />
+              <DetailField label="Volume" value={route.volume} />
+              <DetailField label="GG" value={route.gg} />
+              <DetailField label="Cluster" value={route.cluster} />
+              <DetailField label="DS Sugerido" value={route.suggestionDriverDs} />
+            </div>
+          </div>
+
+          {route.driverId && (
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+              <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                <User className="h-3 w-3" /> Motorista Atual
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <DetailField label="Nome" value={route.driverName} />
+                <DetailField label="ID" value={route.driverId} />
+                <DetailField label="Veiculo" value={route.driverVehicleType} />
+                <DetailField label="Placa" value={route.driverPlate} />
+                <DetailField label="Acuracia" value={route.driverAccuracy} />
+                <DetailField label="Atribuido em" value={formatRequestTimestamp(route.assignedAt)} />
+              </div>
+            </div>
+          )}
+
+          {route.requestedDriverId && (
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+              <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700/70">
+                <Clock className="h-3 w-3" /> Motorista Solicitante
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <DetailField label="Nome" value={route.requestedDriverName} />
+                <DetailField label="ID" value={route.requestedDriverId} />
+                <DetailField label="Origem" value={isTelegramApproved(route) ? "Bot (Aprovado)" : route.assignmentSource} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Fechar</Button>
+          <Button
+            variant="outline"
+            disabled={route.status === "DISPONIVEL" && !isTgReq}
+            onClick={() => { onRelease(route); onClose() }}
+          >
+            Liberar
+          </Button>
+          <Button onClick={() => { onAssign(route); onClose() }}>
+            <UserPlus className="mr-1.5 h-4 w-4" />
+            {isTgReq ? "Aprovar" : "Atribuir"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---- Main Page ----
+
 export default function RoutesPage() {
   const initialFilters = getInitialRouteFilters()
   const [search, setSearch] = useState(initialFilters.search)
@@ -227,7 +511,6 @@ export default function RoutesPage() {
   const [bulkReleaseOpen, setBulkReleaseOpen] = useState(false)
   const [bulkAtInput, setBulkAtInput] = useState("")
   const [isBulkReleasing, setIsBulkReleasing] = useState(false)
-  const [releasingRouteId, setReleasingRouteId] = useState<string | null>(null)
   const [approvingBlockedDriverId, setApprovingBlockedDriverId] = useState<string | null>(null)
   const [rejectingBlockedDriverId, setRejectingBlockedDriverId] = useState<string | null>(null)
   const [approvingRouteRequestId, setApprovingRouteRequestId] = useState<string | null>(null)
@@ -236,6 +519,7 @@ export default function RoutesPage() {
   const [botEnabled, setBotEnabledState] = useState(true)
   const [isTogglingBot, setIsTogglingBot] = useState(false)
   const [isRefreshingRoutes, setIsRefreshingRoutes] = useState(false)
+  const [queueModalOpen, setQueueModalOpen] = useState(false)
 
   const isTelegramRequested = (route: Route) =>
     route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !route.driverId
@@ -256,9 +540,7 @@ export default function RoutesPage() {
       setDrivers(driverData)
       setRouteRequests(requestBoard.routeRequests)
       setBlockedQueueRequests(requestBoard.blockedQueueRequests)
-      setSelectedRoute((current) =>
-        current ? routeData.find((route) => route.id === current.id) || null : null
-      )
+      setSelectedRoute((current) => current ? routeData.find((r) => r.id === current.id) || null : null)
     } catch (error) {
       if (!silent) toast.error(getApiErrorMessage(error, "Nao foi possivel carregar as rotas"))
     } finally {
@@ -284,14 +566,10 @@ export default function RoutesPage() {
     let result = [...routes]
     if (search) {
       const q = search.toLowerCase()
-      result = result.filter(
-        (r) =>
-          r.id.toLowerCase().includes(q) ||
-          r.atId?.toLowerCase().includes(q) ||
-          r.gaiola?.toLowerCase().includes(q) ||
-          r.bairro?.toLowerCase().includes(q) ||
-          r.driverName?.toLowerCase().includes(q) ||
-          r.requestedDriverName?.toLowerCase().includes(q)
+      result = result.filter((r) =>
+        r.id.toLowerCase().includes(q) || r.atId?.toLowerCase().includes(q) ||
+        r.gaiola?.toLowerCase().includes(q) || r.bairro?.toLowerCase().includes(q) ||
+        r.driverName?.toLowerCase().includes(q) || r.requestedDriverName?.toLowerCase().includes(q)
       )
     }
     if (statusFilter.length) {
@@ -324,38 +602,48 @@ export default function RoutesPage() {
     NO_SHOW: routes.filter((r) => r.noShow).length,
   }), [routes])
 
-  const visibleRouteRequests = useMemo(() => {
-    const visibleRouteIds = new Set(filtered.map((route) => route.id))
-    return routeRequests.filter((request) => visibleRouteIds.has(request.routeId))
-  }, [filtered, routeRequests])
+  // Build a map of routeId -> routeRequest for inline actions
+  const routeRequestMap = useMemo(() => {
+    const map = new Map<string, PendingRouteRequest>()
+    routeRequests.forEach((req) => map.set(req.routeId, req))
+    return map
+  }, [routeRequests])
 
   const handleApproveRouteRequest = async (request: PendingRouteRequest) => {
-    const route = routes.find((item) => item.id === request.routeId)
-    if (!route) { toast.error("A rota solicitada nao esta carregada na lista atual"); return }
     setApprovingRouteRequestId(request.routeId)
     try {
       const response = await approveRouteRequestApi(request.routeId)
       if (!response.ok) { toast.error(response.message); return }
-      setRoutes((prev) =>
-        prev.map((item) =>
-          item.id === request.routeId
-            ? { ...item, requestedDriverId: request.requestedDriverId, requestedDriverName: request.requestedDriverName, assignmentSource: "TELEGRAM_BOT" as const, botAvailable: false, status: "APROVADA" as const, driverId: request.requestedDriverId, driverName: request.requestedDriverName, driverVehicleType: request.requestedDriverVehicleType, driverAccuracy: null, driverPlate: null, assignedAt: new Date().toISOString() }
-            : item
-        )
-      )
-      setSelectedRoute((current) =>
-        current?.id === request.routeId
-          ? { ...current, requestedDriverId: request.requestedDriverId, requestedDriverName: request.requestedDriverName, assignmentSource: "TELEGRAM_BOT", botAvailable: false, status: "APROVADA", driverId: request.requestedDriverId, driverName: request.requestedDriverName, driverVehicleType: request.requestedDriverVehicleType, driverAccuracy: null, driverPlate: null, assignedAt: new Date().toISOString() }
-          : current
-      )
+      setRoutes((prev) => prev.map((item) =>
+        item.id === request.routeId
+          ? { ...item, requestedDriverId: request.requestedDriverId, requestedDriverName: request.requestedDriverName, assignmentSource: "TELEGRAM_BOT" as const, botAvailable: false, status: "APROVADA" as const, driverId: request.requestedDriverId, driverName: request.requestedDriverName, driverVehicleType: request.requestedDriverVehicleType, driverAccuracy: null, driverPlate: null, assignedAt: new Date().toISOString() }
+          : item
+      ))
       setRouteRequests((prev) => prev.filter((item) => item.routeId !== request.routeId))
-      setAssignRoute((current) => (current?.id === request.routeId ? null : current))
-      setSelectedDriver((current) => (assignRoute?.id === request.routeId ? "" : current))
-      toast.success(`Solicitacao da rota ${request.atId || request.routeId} aprovada`)
+      toast.success(`Disponibilidade da rota ${request.atId || request.routeId} aprovada`)
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel aprovar a solicitacao da rota"))
+      toast.error(getApiErrorMessage(error, "Nao foi possivel aprovar"))
     } finally {
       setApprovingRouteRequestId(null)
+    }
+  }
+
+  const handleRejectRouteRequest = async (request: PendingRouteRequest) => {
+    setRejectingRouteRequestId(request.routeId)
+    try {
+      const response = await rejectRouteRequestApi(request.routeId)
+      if (!response.ok) { toast.error(response.message); return }
+      setRouteRequests((prev) => prev.filter((item) => item.routeId !== request.routeId))
+      setRoutes((prev) => prev.map((r) =>
+        r.id === request.routeId
+          ? { ...r, requestedDriverId: null, requestedDriverName: null, assignmentSource: "SYNC" as const, botAvailable: true, driverId: null, driverName: null, driverVehicleType: null, driverAccuracy: null, driverPlate: null, status: "DISPONIVEL" as const, assignedAt: null }
+          : r
+      ))
+      toast.success(response.message)
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Nao foi possivel recusar"))
+    } finally {
+      setRejectingRouteRequestId(null)
     }
   }
 
@@ -387,34 +675,6 @@ export default function RoutesPage() {
     }
   }
 
-  const handleRejectRouteRequest = async (request: PendingRouteRequest) => {
-    setRejectingRouteRequestId(request.routeId)
-    try {
-      const response = await rejectRouteRequestApi(request.routeId)
-      if (!response.ok) { toast.error(response.message); return }
-      setRouteRequests((current) => current.filter((item) => item.routeId !== request.routeId))
-      setRoutes((current) =>
-        current.map((route) =>
-          route.id === request.routeId
-            ? { ...route, requestedDriverId: null, requestedDriverName: null, assignmentSource: "SYNC" as const, botAvailable: true, driverId: null, driverName: null, driverVehicleType: null, driverAccuracy: null, driverPlate: null, status: "DISPONIVEL" as const, assignedAt: null }
-            : route
-        )
-      )
-      setSelectedRoute((current) =>
-        current?.id === request.routeId
-          ? { ...current, requestedDriverId: null, requestedDriverName: null, assignmentSource: "SYNC", botAvailable: true, driverId: null, driverName: null, driverVehicleType: null, driverAccuracy: null, driverPlate: null, status: "DISPONIVEL", assignedAt: null }
-          : current
-      )
-      setAssignRoute((current) => (current?.id === request.routeId ? null : current))
-      setSelectedDriver((current) => (assignRoute?.id === request.routeId ? "" : current))
-      toast.success(response.message)
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel recusar a solicitacao da rota"))
-    } finally {
-      setRejectingRouteRequestId(null)
-    }
-  }
-
   const handleAssign = async () => {
     if (!assignRoute) return
     const resolvedDriverId = selectedDriver || (isTelegramRequested(assignRoute) ? assignRoute.requestedDriverId || "" : "")
@@ -424,50 +684,17 @@ export default function RoutesPage() {
     try {
       const response = await assignRouteRequest(assignRoute.id, resolvedDriverId)
       if (!response.ok) { toast.error(response.message); return }
-      setRoutes((prev) =>
-        prev.map((r) =>
-          r.id === assignRoute.id
-            ? { ...r, requestedDriverId: assignRoute.requestedDriverId ? driver.id : null, requestedDriverName: assignRoute.requestedDriverId ? driver.name : null, assignmentSource: assignRoute.requestedDriverId ? "TELEGRAM_BOT" as const : "MANUAL" as const, botAvailable: false, status: assignRoute.requestedDriverId ? "APROVADA" as const : "ATRIBUIDA" as const, driverId: driver.id, driverName: driver.name, driverVehicleType: driver.vehicleType, driverAccuracy: null, driverPlate: null, assignedAt: new Date().toISOString() }
-            : r
-        )
-      )
-      setSelectedRoute((prev) =>
-        prev?.id === assignRoute.id
-          ? { ...prev, requestedDriverId: assignRoute.requestedDriverId ? driver.id : null, requestedDriverName: assignRoute.requestedDriverId ? driver.name : null, assignmentSource: assignRoute.requestedDriverId ? "TELEGRAM_BOT" : "MANUAL", botAvailable: false, status: assignRoute.requestedDriverId ? "APROVADA" : "ATRIBUIDA", driverId: driver.id, driverName: driver.name, driverVehicleType: driver.vehicleType, driverAccuracy: null, driverPlate: null, assignedAt: new Date().toISOString() }
-          : prev
-      )
+      setRoutes((prev) => prev.map((r) =>
+        r.id === assignRoute.id
+          ? { ...r, requestedDriverId: assignRoute.requestedDriverId ? driver.id : null, requestedDriverName: assignRoute.requestedDriverId ? driver.name : null, assignmentSource: assignRoute.requestedDriverId ? "TELEGRAM_BOT" as const : "MANUAL" as const, botAvailable: false, status: assignRoute.requestedDriverId ? "APROVADA" as const : "ATRIBUIDA" as const, driverId: driver.id, driverName: driver.name, driverVehicleType: driver.vehicleType, driverAccuracy: null, driverPlate: null, assignedAt: new Date().toISOString() }
+          : r
+      ))
       setRouteRequests((prev) => prev.filter((item) => item.routeId !== assignRoute.id))
-      toast.success(
-        isTelegramRequested(assignRoute)
-          ? `Solicitacao da rota ${assignRoute.atId || assignRoute.id} aprovada para ${driver.name}`
-          : `Rota ${assignRoute.atId || assignRoute.id} atribuida a ${driver.name}`
-      )
+      toast.success(isTelegramRequested(assignRoute) ? `Disponibilidade aprovada para ${driver.name}` : `Rota ${assignRoute.atId || assignRoute.id} atribuida a ${driver.name}`)
       setAssignRoute(null)
       setSelectedDriver("")
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel atribuir a rota"))
-    }
-  }
-
-  const handleMarkNoShow = async (route: Route, makeAvailable = false) => {
-    try {
-      const response = await markRouteNoShow(route.id, makeAvailable)
-      if (!response.ok) { toast.error(response.message); return }
-      setRoutes((prev) =>
-        prev.map((r) =>
-          r.id === route.id
-            ? { ...r, noShow: true, status: makeAvailable ? "DISPONIVEL" as const : r.status, requestedDriverId: makeAvailable ? null : r.requestedDriverId, driverId: makeAvailable ? null : r.driverId, driverName: makeAvailable ? null : r.driverName, driverVehicleType: makeAvailable ? null : r.driverVehicleType, assignedAt: makeAvailable ? null : r.assignedAt }
-            : r
-        )
-      )
-      setSelectedRoute((prev) =>
-        prev?.id === route.id
-          ? { ...prev, noShow: true, status: makeAvailable ? "DISPONIVEL" : prev.status, requestedDriverId: makeAvailable ? null : prev.requestedDriverId, driverId: makeAvailable ? null : prev.driverId, driverName: makeAvailable ? null : prev.driverName, driverVehicleType: makeAvailable ? null : prev.driverVehicleType, assignedAt: makeAvailable ? null : prev.assignedAt }
-          : prev
-      )
-      toast.success(makeAvailable ? `Rota ${route.atId || route.id} liberada como no-show` : `Rota ${route.atId || route.id} marcada como no-show`)
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel marcar a rota como no-show"))
     }
   }
 
@@ -478,11 +705,10 @@ export default function RoutesPage() {
       if (!response.ok) { toast.error(response.message); return }
       const released = { status: "DISPONIVEL" as const, requestedDriverId: null, requestedDriverName: null, assignmentSource: "SYNC" as const, driverId: null, driverName: null, driverVehicleType: null, driverAccuracy: null, driverPlate: null, assignedAt: null, botAvailable: true }
       setRoutes((prev) => prev.map((r) => r.id === route.id ? { ...r, ...released } : r))
-      setSelectedRoute((prev) => prev?.id === route.id ? { ...prev, ...released } : prev)
       setRouteRequests((prev) => prev.filter((item) => item.routeId !== route.id))
-      toast.success(wasRequested ? `Solicitacao da rota ${route.atId || route.id} removida` : `Rota ${route.atId || route.id} liberada para o bot`)
+      toast.success(wasRequested ? `Disponibilidade da rota ${route.atId || route.id} recusada` : `Rota ${route.atId || route.id} liberada para o bot`)
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Nao foi possivel liberar a rota para o bot"))
+      toast.error(getApiErrorMessage(error, "Nao foi possivel liberar a rota"))
     }
   }
 
@@ -518,19 +744,13 @@ export default function RoutesPage() {
 
   const handleCopyRelation = async () => {
     try {
-      const lines = filtered
-        .filter((route) => route.driverId && (route.atId || route.id))
-        .map((route) => `${route.driverId};${route.atId || route.id}`)
+      const lines = filtered.filter((r) => r.driverId && (r.atId || r.id)).map((r) => `${r.driverId};${r.atId || r.id}`)
       if (!lines.length) { toast.error("Nenhuma rota com motorista atribuído na lista atual"); return }
       await navigator.clipboard.writeText(lines.join("\n"))
       toast.success(`${lines.length} rota(s) copiadas para a área de transferência`)
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Nao foi possivel copiar a relação"))
     }
-  }
-
-  const toggleRouteSelection = (route: Route) => {
-    setSelectedRoute((current) => (current?.id === route.id ? null : route))
   }
 
   const handleToggleBot = async (enabled: boolean) => {
@@ -589,6 +809,10 @@ export default function RoutesPage() {
                 Bot {botEnabled ? "Ativo" : "Inativo"}
               </Label>
             </div>
+            <Button variant="outline" size="sm" onClick={() => setQueueModalOpen(true)}>
+              <Eye className="mr-1.5 h-4 w-4" />
+              Ver Fila
+            </Button>
             <Button variant="default" onClick={handleRefreshRoutes} disabled={isRefreshingRoutes} size="sm">
               <RefreshCw className={`mr-1.5 h-4 w-4 ${isRefreshingRoutes ? "animate-spin" : ""}`} />
               {isRefreshingRoutes ? "Atualizando..." : "Atualizar rotas"}
@@ -612,17 +836,8 @@ export default function RoutesPage() {
               <button
                 key={card.label}
                 type="button"
-                onClick={() => {
-                  if (!card.filterKey) return
-                  setStatusFilter((current) => toggleFilterValue(current, card.filterKey!))
-                }}
-                className={`rounded-xl border p-3 text-left transition-all hover:shadow-sm ${
-                  isActive
-                    ? "ring-2 ring-primary/40 border-primary/30 bg-primary/5"
-                    : card.filterKey
-                    ? "border-border bg-card hover:border-border/80 cursor-pointer"
-                    : "border-border bg-card cursor-default"
-                }`}
+                onClick={() => { if (!card.filterKey) return; setStatusFilter((c) => toggleFilterValue(c, card.filterKey!)) }}
+                className={`rounded-xl border p-3 text-left transition-all hover:shadow-sm ${isActive ? "ring-2 ring-primary/40 border-primary/30 bg-primary/5" : card.filterKey ? "border-border bg-card hover:border-border/80 cursor-pointer" : "border-border bg-card cursor-default"}`}
               >
                 <div className={`mb-2 inline-flex h-8 w-8 items-center justify-center rounded-lg ${card.bg}`}>
                   <card.icon className={`h-4 w-4 ${card.iconColor}`} />
@@ -640,30 +855,19 @@ export default function RoutesPage() {
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative min-w-0 flex-1 basis-full lg:basis-[260px]">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar por ID, AT, gaiola, bairro ou motorista..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9 h-9"
-                />
+                <Input placeholder="Buscar por ID, AT, gaiola, bairro ou motorista..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9 h-9" />
               </div>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" className="h-9 justify-between sm:w-[140px]">
-                    {buildFilterLabel("Status", statusFilter)}
-                    <ChevronDown className="ml-2 h-4 w-4" />
+                    {buildFilterLabel("Status", statusFilter)}<ChevronDown className="ml-2 h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>Status</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {(["NO_BOT", "SOLICITADA", "DISPONIVEL", "APROVADA", "ATRIBUIDA", "BLOQUEADA", "EXPORTADA"] as RouteStatusFilter[]).map((status) => (
-                    <DropdownMenuCheckboxItem
-                      key={status}
-                      checked={statusFilter.includes(status)}
-                      onCheckedChange={() => setStatusFilter((current) => toggleFilterValue(current, status))}
-                    >
-                      {status === "NO_BOT" ? "NO BOT" : status}
+                  <DropdownMenuLabel>Status</DropdownMenuLabel><DropdownMenuSeparator />
+                  {(["NO_BOT", "SOLICITADA", "DISPONIVEL", "APROVADA", "ATRIBUIDA", "BLOQUEADA", "EXPORTADA"] as RouteStatusFilter[]).map((s) => (
+                    <DropdownMenuCheckboxItem key={s} checked={statusFilter.includes(s)} onCheckedChange={() => setStatusFilter((c) => toggleFilterValue(c, s))}>
+                      {s === "NO_BOT" ? "NO BOT" : s}
                     </DropdownMenuCheckboxItem>
                   ))}
                 </DropdownMenuContent>
@@ -671,390 +875,223 @@ export default function RoutesPage() {
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" className="h-9 justify-between sm:w-[140px]">
-                    {buildFilterLabel("Cidades", cityFilter)}
-                    <ChevronDown className="ml-2 h-4 w-4" />
+                    {buildFilterLabel("Cidades", cityFilter)}<ChevronDown className="ml-2 h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>Cidades</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Cidades</DropdownMenuLabel><DropdownMenuSeparator />
                   {cities.map((city) => (
-                    <DropdownMenuCheckboxItem
-                      key={city}
-                      checked={cityFilter.includes(city || "")}
-                      onCheckedChange={() => setCityFilter((current) => toggleFilterValue(current, city || ""))}
-                    >
-                      {city}
-                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem key={city} checked={cityFilter.includes(city || "")} onCheckedChange={() => setCityFilter((c) => toggleFilterValue(c, city || ""))}>{city}</DropdownMenuCheckboxItem>
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" className="h-9 justify-between sm:w-[130px]">
-                    {buildFilterLabel("Veiculos", vehicleFilter)}
-                    <ChevronDown className="ml-2 h-4 w-4" />
+                    {buildFilterLabel("Veiculos", vehicleFilter)}<ChevronDown className="ml-2 h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuLabel>Veiculos</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {vehicles.map((vehicle) => (
-                    <DropdownMenuCheckboxItem
-                      key={vehicle}
-                      checked={vehicleFilter.includes(vehicle || "")}
-                      onCheckedChange={() => setVehicleFilter((current) => toggleFilterValue(current, vehicle || ""))}
-                    >
-                      {vehicle}
-                    </DropdownMenuCheckboxItem>
+                  <DropdownMenuLabel>Veiculos</DropdownMenuLabel><DropdownMenuSeparator />
+                  {vehicles.map((v) => (
+                    <DropdownMenuCheckboxItem key={v} checked={vehicleFilter.includes(v || "")} onCheckedChange={() => setVehicleFilter((c) => toggleFilterValue(c, v || ""))}>{v}</DropdownMenuCheckboxItem>
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
               {(statusFilter.length > 0 || cityFilter.length > 0 || vehicleFilter.length > 0 || search) && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-9 text-muted-foreground hover:text-foreground"
-                  onClick={() => { setSearch(""); setStatusFilter([]); setCityFilter([]); setVehicleFilter([]) }}
-                >
-                  <X className="mr-1.5 h-3.5 w-3.5" />
-                  Limpar
+                <Button variant="ghost" size="sm" className="h-9 text-muted-foreground hover:text-foreground" onClick={() => { setSearch(""); setStatusFilter([]); setCityFilter([]); setVehicleFilter([]) }}>
+                  <X className="mr-1.5 h-3.5 w-3.5" />Limpar
                 </Button>
               )}
             </div>
           </CardContent>
         </Card>
 
-        {/* Pending requests panels - only show when there are items */}
-        {(blockedQueueRequests.length > 0 || visibleRouteRequests.length > 0) && (
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
-              <CardContent className="flex h-[340px] flex-col p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">Solicitacoes de bloqueados</h3>
-                    <p className="text-xs text-muted-foreground">Aguardando aprovacao para entrar na fila</p>
-                  </div>
-                  <Badge variant="outline" className="border-red-500/30 bg-red-500/10 text-red-700">{blockedQueueRequests.length}</Badge>
+        {/* Blocked queue requests */}
+        {blockedQueueRequests.length > 0 && (
+          <Card>
+            <CardContent className="flex h-[300px] flex-col p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Solicitacoes de bloqueados</h3>
+                  <p className="text-xs text-muted-foreground">Aguardando aprovacao para entrar na fila</p>
                 </div>
-                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                  {blockedQueueRequests.length ? (
-                    blockedQueueRequests.map((request) => {
-                      const dsMeta = getDsMeta(request.ds)
-                      const statusMeta = getBlockedQueueStatusMeta(request.status, request.cooldownUntil)
-                      return (
-                        <div key={request.driverId} className="rounded-lg border border-border/60 bg-muted/20 p-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0 space-y-1.5">
-                              <p className="truncate text-sm font-semibold text-foreground">{request.driverName || request.driverId}</p>
-                              <p className="text-xs text-muted-foreground">ID {request.driverId}{request.vehicleType ? ` · ${request.vehicleType}` : ""}</p>
-                              <div className="flex flex-wrap gap-1.5">
-                                <Badge variant="outline" className={`text-xs ${statusMeta.className}`}>{statusMeta.label}</Badge>
-                                <Badge variant="outline" className="text-xs">Score {request.priorityScore.toFixed(0)}</Badge>
-                                <Badge variant="outline" className={`text-xs ${dsMeta.className}`}>DS {dsMeta.valueLabel}</Badge>
-                              </div>
-                              <p className="text-xs text-muted-foreground">{formatRequestTimestamp(request.requestedAt)} · {getBusinessBlockReasonLabel(request.blockReason)}</p>
-                            </div>
-                            <div className="flex shrink-0 flex-col gap-1.5">
-                              <Button size="sm" className="h-7 px-3 text-xs" onClick={() => void handleApproveBlockedQueue(request)} disabled={request.status === "REJECTED" || approvingBlockedDriverId === request.driverId || rejectingBlockedDriverId === request.driverId}>
-                                {approvingBlockedDriverId === request.driverId ? "..." : "Aprovar"}
-                              </Button>
-                              <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => void handleRejectBlockedQueue(request)} disabled={request.status === "REJECTED" || approvingBlockedDriverId === request.driverId || rejectingBlockedDriverId === request.driverId}>
-                                {rejectingBlockedDriverId === request.driverId ? "..." : "Reprovar"}
-                              </Button>
-                            </div>
+                <Badge variant="outline" className="border-red-500/30 bg-red-500/10 text-red-700">{blockedQueueRequests.length}</Badge>
+              </div>
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                {blockedQueueRequests.map((request) => {
+                  const dsMeta = getDsMeta(request.ds)
+                  const statusMeta = getBlockedQueueStatusMeta(request.status, request.cooldownUntil)
+                  return (
+                    <div key={request.driverId} className="rounded-lg border border-border/60 bg-muted/20 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1.5">
+                          <p className="truncate text-sm font-semibold text-foreground">{request.driverName || request.driverId}</p>
+                          <p className="text-xs text-muted-foreground">ID {request.driverId}{request.vehicleType ? ` · ${request.vehicleType}` : ""}</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            <Badge variant="outline" className={`text-xs ${statusMeta.className}`}>{statusMeta.label}</Badge>
+                            <Badge variant="outline" className="text-xs">Score {request.priorityScore.toFixed(0)}</Badge>
+                            <Badge variant="outline" className={`text-xs ${dsMeta.className}`}>DS {dsMeta.valueLabel}</Badge>
                           </div>
+                          <p className="text-xs text-muted-foreground">{formatRequestTimestamp(request.requestedAt)} · {getBusinessBlockReasonLabel(request.blockReason)}</p>
                         </div>
-                      )
-                    })
-                  ) : (
-                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Nenhuma solicitacao pendente.</div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="flex h-[340px] flex-col p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">Disponibilidades pendentes</h3>
-                    <p className="text-xs text-muted-foreground">Aguardando analise e atribuicao</p>
-                  </div>
-                  <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-700">{visibleRouteRequests.length}</Badge>
-                </div>
-                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                  {visibleRouteRequests.length ? (
-                    visibleRouteRequests.map((request) => {
-                      const dsMeta = getDsMeta(request.requestedDriverDs)
-                      return (
-                        <div key={`${request.routeId}-${request.requestedDriverId || "sem-motorista"}`} className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 p-3">
-                          <div className="min-w-0 space-y-1.5">
-                            <p className="truncate text-sm font-semibold text-foreground">AT {request.atId}</p>
-                            <p className="text-xs text-muted-foreground">{request.requestedDriverId || "-"} · {request.requestedDriverName || "Sem motorista"}{request.requestedDriverVehicleType ? ` · ${request.requestedDriverVehicleType}` : ""}</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              <Badge variant="outline" className="text-xs">Score {request.requestedDriverPriorityScore.toFixed(0)}</Badge>
-                              <Badge variant="outline" className={`text-xs ${dsMeta.className}`}>DS {dsMeta.valueLabel}</Badge>
-                            </div>
-                            <p className="text-xs text-muted-foreground">{[request.routeDate, request.shift, request.cidade, request.bairro].filter(Boolean).join(" · ")}</p>
-                            <p className="text-xs text-muted-foreground">{formatRequestTimestamp(request.requestedAt)}</p>
-                          </div>
-                          <div className="flex shrink-0 flex-col gap-1.5">
-                            <Button size="sm" className="h-7 px-3 text-xs" onClick={() => void handleApproveRouteRequest(request)} disabled={approvingRouteRequestId === request.routeId || rejectingRouteRequestId === request.routeId}>
-                              {approvingRouteRequestId === request.routeId ? "..." : "Aprovar"}
-                            </Button>
-                            <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => void handleRejectRouteRequest(request)} disabled={approvingRouteRequestId === request.routeId || rejectingRouteRequestId === request.routeId}>
-                              {rejectingRouteRequestId === request.routeId ? "..." : "Recusar"}
-                            </Button>
-                          </div>
+                        <div className="flex shrink-0 flex-col gap-1.5">
+                          <Button size="sm" className="h-7 px-3 text-xs" onClick={() => void handleApproveBlockedQueue(request)} disabled={request.status === "REJECTED" || approvingBlockedDriverId === request.driverId || rejectingBlockedDriverId === request.driverId}>
+                            {approvingBlockedDriverId === request.driverId ? "..." : "Aprovar"}
+                          </Button>
+                          <Button size="sm" variant="outline" className="h-7 px-3 text-xs" onClick={() => void handleRejectBlockedQueue(request)} disabled={request.status === "REJECTED" || approvingBlockedDriverId === request.driverId || rejectingBlockedDriverId === request.driverId}>
+                            {rejectingBlockedDriverId === request.driverId ? "..." : "Reprovar"}
+                          </Button>
                         </div>
-                      )
-                    })
-                  ) : (
-                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">Nenhuma disponibilidade pendente para os filtros atuais.</div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
         )}
 
-        {/* Table + Detail panel */}
+        {/* Routes table */}
         {isLoading ? (
           <div className="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">Carregando rotas...</div>
         ) : (
-          <div className={`grid min-w-0 gap-4 ${selectedRoute ? "lg:grid-cols-[minmax(0,1fr)_380px]" : ""}`}>
-            <div className="min-w-0 w-full max-w-full overflow-x-auto rounded-xl border bg-card">
-              <Table className="min-w-[720px]">
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent border-b border-border/60">
-                    <TableHead className="w-[150px] text-xs font-semibold">Motorista</TableHead>
-                    <TableHead className="w-[130px] text-xs font-semibold">AT</TableHead>
-                    <TableHead className="w-[110px] text-xs font-semibold">Gaiola</TableHead>
-                    <TableHead className="w-[120px] text-xs font-semibold">Cluster</TableHead>
-                    <TableHead className="w-[120px] text-xs font-semibold">Status</TableHead>
-                    <TableHead className="w-[130px] text-xs font-semibold">Cidade</TableHead>
-                    <TableHead className="w-[160px] text-xs font-semibold">Solicitante</TableHead>
-                    <TableHead className="w-[160px] text-xs font-semibold">Acoes</TableHead>
+          <div className="min-w-0 w-full max-w-full overflow-x-auto rounded-xl border bg-card">
+            <Table className="min-w-[860px]">
+              <TableHeader>
+                <TableRow className="hover:bg-transparent border-b border-border/60">
+                  <TableHead className="w-[150px] text-xs font-semibold">Motorista</TableHead>
+                  <TableHead className="w-[120px] text-xs font-semibold">AT</TableHead>
+                  <TableHead className="w-[100px] text-xs font-semibold">Gaiola</TableHead>
+                  <TableHead className="w-[110px] text-xs font-semibold">Status</TableHead>
+                  <TableHead className="w-[120px] text-xs font-semibold">Cidade</TableHead>
+                  <TableHead className="w-[160px] text-xs font-semibold">Solicitante</TableHead>
+                  <TableHead className="text-xs font-semibold">Acoes</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                      Nenhuma rota encontrada para os filtros aplicados.
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
-                        Nenhuma rota encontrada para os filtros aplicados.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    filtered.map((route) => {
-                      const isSelected = selectedRoute?.id === route.id
-                      const isTgReq = isTelegramRequested(route)
-                      const meta = getStatusMeta(route, isTgReq)
-                      return (
-                        <TableRow
-                          key={route.id}
-                          onClick={() => toggleRouteSelection(route)}
-                          className={`cursor-pointer transition-colors ${meta.rowAccent} ${isSelected ? "ring-1 ring-inset ring-primary/40 bg-primary/5" : "hover:bg-muted/40"}`}
-                        >
-                          <TableCell className="py-2.5">
-                            <div className="flex items-center gap-2">
-                              <div className={`h-2 w-2 shrink-0 rounded-full ${meta.dotColor}`} />
-                              <span className="truncate font-mono text-xs text-card-foreground">{route.driverId || <span className="text-muted-foreground">—</span>}</span>
-                            </div>
-                          </TableCell>
-                          <TableCell className="py-2.5 font-mono text-xs text-muted-foreground">{route.atId || route.id}</TableCell>
-                          <TableCell className="py-2.5 text-sm text-card-foreground">{route.gaiola || <span className="text-muted-foreground">—</span>}</TableCell>
-                          <TableCell className="py-2.5 text-sm text-card-foreground">{route.cluster || <span className="text-muted-foreground">—</span>}</TableCell>
-                          <TableCell className="py-2.5">
-                            <Badge variant="outline" className={`text-xs font-medium ${meta.badgeClass}`}>
-                              {meta.label}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="py-2.5 text-sm text-card-foreground">{route.cidade || <span className="text-muted-foreground">—</span>}</TableCell>
-                          <TableCell className="py-2.5 text-sm text-card-foreground truncate">{route.requestedDriverName || <span className="text-muted-foreground">—</span>}</TableCell>
-                          <TableCell className="py-2.5">
-                            <div className="flex gap-1.5">
+                ) : (
+                  filtered.map((route) => {
+                    const isTgReq = isTelegramRequested(route)
+                    const meta = getStatusMeta(route, isTgReq)
+                    const pendingRequest = routeRequestMap.get(route.id)
+                    const isApprovingThis = approvingRouteRequestId === route.id
+                    const isRejectingThis = rejectingRouteRequestId === route.id
+                    const isBusyThis = isApprovingThis || isRejectingThis
+
+                    return (
+                      <TableRow
+                        key={route.id}
+                        onClick={() => setSelectedRoute(route)}
+                        className={`cursor-pointer transition-colors ${meta.rowAccent} hover:bg-muted/40`}
+                      >
+                        <TableCell className="py-2.5">
+                          <div className="flex items-center gap-2">
+                            <div className={`h-2 w-2 shrink-0 rounded-full ${meta.dotColor}`} />
+                            <span className="truncate font-mono text-xs text-card-foreground">{route.driverId || <span className="text-muted-foreground">—</span>}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="py-2.5 font-mono text-xs text-muted-foreground">{route.atId || route.id}</TableCell>
+                        <TableCell className="py-2.5 text-sm text-card-foreground">{route.gaiola || <span className="text-muted-foreground">—</span>}</TableCell>
+                        <TableCell className="py-2.5">
+                          <Badge variant="outline" className={`text-xs font-medium ${meta.badgeClass}`}>{meta.label}</Badge>
+                        </TableCell>
+                        <TableCell className="py-2.5 text-sm text-card-foreground">{route.cidade || <span className="text-muted-foreground">—</span>}</TableCell>
+                        <TableCell className="py-2.5 text-sm text-card-foreground truncate">{route.requestedDriverName || <span className="text-muted-foreground">—</span>}</TableCell>
+                        <TableCell className="py-2.5" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-wrap gap-1.5">
+                            {/* Inline approve/reject for telegram-requested routes */}
+                            {isTgReq && pendingRequest ? (
+                              <>
+                                <Button
+                                  size="sm"
+                                  className="h-7 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700"
+                                  disabled={isBusyThis}
+                                  onClick={() => void handleApproveRouteRequest(pendingRequest)}
+                                >
+                                  <Check className="mr-1 h-3.5 w-3.5" />
+                                  {isApprovingThis ? "..." : "Aprovar"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2.5 text-xs border-red-500/40 text-red-600 hover:bg-red-500/10"
+                                  disabled={isBusyThis}
+                                  onClick={() => void handleRejectRouteRequest(pendingRequest)}
+                                >
+                                  <X className="mr-1 h-3.5 w-3.5" />
+                                  {isRejectingThis ? "..." : "Recusar"}
+                                </Button>
+                              </>
+                            ) : (
                               <Button
-                                variant={isTgReq ? "default" : "outline"}
+                                variant="outline"
                                 size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
+                                className="h-7 px-2.5 text-xs"
+                                onClick={() => {
                                   setAssignRoute(route)
                                   setSelectedDriver(isTgReq ? route.requestedDriverId || "" : "")
                                   setAssignDriverSearch("")
                                 }}
-                                className="h-7 px-2.5 text-xs"
                               >
                                 <UserPlus className="mr-1 h-3.5 w-3.5" />
-                                {isTgReq ? "Aprovar" : "Atribuir"}
+                                Atribuir
                               </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => { e.stopPropagation(); void handleMakeAvailable(route) }}
-                                disabled={route.status === "DISPONIVEL" && !isTgReq}
-                                className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
-                              >
-                                Liberar
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-
-            {selectedRoute ? (
-              <Card className="h-fit">
-                <CardContent className="p-4">
-                  <div className="mb-4 flex items-start justify-between gap-2">
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground">Detalhes da Rota</h3>
-                      <p className="font-mono text-xs text-muted-foreground">{selectedRoute.atId || selectedRoute.id}</p>
-                    </div>
-                    <button type="button" onClick={() => setSelectedRoute(null)} className="text-muted-foreground hover:text-foreground transition-colors mt-0.5">
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-
-                  {(() => {
-                    const isTgReq = isTelegramRequested(selectedRoute)
-                    const meta = getStatusMeta(selectedRoute, isTgReq)
-                    return (
-                      <div className="mb-4 flex flex-wrap items-center gap-2">
-                        <Badge variant="outline" className={`${meta.badgeClass} px-2.5 py-1`}>{meta.label}</Badge>
-                        {selectedRoute.noShow && (
-                          <Badge variant="outline" className="border-red-500/40 bg-red-500/15 text-red-700 px-2.5 py-1">No-Show</Badge>
-                        )}
-                        {isReleasedToBot(selectedRoute) && (
-                          <Badge variant="outline" className="border-sky-500/40 bg-sky-500/15 text-sky-700 text-xs">
-                            <Bot className="mr-1 h-3 w-3" />Bot
-                          </Badge>
-                        )}
-                        {isTelegramApproved(selectedRoute) && (
-                          <Badge variant="outline" className="border-violet-500/40 bg-violet-500/15 text-violet-700 text-xs">Aprovado</Badge>
-                        )}
-                      </div>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+                              disabled={route.status === "DISPONIVEL" && !isTgReq}
+                              onClick={() => void handleMakeAvailable(route)}
+                            >
+                              Liberar
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
                     )
-                  })()}
-
-                  <div className="space-y-3">
-                    <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-                      <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                        <RouteIcon className="h-3 w-3" /> Rota
-                      </p>
-                      <div className="grid grid-cols-2 gap-3">
-                        <DetailField label="Data" value={selectedRoute.routeDate} />
-                        <DetailField label="Turno" value={selectedRoute.shift} />
-                        <DetailField label="Cidade" value={selectedRoute.cidade} />
-                        <DetailField label="Bairro" value={selectedRoute.bairro} />
-                        <DetailField label="Gaiola" value={selectedRoute.gaiola} />
-                        <DetailField label="Veiculo" value={selectedRoute.requiredVehicleType} />
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-                      <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                        <Package className="h-3 w-3" /> Operacao
-                      </p>
-                      <div className="grid grid-cols-2 gap-3">
-                        <DetailField label="KM" value={selectedRoute.km} />
-                        <DetailField label="SPR" value={selectedRoute.spr} />
-                        <DetailField label="Volume" value={selectedRoute.volume} />
-                        <DetailField label="GG" value={selectedRoute.gg} />
-                        <DetailField label="Cluster" value={selectedRoute.cluster} />
-                        <DetailField label="DS Sugerido" value={selectedRoute.suggestionDriverDs} />
-                      </div>
-                    </div>
-
-                    {selectedRoute.driverId && (
-                      <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
-                        <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                          <User className="h-3 w-3" /> Motorista Atual
-                        </p>
-                        <div className="grid grid-cols-2 gap-3">
-                          <DetailField label="Nome" value={selectedRoute.driverName} />
-                          <DetailField label="ID" value={selectedRoute.driverId} />
-                          <DetailField label="Veiculo" value={selectedRoute.driverVehicleType} />
-                          <DetailField label="Placa" value={selectedRoute.driverPlate} />
-                          <DetailField label="Acuracia" value={selectedRoute.driverAccuracy} />
-                          <DetailField label="Atribuido em" value={formatRequestTimestamp(selectedRoute.assignedAt)} />
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedRoute.requestedDriverId && (
-                      <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                        <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700/70">
-                          <Clock className="h-3 w-3" /> Motorista Solicitante
-                        </p>
-                        <div className="grid grid-cols-2 gap-3">
-                          <DetailField label="Nome" value={selectedRoute.requestedDriverName} />
-                          <DetailField label="ID" value={selectedRoute.requestedDriverId} />
-                          <DetailField label="Origem" value={isTelegramApproved(selectedRoute) ? "Bot (Aprovado)" : selectedRoute.assignmentSource} />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-4 flex gap-2 border-t pt-4">
-                    <Button
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => {
-                        setAssignRoute(selectedRoute)
-                        setSelectedDriver(isTelegramRequested(selectedRoute) ? selectedRoute.requestedDriverId || "" : "")
-                        setAssignDriverSearch("")
-                      }}
-                    >
-                      <UserPlus className="mr-1.5 h-4 w-4" />
-                      {isTelegramRequested(selectedRoute) ? "Aprovar" : "Atribuir"}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="flex-1"
-                      disabled={selectedRoute.status === "DISPONIVEL" && !isTelegramRequested(selectedRoute)}
-                      onClick={() => void handleMakeAvailable(selectedRoute)}
-                    >
-                      Liberar
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
+                  })
+                )}
+              </TableBody>
+            </Table>
           </div>
         )}
       </div>
 
-      {/* Assign Dialog */}
-      <Dialog
-        open={!!assignRoute}
-        onOpenChange={() => {
-          setAssignRoute(null)
-          setSelectedDriver("")
+      {/* Route Detail Modal */}
+      <RouteDetailModal
+        route={selectedRoute}
+        onClose={() => setSelectedRoute(null)}
+        onAssign={(route) => {
+          setAssignRoute(route)
+          setSelectedDriver(isTelegramRequested(route) ? route.requestedDriverId || "" : "")
           setAssignDriverSearch("")
         }}
-      >
+        onRelease={handleMakeAvailable}
+        isTelegramRequested={isTelegramRequested}
+        isTelegramApproved={isTelegramApproved}
+        isReleasedToBot={isReleasedToBot}
+      />
+
+      {/* Queue Modal */}
+      <QueueModal open={queueModalOpen} onClose={() => setQueueModalOpen(false)} />
+
+      {/* Assign Dialog */}
+      <Dialog open={!!assignRoute} onOpenChange={() => { setAssignRoute(null); setSelectedDriver(""); setAssignDriverSearch("") }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>
-              {assignRoute && isTelegramRequested(assignRoute) ? "Aprovar Disponibilidade" : "Atribuir Rota Manualmente"}
-            </DialogTitle>
-            <DialogDescription>
-              Rota {assignRoute?.atId || assignRoute?.id} — {assignRoute?.cidade}, {assignRoute?.bairro}
-            </DialogDescription>
+            <DialogTitle>{assignRoute && isTelegramRequested(assignRoute) ? "Aprovar Disponibilidade" : "Atribuir Rota Manualmente"}</DialogTitle>
+            <DialogDescription>Rota {assignRoute?.atId || assignRoute?.id} — {assignRoute?.cidade}, {assignRoute?.bairro}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-4">
-            <Input
-              placeholder="Pesquisar motorista por ID ou nome..."
-              value={assignDriverSearch}
-              onChange={(e) => setAssignDriverSearch(e.target.value)}
-              autoFocus
-            />
+            <Input placeholder="Pesquisar motorista por ID ou nome..." value={assignDriverSearch} onChange={(e) => setAssignDriverSearch(e.target.value)} autoFocus />
             <div className="max-h-72 space-y-1 overflow-auto rounded-lg border p-2">
               {assignableDrivers.length ? (
                 assignableDrivers.map((d) => (
@@ -1080,37 +1117,22 @@ export default function RoutesPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssignRoute(null)}>Cancelar</Button>
-            <Button
-              onClick={handleAssign}
-              disabled={!selectedDriver && !(assignRoute && isTelegramRequested(assignRoute) && assignRoute.requestedDriverId)}
-            >
+            <Button onClick={handleAssign} disabled={!selectedDriver && !(assignRoute && isTelegramRequested(assignRoute) && assignRoute.requestedDriverId)}>
               {assignRoute && isTelegramRequested(assignRoute) ? "Aprovar" : "Concluir"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={bulkReleaseOpen}
-        onOpenChange={(open) => {
-          setBulkReleaseOpen(open)
-          if (!open) setBulkAtInput("")
-        }}
-      >
+      {/* Bulk release dialog */}
+      <Dialog open={bulkReleaseOpen} onOpenChange={(open) => { setBulkReleaseOpen(open); if (!open) setBulkAtInput("") }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Liberar Lista de ATs no Bot</DialogTitle>
-            <DialogDescription>
-              Cole uma lista de ATs separados por quebra de linha, espaco ou virgula.
-            </DialogDescription>
+            <DialogDescription>Cole uma lista de ATs separados por quebra de linha, espaco ou virgula.</DialogDescription>
           </DialogHeader>
           <div className="py-4">
-            <Textarea
-              placeholder={"AT12345\nAT67890\nAT24680"}
-              value={bulkAtInput}
-              onChange={(e) => setBulkAtInput(e.target.value)}
-              className="min-h-40"
-            />
+            <Textarea placeholder={"AT12345\nAT67890\nAT24680"} value={bulkAtInput} onChange={(e) => setBulkAtInput(e.target.value)} className="min-h-40" />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setBulkReleaseOpen(false)}>Cancelar</Button>

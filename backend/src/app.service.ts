@@ -5473,18 +5473,20 @@ export class AppService {
           redis.lrange(`telegram:queue:list:${group}`, 0, -1),
           redis.get(`telegram:queue:active:${group}`),
         ]);
+        const filteredWaitingIds = activeChatId ? waitingIds.filter((id) => id !== activeChatId) : waitingIds;
         const [active, waiting] = await Promise.all([
           activeChatId ? resolveEntry(activeChatId) : Promise.resolve(null),
-          Promise.all(waitingIds.map(resolveEntry)),
+          Promise.all(filteredWaitingIds.map(resolveEntry)),
         ]);
         return { city, group, active, waiting };
       }),
     );
 
     // Fila moto
+    const motoWaitingFiltered = motoActiveChatId ? motoWaiting.filter((id) => id !== motoActiveChatId) : motoWaiting;
     const [motoActive, motoWaitingEntries] = await Promise.all([
       motoActiveChatId ? resolveEntry(motoActiveChatId) : Promise.resolve(null),
-      Promise.all(motoWaiting.map(resolveEntry)),
+      Promise.all(motoWaitingFiltered.map(resolveEntry)),
     ]);
 
     const allChatIds = new Set<string>();

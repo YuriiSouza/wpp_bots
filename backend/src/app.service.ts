@@ -4019,20 +4019,6 @@ export class AppService {
       },
     });
 
-    const driverForNotice = await this.prisma.driver.findUnique({
-      where: { id: String(route.requestedDriverId).trim() },
-      select: { telegramChatId: true },
-    });
-    const numericChatId = Number(driverForNotice?.telegramChatId);
-    if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
-      const atLabel = route.atId || route.id;
-      await this.telegram.sendMessage(
-        numericChatId,
-        `✅ Sua solicitação da rota ${atLabel} foi aprovada!\n\n` +
-          `A confirmação chegará no aplicativo. Você só vai carregar se aceitar no SPX Motorista Parceiro ou se o analista autorizar pelo WhatsApp.`,
-      );
-    }
-
     await Promise.all([
       this.invalidateExecutiveDashboardCache(),
       this.invalidateNoShowDashboardCache(),
@@ -4110,20 +4096,6 @@ export class AppService {
         status: RouteStatus.DISPONIVEL,
       },
     });
-
-    const driverForNotice = await this.prisma.driver.findUnique({
-      where: { id: String(route.requestedDriverId).trim() },
-      select: { telegramChatId: true },
-    });
-    const numericChatId = Number(driverForNotice?.telegramChatId);
-    if (Number.isSafeInteger(numericChatId) && numericChatId > 0) {
-      const atLabel = route.atId || route.id;
-      await this.telegram.sendMessage(
-        numericChatId,
-        `❌ Sua solicitação da rota ${atLabel} não foi aprovada.\n\n` +
-          `Para saber mais, entre em contato com o analista.`,
-      );
-    }
 
     await Promise.all([
       this.invalidateRoutesCache(),

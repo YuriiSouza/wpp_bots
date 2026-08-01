@@ -24,6 +24,16 @@ export class PublicController {
     });
     if (!driver) return { ok: false, message: 'Motorista não encontrado.' };
 
+    // Verifica bloqueio
+    const blocklist = await this.prisma.driverBlocklist.findFirst({
+      where: { driverId, status: 'BLOCKED' },
+      select: { reason: true },
+    });
+    if (blocklist) {
+      const motivo = blocklist.reason ? ` Motivo: ${blocklist.reason}.` : '';
+      return { ok: false, message: `Você está bloqueado e não pode registrar disponibilidade no momento.${motivo}` };
+    }
+
     // Verifica rota já atribuída
     const activeRoute = await (this.prisma as any).route.findFirst({
       where: { driverId, status: { in: ['ATRIBUIDA', 'APROVADA'] } },

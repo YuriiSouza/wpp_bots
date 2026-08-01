@@ -30,10 +30,11 @@ model Driver {
   updatedAt      DateTime @updatedAt
   createdAt      DateTime @default(now())
 
-  hub            Hub?                 @relation(fields: [hubId], references: [id])
-  routes         Route[]              @relation("RouteDriver")
-  availabilities DriverAvailability[]
-  supportTickets SupportTicket[]
+  hub                  Hub?                      @relation(fields: [hubId], references: [id])
+  routes               Route[]                   @relation("RouteDriver")
+  availabilities       DriverAvailability[]
+  queueAvailabilities  DriverQueueAvailability[]
+  supportTickets       SupportTicket[]
 
   @@index([hubId])
   @@index([hasActiveRoute])
@@ -106,6 +107,22 @@ enum RouteAssignmentSource {
   SYNC
   MANUAL
   TELEGRAM_BOT
+  WEB
+}
+
+model DriverQueueAvailability {
+  id          String   @id @default(uuid())
+  driverId    String
+  clusters    String[]
+  vehicleType String?
+  date        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, date])
+  @@index([date])
 }
 
 model SyncLog {

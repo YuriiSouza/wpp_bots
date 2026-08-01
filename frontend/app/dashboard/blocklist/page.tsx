@@ -36,6 +36,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
   addBlocklistDriver,
+  clearAllBlockedDrivers,
   fetchBlocklist,
   fetchDriversPage,
   getApiErrorMessage,
@@ -60,6 +61,8 @@ export default function BlocklistPage() {
   const [bulkIdInput, setBulkIdInput] = useState("")
   const [bulkReason, setBulkReason] = useState("")
   const [isBulkBlocking, setIsBulkBlocking] = useState(false)
+  const [isClearingAll, setIsClearingAll] = useState(false)
+  const [clearAllOpen, setClearAllOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -285,7 +288,22 @@ export default function BlocklistPage() {
     setBlocklist(bl)
   }
 
+  const handleClearAll = async () => {
+    setIsClearingAll(true)
+    try {
+      const result = await clearAllBlockedDrivers()
+      toast.success(result.message)
+      setBlocklist(await fetchBlocklist())
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Erro ao zerar blocklist"))
+    } finally {
+      setIsClearingAll(false)
+      setClearAllOpen(false)
+    }
+  }
+
   return (
+    <>
     <div className="flex flex-col">
       <PageHeader title="Blocklist" breadcrumbs={[{ label: "Blocklist" }]} />
       <div className="flex flex-col gap-6 p-6">
@@ -294,9 +312,14 @@ export default function BlocklistPage() {
             <h2 className="text-2xl font-bold text-foreground">Gestao de Blocklist</h2>
             <p className="text-sm text-muted-foreground">Controle de bloqueio de motoristas</p>
           </div>
-          <Button variant="destructive" onClick={() => setBulkBlockOpen(true)}>
-            Bloquear em lote
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setClearAllOpen(true)}>
+              Zerar bloqueados
+            </Button>
+            <Button variant="destructive" onClick={() => setBulkBlockOpen(true)}>
+              Bloquear em lote
+            </Button>
+          </div>
         </div>
 
         <Card>
@@ -448,5 +471,24 @@ export default function BlocklistPage() {
         </DialogContent>
       </Dialog>
     </div>
+
+    {/* Clear all confirmation dialog */}
+    <Dialog open={clearAllOpen} onOpenChange={setClearAllOpen}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Zerar todos os bloqueios?</DialogTitle>
+          <DialogDescription>
+            Todos os motoristas com status <strong>BLOQUEADO</strong> serão desbloqueados. Esta ação não pode ser desfeita.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setClearAllOpen(false)} disabled={isClearingAll}>Cancelar</Button>
+          <Button variant="destructive" onClick={handleClearAll} disabled={isClearingAll}>
+            {isClearingAll ? "Zerando..." : "Confirmar"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }

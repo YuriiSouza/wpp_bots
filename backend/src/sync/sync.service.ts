@@ -260,8 +260,7 @@ export class SyncService implements OnModuleInit {
       autoBlock: boolean;
     },
   ): Promise<boolean> {
-    const isNoviceWithoutDs = reason === 'Sem DS (novato - rota direto com analista)';
-    if (!isNoviceWithoutDs && !config.autoBlock) {
+    if (!config.autoBlock) {
       return false;
     }
 
@@ -316,7 +315,7 @@ export class SyncService implements OnModuleInit {
     if (currentStatus !== 'BLOCKED' && currentStatus !== 'ACTIVE') return false;
 
     // Só desbloqueia automaticamente os que foram bloqueados pelo sistema (score ou novato)
-    const autoReasons = ['Score baixo', 'Sem DS (novato - rota direto com analista)'];
+    const autoReasons = ['Score baixo'];
     const reason = String(existing.reason || '');
     if (!autoReasons.includes(reason)) return false;
 
@@ -409,11 +408,9 @@ export class SyncService implements OnModuleInit {
       });
 
       const autoBlockReason =
-        !hasDs
-          ? 'Sem DS (novato - rota direto com analista)'
-          : priorityScore <= algorithm.blockThreshold
-            ? 'Score baixo'
-            : null;
+        priorityScore <= algorithm.blockThreshold && hasDs
+          ? 'Score baixo'
+          : null;
 
       if (autoBlockReason) {
         if (await this.applyAutomaticBlocklist(driver.id, autoBlockReason, algorithm)) {

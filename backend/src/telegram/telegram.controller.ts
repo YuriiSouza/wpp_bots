@@ -242,6 +242,9 @@ export class TelegramController implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit() {
+    // Bot desativado — sistema migrou para disponibilidade via web
+    void this.redis.set('system:bot:enabled', false);
+
     this.timeoutWatcher = setInterval(() => {
       void this.maintainQueueGroup('moto');
       void this.maintainCityQueues();

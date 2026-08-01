@@ -138,6 +138,42 @@ export class AppController {
     return this.appService.rejectRouteRequest(routeId);
   }
 
+  @Post('api/routes/auto-assign')
+  async autoAssignRoutes(@Body('date') date?: string) {
+    return this.appService.autoAssignRoutes(date);
+  }
+
+  @Get('api/noshow-reversion/board')
+  async getNoShowReversionBoard() {
+    return this.appService.getNoShowReversionBoard();
+  }
+
+  @Post('api/noshow-reversion/sync-routes')
+  async syncNoShowRoutes() {
+    return this.appService.syncNoShowRoutes();
+  }
+
+  @Post('api/noshow-reversion/clear-availabilities')
+  async clearNoShowAvailabilities() {
+    return this.appService.clearNoShowAvailabilities();
+  }
+
+  @Post('api/noshow-reversion/routes/:routeId/return')
+  async returnRouteToAvailable(@Param('routeId') routeId: string) {
+    return this.appService.returnRouteToAvailable(routeId);
+  }
+
+  @Get('api/availability-enabled')
+  async getAvailabilityEnabled() {
+    return { enabled: await this.appService.getAvailabilityEnabled() };
+  }
+
+  @Put('api/availability-enabled')
+  async setAvailabilityEnabled(@Body('enabled') enabled: boolean) {
+    await this.appService.setAvailabilityEnabled(enabled);
+    return { ok: true, enabled };
+  }
+
   @Post('api/routes/:routeId/unassign')
   async unassignRoute(
     @Param('routeId') routeId: string,
@@ -207,9 +243,33 @@ export class AppController {
     return this.appService.getBlocklist();
   }
 
+  @Post('api/blocklist/clear-all')
+  async clearAllBlockedDrivers() {
+    return this.appService.clearAllBlockedDrivers();
+  }
+
   @Get('api/faq')
   async getFaqItems() {
     return this.appService.getFaqItems();
+  }
+
+  @Put('api/profile')
+  async updateSelfProfile(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() payload: { name?: string; hubId?: string | null },
+  ) {
+    const userId = this.appService.resolveAuthenticatedUserIdPublic(authorization);
+    return this.appService.updateSelfProfile(userId, payload);
+  }
+
+  @Post('api/profile/change-password')
+  async changePassword(
+    @Headers('authorization') authorization: string | undefined,
+    @Body('oldPassword') oldPassword: string,
+    @Body('newPassword') newPassword: string,
+  ) {
+    const userId = this.appService.resolveAuthenticatedUserIdPublic(authorization);
+    return this.appService.changePassword(userId, { oldPassword, newPassword });
   }
 
   @Post('auth/login')

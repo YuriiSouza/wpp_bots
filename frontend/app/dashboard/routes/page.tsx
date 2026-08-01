@@ -24,6 +24,7 @@ import {
   ArrowUp,
   ArrowDown,
   Minus,
+  Wand2,
 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { Card, CardContent } from "@/components/ui/card"
@@ -61,6 +62,7 @@ import {
   approveRouteRequest as approveRouteRequestApi,
   approveBlockedQueueRequest as approveBlockedQueueRequestApi,
   assignRoute as assignRouteRequest,
+  autoAssignRoutes,
   fetchDrivers,
   fetchRouteRequestsBoard,
   fetchRoutes,
@@ -520,6 +522,7 @@ export default function RoutesPage() {
   const [isTogglingBot, setIsTogglingBot] = useState(false)
   const [isRefreshingRoutes, setIsRefreshingRoutes] = useState(false)
   const [queueModalOpen, setQueueModalOpen] = useState(false)
+  const [isAutoAssigning, setIsAutoAssigning] = useState(false)
 
   const isTelegramRequested = (route: Route) =>
     route.assignmentSource === "TELEGRAM_BOT" && !!route.requestedDriverId && !route.driverId
@@ -766,6 +769,24 @@ export default function RoutesPage() {
     }
   }
 
+  const handleAutoAssign = async () => {
+    if (isAutoAssigning) return
+    setIsAutoAssigning(true)
+    try {
+      const result = await autoAssignRoutes()
+      if (result.assigned > 0) {
+        toast.success(`${result.assigned} rota${result.assigned !== 1 ? "s" : ""} atribuída${result.assigned !== 1 ? "s" : ""} automaticamente`)
+        await loadData(true)
+      } else {
+        toast.info("Nenhuma rota foi atribuída — verifique as disponibilidades registradas.")
+      }
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Erro ao executar atribuição automática"))
+    } finally {
+      setIsAutoAssigning(false)
+    }
+  }
+
   const handleRefreshRoutes = async () => {
     if (isRefreshingRoutes) return
     setIsRefreshingRoutes(true)
@@ -820,6 +841,16 @@ export default function RoutesPage() {
             <Button variant="outline" onClick={handleCopyRelation} size="sm">
               <Download className="mr-1.5 h-4 w-4" />
               Copiar relacao
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => void handleAutoAssign()}
+              disabled={isAutoAssigning}
+              className="bg-violet-600 hover:bg-violet-700"
+            >
+              <Wand2 className={`mr-1.5 h-4 w-4 ${isAutoAssigning ? "animate-spin" : ""}`} />
+              {isAutoAssigning ? "Atribuindo..." : "Atribuir automaticamente"}
             </Button>
             <Button variant="outline" onClick={() => setBulkReleaseOpen(true)} size="sm">
               <UserPlus className="mr-1.5 h-4 w-4" />

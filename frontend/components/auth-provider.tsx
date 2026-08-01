@@ -13,6 +13,7 @@ interface AuthContextType {
   completeOnboarding: (hubId: string, telegramChatId: string) => Promise<User>
   logout: () => void
   hasRole: (...roles: UserRole[]) => boolean
+  updateUser: (token: string, resolvedUser: User) => void
 }
 
 const AuthContext = createContext<AuthContextType | null>(null)

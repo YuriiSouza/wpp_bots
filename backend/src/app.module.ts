@@ -10,6 +10,7 @@ import { SyncModule } from './sync/sync.module';
 import { DataModule } from './data/data.module';
 import { SupportModule } from './support/support.module';
 import { PgStateModule } from './pg-state/pg-state.module';
+import { PublicModule } from './public/public.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PgStateModule } from './pg-state/pg-state.module';
     RedisModule,
     SheetsModule,
     SupportModule,
+    PublicModule,
   ],
   controllers: [AppController],
   providers: [AppService],

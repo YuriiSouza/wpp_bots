@@ -148,6 +148,13 @@ export function useAuth() {
     [user]
   )
 
+  const updateUser = useCallback(
+    (token: string, resolvedUser: User) => {
+      persistAuthenticatedUser(token, resolvedUser)
+    },
+    [persistAuthenticatedUser]
+  )
+
   return {
     user,
     isLoading,
@@ -157,5 +164,6 @@ export function useAuth() {
     completeOnboarding,
     logout,
     hasRole,
+    updateUser,
   }
 }

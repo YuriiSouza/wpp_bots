@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { RedisService } from './redis/redis.service';
 import { PrismaService } from './prisma/prisma.service';
 import { normalizeVehicleType } from './utils/normalize-vehicle';
@@ -878,6 +879,10 @@ export class AppService {
     const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
     const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
     return Buffer.from(padded, 'base64').toString('utf-8');
+  }
+
+  resolveAuthenticatedUserIdPublic(authorization?: string | null) {
+    return this.resolveAuthenticatedUserId(authorization);
   }
 
   private resolveAuthenticatedUserId(authorization?: string | null) {
@@ -3945,6 +3950,12 @@ export class AppService {
       after: { driverId: driver.id, status: nextStatus },
     });
 
+    // Remove disponibilidade do motorista ao ser atribuído
+    const today = new Date().toISOString().slice(0, 10);
+    await (this.prisma as any).driverQueueAvailability.deleteMany({
+      where: { driverId: driver.id, date: today },
+    });
+
     await Promise.all([
       this.invalidateExecutiveDashboardCache(),
       this.invalidateNoShowDashboardCache(),
@@ -4106,6 +4117,207 @@ export class AppService {
       ok: true,
       message: `Solicitacao da rota ${route.atId || route.id} recusada com sucesso.`,
     };
+  }
+
+  private static readonly INTERIOR_CLUSTERS = new Set([
+    'Abadiania - z',
+    'Campo Limpo',
+    'Gameleira de Goias',
+    'Goianapolis',
+    'Leopoldo de Bulhões',
+    'Neropolis',
+    'Nova Veneza',
+    'Ouro Verde',
+    'Silvania',
+    'Terezopolis',
+    'Vianópolis - z',
+  ]);
+
+  async autoAssignRoutes(_datePrefix?: string) {
+    const today = new Date().toISOString().slice(0, 10);
+    const prisma = this.prisma as any;
+
+    // Rotas disponíveis — interior primeiro, depois por cluster
+    const routes: any[] = await prisma.route.findMany({
+      where: { status: RouteStatus.DISPONIVEL, cluster: { not: null } },
+    });
+
+    // Will re-sort after computing candidate counts (scarcity-first)
+
+    // Disponibilidades do dia
+    const availabilities: Array<{
+      driverId: string;
+      clusters: string[];
+      vehicleType: string | null;
+      driver: { priorityScore: number; vehicleType: string | null };
+    }> = await prisma.driverQueueAvailability.findMany({
+      where: { date: today },
+      include: { driver: { select: { priorityScore: true, vehicleType: true } } },
+    });
+
+    // IDs de motoristas bloqueados
+    const blockedIds = new Set<string>(
+      (await this.prisma.driverBlocklist.findMany({
+        where: { status: 'BLOCKED' },
+        select: { driverId: true },
+      })).map((b) => b.driverId),
+    );
+
+    // Count eligible candidates per route (scarcity), then sort: fewest candidates first, then cluster name
+    const candidateCount = (route: any) =>
+      availabilities.filter((a) => {
+        if (blockedIds.has(a.driverId)) return false;
+        if (!a.clusters.includes(route.cluster)) return false;
+        const reqVehicle = normalizeVehicleType(route.requiredVehicleType || undefined);
+        const driverVehicle = normalizeVehicleType(a.vehicleType || a.driver.vehicleType || undefined);
+        if (reqVehicle === 'MOTO' && driverVehicle !== 'MOTO') return false;
+        return true;
+      }).length;
+
+    routes.sort((a, b) => {
+      const diff = candidateCount(a) - candidateCount(b);
+      if (diff !== 0) return diff;
+      return (a.cluster || '').localeCompare(b.cluster || '', 'pt-BR');
+    });
+
+    const assignedDrivers = new Set<string>();
+    const results: Array<{ atId: string; driverId: string; driverName: string | null; cluster: string; isInterior: boolean }> = [];
+    const skipped: Array<{ atId: string; cluster: string; reason: string; isInterior: boolean }> = [];
+
+    for (const route of routes) {
+      const isInterior = AppService.INTERIOR_CLUSTERS.has(route.cluster);
+      const candidates = availabilities
+        .filter((a) => {
+          if (assignedDrivers.has(a.driverId)) return false;
+          if (blockedIds.has(a.driverId)) return false;
+          if (!a.clusters.includes(route.cluster)) return false;
+          const reqVehicle = normalizeVehicleType(route.requiredVehicleType || undefined);
+          const driverVehicle = normalizeVehicleType(a.vehicleType || a.driver.vehicleType || undefined);
+          if (reqVehicle === 'MOTO' && driverVehicle !== 'MOTO') return false;
+          return true;
+        })
+        .sort((a, b) => {
+          const reqVehicle = normalizeVehicleType(route.requiredVehicleType || undefined);
+          const vehiclePriority = (v: string | null) => {
+            if (reqVehicle === 'MOTO') return v === 'MOTO' ? 0 : 1;
+            // PASSEIO routes: VAN > FIORINO > PASSEIO
+            if (v === 'VAN') return 0;
+            if (v === 'FIORINO') return 1;
+            return 2;
+          };
+          const va = vehiclePriority(normalizeVehicleType(a.vehicleType || a.driver.vehicleType || undefined));
+          const vb = vehiclePriority(normalizeVehicleType(b.vehicleType || b.driver.vehicleType || undefined));
+          if (va !== vb) return va - vb;
+          return b.driver.priorityScore - a.driver.priorityScore;
+        });
+
+      if (!candidates.length) {
+        skipped.push({ atId: route.atId, cluster: route.cluster, reason: 'Sem motorista disponível para o cluster', isInterior });
+        continue;
+      }
+
+      const best = candidates[0];
+      const result = await this.assignRoute(route.id, best.driverId);
+      if (result.ok) {
+        assignedDrivers.add(best.driverId);
+        const driver = await this.prisma.driver.findUnique({ where: { id: best.driverId }, select: { name: true } });
+        results.push({ atId: route.atId, driverId: best.driverId, driverName: driver?.name ?? null, cluster: route.cluster, isInterior });
+      } else {
+        skipped.push({ atId: route.atId, cluster: route.cluster, reason: result.message, isInterior });
+      }
+    }
+
+    return {
+      ok: true,
+      assigned: results.length,
+      skipped: skipped.length,
+      assignments: results,
+      skippedDetails: skipped,
+    };
+  }
+
+  async returnRouteToAvailable(routeIdRaw: string) {
+    const prisma = this.prisma as any;
+    const routeId = String(routeIdRaw || '').trim();
+    const route = await prisma.route.findUnique({ where: { id: routeId }, select: { id: true, atId: true, status: true } });
+    if (!route) return { ok: false, message: 'Rota não encontrada' };
+
+    await prisma.route.update({
+      where: { id: routeId },
+      data: {
+        status: RouteStatus.DISPONIVEL,
+        driverId: null,
+        driverName: null,
+        driverVehicleType: null,
+        requestedDriverId: null,
+        botAvailable: false,
+      },
+    });
+    return { ok: true, message: `Rota ${route.atId} devolvida para disponível` };
+  }
+
+  async syncNoShowRoutes() {
+    const syncResult = await this.refreshRoutesFromHistory();
+    return {
+      ok: syncResult.ok,
+      message: syncResult.ok ? `Rotas sincronizadas. ${syncResult.message}` : syncResult.message,
+    };
+  }
+
+  async clearNoShowAvailabilities() {
+    const today = new Date().toISOString().slice(0, 10);
+    const prisma = this.prisma as any;
+    const { count } = await prisma.driverQueueAvailability.deleteMany({ where: { date: today } });
+    return { ok: true, message: `${count} disponibilidade(s) apagada(s).`, count };
+  }
+
+  async getNoShowReversionBoard() {
+    const prisma = this.prisma as any;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const [availabilities, blockedIds, routes] = await Promise.all([
+      prisma.driverQueueAvailability.findMany({
+        where: { date: today },
+        include: { driver: { select: { id: true, name: true, vehicleType: true, priorityScore: true, ds: true, noShowCount: true } } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.driverBlocklist.findMany({ where: { status: 'BLOCKED' }, select: { driverId: true, reason: true } }),
+      prisma.route.findMany({
+        where: {
+          status: { in: [RouteStatus.DISPONIVEL, 'ATRIBUIDA' as any, 'APROVADA' as any] },
+          cluster: { not: null },
+        },
+        select: { id: true, atId: true, cluster: true, requiredVehicleType: true, gaiola: true, cidade: true, status: true, driverId: true, driverName: true },
+        orderBy: { cluster: 'asc' },
+      }),
+    ]);
+
+    const blockedMap = new Map<string, string | null>(blockedIds.map((b: any) => [b.driverId, b.reason]));
+
+    const driverEntries = availabilities.map((a: any) => ({
+      driverId: a.driverId,
+      name: a.driver?.name ?? null,
+      vehicleType: a.vehicleType ?? a.driver?.vehicleType ?? null,
+      priorityScore: a.driver?.priorityScore ?? 0,
+      ds: a.driver?.ds ?? null,
+      noShowCount: a.driver?.noShowCount ?? 0,
+      clusters: a.clusters as string[],
+      isBlocked: blockedMap.has(a.driverId),
+      blockReason: blockedMap.get(a.driverId) ?? null,
+      registeredAt: a.createdAt,
+    }));
+
+    const interiorClusters = AppService.INTERIOR_CLUSTERS;
+    const routeEntries = routes.map((r: any) => ({
+      ...r,
+      isInterior: interiorClusters.has(r.cluster),
+    }));
+    routeEntries.sort((a: any, b: any) => {
+      if (a.isInterior !== b.isInterior) return a.isInterior ? -1 : 1;
+      return (a.cluster || '').localeCompare(b.cluster || '', 'pt-BR');
+    });
+
+    return { availabilities: driverEntries, routes: routeEntries, date: today };
   }
 
   async unassignRoute(routeIdRaw: string, markNoShow = false) {
@@ -4723,8 +4935,19 @@ export class AppService {
       include: { hub: true },
     });
 
-    if (!analyst || analyst.password !== password || !analyst.isActive) {
+    if (!analyst || !analyst.isActive) {
       throw new UnauthorizedException('Credenciais invalidas');
+    }
+
+    const passwordValid = await this.verifyPassword(password, analyst.password);
+    if (!passwordValid) {
+      throw new UnauthorizedException('Credenciais invalidas');
+    }
+
+    // Auto-upgrade plain-text password to hash on successful login
+    if (!analyst.password.startsWith('$2')) {
+      const hashed = await bcrypt.hash(password, 10);
+      await (prisma as any).analyst.update({ where: { id: analyst.id }, data: { password: hashed } });
     }
 
     const user = {
@@ -4959,6 +5182,95 @@ export class AppService {
       message: 'Hub criado com sucesso',
       hub: created,
     };
+  }
+
+  private async hashPassword(raw: string) {
+    return bcrypt.hash(raw, 10);
+  }
+
+  private async verifyPassword(raw: string, stored: string) {
+    if (!stored || stored === 'GOOGLE_AUTH_ONLY') return false;
+    if (stored.startsWith('$2')) return bcrypt.compare(raw, stored);
+    // Legacy plain-text comparison
+    return raw === stored;
+  }
+
+  async updateSelfProfile(
+    userId: string,
+    payload: { name?: string; hubId?: string | null },
+  ) {
+    const prisma = this.prisma as any;
+    const name = payload.name !== undefined ? String(payload.name).trim() : undefined;
+    const hubId =
+      Object.prototype.hasOwnProperty.call(payload, 'hubId')
+        ? payload.hubId == null ? null : String(payload.hubId).trim() || null
+        : undefined;
+
+    if (name !== undefined && name.length < 2) {
+      throw new BadRequestException('Nome muito curto');
+    }
+    if (hubId) {
+      const hub = await prisma.hub.findUnique({ where: { id: hubId }, select: { id: true } });
+      if (!hub) throw new BadRequestException('Hub invalido');
+    }
+
+    const analyst = await prisma.analyst.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!analyst) throw new BadRequestException('Usuario nao encontrado');
+
+    const updated = await prisma.analyst.update({
+      where: { id: userId },
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        ...(hubId !== undefined ? { hubId } : {}),
+      },
+      include: { hub: true },
+    });
+
+    const user = {
+      id: updated.id,
+      name: updated.name,
+      email: updated.email,
+      role: updated.role,
+      hubId: updated.hubId,
+      hubName: updated.hub?.name || null,
+      telegramChatId: updated.telegramChatId || null,
+    };
+
+    const accessToken = this.createJwtToken({
+      sub: updated.id,
+      name: updated.name,
+      email: updated.email,
+      role: updated.role,
+      hubId: updated.hubId,
+      hubName: updated.hub?.name || null,
+      telegramChatId: updated.telegramChatId || null,
+      exp: Math.floor(Date.now() / 1000) + 8 * 3600,
+    });
+
+    return { ok: true, message: 'Perfil atualizado', user, accessToken };
+  }
+
+  async changePassword(
+    userId: string,
+    payload: { oldPassword: string; newPassword: string },
+  ) {
+    const prisma = this.prisma as any;
+    const oldRaw = String(payload?.oldPassword || '').trim();
+    const newRaw = String(payload?.newPassword || '').trim();
+
+    if (!oldRaw) throw new BadRequestException('Senha antiga obrigatoria');
+    if (!newRaw || newRaw.length < 6) throw new BadRequestException('Nova senha deve ter pelo menos 6 caracteres');
+
+    const analyst = await prisma.analyst.findUnique({ where: { id: userId }, select: { id: true, password: true } });
+    if (!analyst) throw new BadRequestException('Usuario nao encontrado');
+
+    const valid = await this.verifyPassword(oldRaw, analyst.password);
+    if (!valid) throw new BadRequestException('Senha antiga incorreta');
+
+    const hashed = await this.hashPassword(newRaw);
+    await prisma.analyst.update({ where: { id: userId }, data: { password: hashed } });
+
+    return { ok: true, message: 'Senha alterada com sucesso' };
   }
 
   private serializeManagedUser(analyst: {
@@ -5564,6 +5876,16 @@ export class AppService {
   }
 
   private readonly BOT_ENABLED_KEY = 'system:bot:enabled';
+  private readonly AVAILABILITY_ENABLED_KEY = 'system:availability:enabled';
+
+  async getAvailabilityEnabled(): Promise<boolean> {
+    const value = await this.redisService.get<boolean>(this.AVAILABILITY_ENABLED_KEY);
+    return value === true;
+  }
+
+  async setAvailabilityEnabled(enabled: boolean): Promise<void> {
+    await this.redisService.set(this.AVAILABILITY_ENABLED_KEY, enabled);
+  }
 
   async getBotEnabled(): Promise<boolean> {
     const value = await this.redisService.get<boolean>(this.BOT_ENABLED_KEY);
@@ -6205,6 +6527,17 @@ export class AppService {
       this.invalidateBlocklistListCache(),
     ]);
     return { ok: true, message: `Motorista ${driverId} bloqueado novamente na lista de bloqueio.` };
+  }
+
+  async clearAllBlockedDrivers(): Promise<{ ok: boolean; message: string; count: number }> {
+    const prisma = this.prisma as any;
+    const now = new Date();
+    const result = await this.prisma.$executeRaw`
+      UPDATE "DriverBlocklist"
+      SET status = 'UNBLOCKED'::"BlocklistStatus", reason = NULL, "lastInactivatedAt" = ${now}
+      WHERE status::text IN ('BLOCKED', 'ACTIVE')
+    `;
+    return { ok: true, message: `${result} motorista(s) desbloqueado(s)`, count: result };
   }
 
   async removeBlocklistDriver(driverIdRaw: string): Promise<{ ok: boolean; message: string }> {

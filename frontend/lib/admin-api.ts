@@ -385,6 +385,17 @@ export async function markRouteNoShow(routeId: string, makeAvailable = false) {
   return response.data
 }
 
+export async function autoAssignRoutes(date?: string) {
+  const response = await api.post<{
+    ok: boolean
+    assigned: number
+    skipped: number
+    assignments: Array<{ atId: string; driverId: string; driverName: string | null }>
+    skippedDetails: Array<{ atId: string; reason: string }>
+  }>('/api/routes/auto-assign', { date })
+  return response.data
+}
+
 export async function releaseRouteToBot(routeId: string) {
   const response = await api.post<ApiActionResponse>(`/api/routes/${routeId}/release-bot`)
   return response.data
@@ -443,6 +454,11 @@ export async function addBlocklistDriver(driverId: string, reason: string) {
 
 export async function removeBlocklistDriver(driverId: string) {
   const response = await api.post<ApiActionResponse>("/acess/analist/blocklist/remove", { driverId })
+  return response.data
+}
+
+export async function clearAllBlockedDrivers() {
+  const response = await api.post<ApiActionResponse & { count: number }>("/api/blocklist/clear-all")
   return response.data
 }
 
@@ -667,4 +683,76 @@ export function getApiErrorMessage(error: unknown, fallback: string) {
 
   if (error instanceof Error && error.message) return error.message
   return fallback
+}
+
+export interface NoShowReversionDriver {
+  driverId: string
+  name: string | null
+  vehicleType: string | null
+  priorityScore: number
+  ds: string | null
+  noShowCount: number
+  clusters: string[]
+  isBlocked: boolean
+  blockReason: string | null
+  registeredAt: string
+}
+
+export interface NoShowReversionRoute {
+  id: string
+  atId: string
+  cluster: string
+  requiredVehicleType: string | null
+  gaiola: string | null
+  cidade: string | null
+  isInterior: boolean
+  status: string
+  driverId: string | null
+  driverName: string | null
+}
+
+export interface NoShowReversionBoard {
+  availabilities: NoShowReversionDriver[]
+  routes: NoShowReversionRoute[]
+  date: string
+}
+
+export async function fetchNoShowReversionBoard() {
+  const response = await api.get<NoShowReversionBoard>('/api/noshow-reversion/board')
+  return response.data
+}
+
+export async function syncNoShowRoutes() {
+  const response = await api.post<{ ok: boolean; message: string }>('/api/noshow-reversion/sync-routes')
+  return response.data
+}
+
+export async function clearNoShowAvailabilities() {
+  const response = await api.post<{ ok: boolean; message: string; count: number }>('/api/noshow-reversion/clear-availabilities')
+  return response.data
+}
+
+export async function returnRouteToAvailable(routeId: string) {
+  const response = await api.post<{ ok: boolean; message: string }>(`/api/noshow-reversion/routes/${routeId}/return`)
+  return response.data
+}
+
+export async function fetchAvailabilityEnabled() {
+  const response = await api.get<{ enabled: boolean }>('/api/availability-enabled')
+  return response.data.enabled
+}
+
+export async function saveAvailabilityEnabled(enabled: boolean) {
+  const response = await api.put<{ ok: boolean; enabled: boolean }>('/api/availability-enabled', { enabled })
+  return response.data
+}
+
+export async function updateSelfProfile(payload: { name?: string; hubId?: string | null }) {
+  const response = await api.put<ApiActionResponse & { user: Record<string, unknown>; accessToken: string }>('/api/profile', payload)
+  return response.data
+}
+
+export async function changePassword(payload: { oldPassword: string; newPassword: string }) {
+  const response = await api.post<ApiActionResponse>('/api/profile/change-password', payload)
+  return response.data
 }

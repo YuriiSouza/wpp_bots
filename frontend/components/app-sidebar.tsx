@@ -18,6 +18,7 @@ import {
   Bot,
   Settings,
   UserCircle2,
+  RotateCcw,
 } from "lucide-react"
 import {
   Sidebar,
@@ -38,6 +39,7 @@ const mainNav = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { title: "Motoristas", href: "/dashboard/drivers", icon: Users },
   { title: "Rotas", href: "/dashboard/routes", icon: MapPin },
+  { title: "Reversão NoShow", href: "/dashboard/noshow-reversion", icon: RotateCcw },
   { title: "Overview", href: "/dashboard/overview", icon: Table2 },
 ]
 

@@ -47,6 +47,7 @@ import {
   returnRouteToAvailable,
   fetchAvailabilityEnabled,
   saveAvailabilityEnabled,
+  removeBlocklistDriver,
   getApiErrorMessage,
   type NoShowReversionBoard,
   type NoShowReversionDriver,
@@ -182,6 +183,7 @@ export default function NoShowReversionPage() {
   const [availabilityEnabled, setAvailabilityEnabled] = useState(false)
   const [isTogglingAvail, setIsTogglingAvail] = useState(false)
   const [returningRouteId, setReturningRouteId] = useState<string | null>(null)
+  const [unblockingDriverId, setUnblockingDriverId] = useState<string | null>(null)
 
   const todayKey = `noshow-overrides-${new Date().toISOString().slice(0, 10)}`
 
@@ -737,7 +739,7 @@ export default function NoShowReversionPage() {
                       </TableCell>
                       <TableCell className="py-2.5">
                         {driver.isBlocked ? (
-                          <div className="flex flex-col gap-0.5">
+                          <div className="flex flex-col gap-1">
                             <Badge variant="outline" className="text-xs border-red-500/40 bg-red-500/10 text-red-700 w-fit">
                               <Ban className="mr-1 h-3 w-3" />
                               Bloqueado
@@ -745,6 +747,31 @@ export default function NoShowReversionPage() {
                             {driver.blockReason && (
                               <span className="text-xs text-red-600/80">{driver.blockReason}</span>
                             )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs w-fit border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10"
+                              disabled={unblockingDriverId === driver.driverId}
+                              onClick={async () => {
+                                setUnblockingDriverId(driver.driverId)
+                                try {
+                                  const result = await removeBlocklistDriver(driver.driverId)
+                                  if (result.ok) {
+                                    toast.success("Motorista desbloqueado")
+                                    await loadBoard()
+                                  } else {
+                                    toast.error(result.message)
+                                  }
+                                } catch (error) {
+                                  toast.error(getApiErrorMessage(error, "Erro ao desbloquear"))
+                                } finally {
+                                  setUnblockingDriverId(null)
+                                }
+                              }}
+                            >
+                              <CheckCircle2 className="mr-1 h-3 w-3" />
+                              {unblockingDriverId === driver.driverId ? "Desbloqueando..." : "Desbloquear"}
+                            </Button>
                           </div>
                         ) : assignedAtId ? (
                           <Badge variant="outline" className="text-xs border-violet-500/30 bg-violet-500/10 text-violet-700">

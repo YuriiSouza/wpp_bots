@@ -84,14 +84,27 @@ function getDsMeta(value?: string | null) {
   return { valueLabel: `${ds.toFixed(0)}%`, className: "border-emerald-600/30 bg-emerald-500/15 text-emerald-700" }
 }
 
+function normalizeVehicle(v?: string | null): string | null {
+  if (!v) return null
+  const s = v.trim().toLowerCase()
+  if (s.includes("moto")) return "MOTO"
+  if (s.includes("fiorino")) return "FIORINO"
+  if (s.includes("van")) return "VAN"
+  if (s.includes("passeio")) return "PASSEIO"
+  return s.toUpperCase()
+}
+
 function vehiclePriority(vehicleType: string | null | undefined, routeVehicleType: string | null | undefined): number {
-  const v = (vehicleType || "").toUpperCase()
-  const r = (routeVehicleType || "").toUpperCase()
+  const v = normalizeVehicle(vehicleType)
+  const r = normalizeVehicle(routeVehicleType)
   if (r === "MOTO") {
+    // MOTO > PASSEIO > FIORINO > VAN
     if (v === "MOTO") return 0
-    return 1
+    if (v === "PASSEIO") return 1
+    if (v === "FIORINO") return 2
+    return 3 // VAN e outros
   }
-  // PASSEIO route: VAN > FIORINO > PASSEIO
+  // PASSEIO/outros: VAN > FIORINO > PASSEIO, nunca MOTO
   if (v === "VAN") return 0
   if (v === "FIORINO") return 1
   return 2
@@ -102,12 +115,14 @@ function getBestCandidate(
   drivers: NoShowReversionDriver[],
   assignedIds: Set<string>,
 ) {
+  const reqVehicle = normalizeVehicle(route.requiredVehicleType)
   return drivers
     .filter((d) => {
       if (d.isBlocked) return false
       if (assignedIds.has(d.driverId)) return false
       if (!d.clusters.includes(route.cluster)) return false
-      if (route.requiredVehicleType?.toUpperCase() === "MOTO" && d.vehicleType?.toUpperCase() !== "MOTO") return false
+      // Rotas de PASSEIO nunca recebem MOTO
+      if (reqVehicle !== "MOTO" && normalizeVehicle(d.vehicleType) === "MOTO") return false
       return true
     })
     .sort((a, b) => {
@@ -138,13 +153,15 @@ function computeEffective(
   const disponivel = board.routes.filter((r) => !isAssigned(r))
 
   const sorted = [...disponivel].sort((a, b) => {
-    const count = (route: NoShowReversionRoute) =>
-      board.availabilities.filter((d) => {
+    const count = (route: NoShowReversionRoute) => {
+      const rv = normalizeVehicle(route.requiredVehicleType)
+      return board.availabilities.filter((d) => {
         if (d.isBlocked) return false
         if (!d.clusters.includes(route.cluster)) return false
-        if (route.requiredVehicleType?.toUpperCase() === "MOTO" && d.vehicleType?.toUpperCase() !== "MOTO") return false
+        if (rv !== "MOTO" && normalizeVehicle(d.vehicleType) === "MOTO") return false
         return true
       }).length
+    }
     return count(a) - count(b)
   })
 
@@ -581,10 +598,11 @@ export default function NoShowReversionPage() {
                   const effective = effectiveAssignments.get(route.id)
                   const isOverridden = overrides.has(route.id)
                   const dsMeta = getDsMeta(effective?.ds)
+                  const reqV = normalizeVehicle(route.requiredVehicleType)
                   const driverCount = (board?.availabilities ?? []).filter((d) => {
                     if (d.isBlocked) return false
                     if (!d.clusters.includes(route.cluster)) return false
-                    if (route.requiredVehicleType?.toUpperCase() === "MOTO" && d.vehicleType?.toUpperCase() !== "MOTO") return false
+                    if (reqV !== "MOTO" && normalizeVehicle(d.vehicleType) === "MOTO") return false
                     return true
                   }).length
 
@@ -806,11 +824,12 @@ export default function NoShowReversionPage() {
         </DialogHeader>
         {assignModal && (() => {
           const currentDriver = effectiveAssignments.get(assignModal.id)
+          const modalReqV = normalizeVehicle(assignModal.requiredVehicleType)
           const candidates = (board?.availabilities ?? [])
             .filter((d) => {
               if (d.isBlocked) return false
               if (!d.clusters.includes(assignModal.cluster)) return false
-              if (assignModal.requiredVehicleType?.toUpperCase() === "MOTO" && d.vehicleType?.toUpperCase() !== "MOTO") return false
+              if (modalReqV !== "MOTO" && normalizeVehicle(d.vehicleType) === "MOTO") return false
               return true
             })
             .sort((a, b) => {

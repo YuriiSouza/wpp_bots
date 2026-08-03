@@ -38,6 +38,17 @@ export interface DashboardPayload {
   routesPerDay: { date: string; atribuidas: number; disponiveis: number; noshow: number }[]
   routeDistribution: { status: string; count: number; fill: string }[]
   topDrivers: { name: string; score: number; routes: number }[]
+  reversion: {
+    today: {
+      inscricoes: number
+      alocados: number
+      desperdicados: number
+      utilizationRate: number
+      zeroCoverageCount: number
+    }
+    byCluster: { cluster: string; count: number }[]
+    byDay: { date: string; inscricoes: number; alocados: number; desperdicados: number }[]
+  }
   noShow: {
     summary: {
       total: number

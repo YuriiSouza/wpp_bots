@@ -4250,7 +4250,7 @@ export class AppService {
         if (!a.clusters.includes(route.cluster)) return false;
         const reqVehicle = normalizeVehicleType(route.requiredVehicleType || undefined);
         const driverVehicle = normalizeVehicleType(a.vehicleType || a.driver.vehicleType || undefined);
-        if (reqVehicle === 'MOTO' && driverVehicle !== 'MOTO') return false;
+        if (reqVehicle !== 'MOTO' && driverVehicle === 'MOTO') return false;
         return true;
       }).length;
 
@@ -4273,14 +4273,20 @@ export class AppService {
           if (!a.clusters.includes(route.cluster)) return false;
           const reqVehicle = normalizeVehicleType(route.requiredVehicleType || undefined);
           const driverVehicle = normalizeVehicleType(a.vehicleType || a.driver.vehicleType || undefined);
-          if (reqVehicle === 'MOTO' && driverVehicle !== 'MOTO') return false;
+          if (reqVehicle !== 'MOTO' && driverVehicle === 'MOTO') return false;
           return true;
         })
         .sort((a, b) => {
           const reqVehicle = normalizeVehicleType(route.requiredVehicleType || undefined);
           const vehiclePriority = (v: string | null) => {
-            if (reqVehicle === 'MOTO') return v === 'MOTO' ? 0 : 1;
-            // PASSEIO routes: VAN > FIORINO > PASSEIO
+            if (reqVehicle === 'MOTO') {
+              // MOTO > PASSEIO > FIORINO > VAN
+              if (v === 'MOTO') return 0;
+              if (v === 'PASSEIO') return 1;
+              if (v === 'FIORINO') return 2;
+              return 3; // VAN e outros
+            }
+            // PASSEIO/outros: VAN > FIORINO > PASSEIO, nunca MOTO
             if (v === 'VAN') return 0;
             if (v === 'FIORINO') return 1;
             return 2;

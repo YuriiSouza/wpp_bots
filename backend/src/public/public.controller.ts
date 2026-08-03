@@ -1,7 +1,6 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
-import { RouteStatus } from '@prisma/client';
 
 const AVAILABILITY_ENABLED_KEY = 'system:availability:enabled';
 
@@ -47,23 +46,50 @@ export class PublicController {
   }
 
   @Get('clusters')
-  async getClusters(@Query('vehicleType') vehicleType?: string) {
-    const isMoto = (vehicleType || '').trim().toUpperCase() === 'MOTO';
-
-    const where: any = { status: RouteStatus.DISPONIVEL, cluster: { not: null } };
-    if (isMoto) {
-      where.requiredVehicleType = { equals: 'MOTO', mode: 'insensitive' };
-    }
-
-    const rows = await this.prisma.route.findMany({
-      where,
-      select: { cluster: true, requiredVehicleType: true },
-      distinct: ['cluster'],
-      orderBy: { cluster: 'asc' },
-    });
-    const clusters = rows
-      .filter((r) => r.cluster)
-      .map((r) => ({ cluster: r.cluster!, vehicleType: r.requiredVehicleType }));
+  async getClusters() {
+    const clusters = [
+      'Abadiania - z',
+      'Campo Limpo',
+      'Gameleira de Goias',
+      'Goianapolis',
+      'Leopoldo de Bulhões',
+      'Neropolis',
+      'Nova Veneza',
+      'Ouro Verde',
+      'Silvania',
+      'Terezopolis',
+      'Vianópolis - z',
+      'Adriana Parque',
+      'Aldeia dos Sonhos',
+      'Alexandrina',
+      'Alvorada',
+      'Bandeiras',
+      'Bougainville',
+      'Calixtolandia',
+      'Centro',
+      'DAIA',
+      'Fabril',
+      'Filostro',
+      'Formosa',
+      'Frei Eustaquio',
+      'Iracema',
+      'Itamaraty',
+      'Jaiara',
+      'Jardim Primavera',
+      'Jardim Promissão',
+      'Jibran el Hadj',
+      'Jundiai',
+      'Lourdes',
+      'Munir Calixto',
+      'Paraiso',
+      'Pirineus',
+      'Recanto do Sol',
+      'Residencial Arco-Iris',
+      'Santa Isabel',
+      'São Vicente',
+      'Vila Gois',
+      'Viviam Parque',
+    ];
     return { ok: true, clusters };
   }
 

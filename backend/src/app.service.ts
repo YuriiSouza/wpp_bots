@@ -1356,14 +1356,94 @@ export class AppService {
   }
 
   async getDashboardData() {
-    const [executive, noShow] = await Promise.all([
+    const [executive, noShow, reversion] = await Promise.all([
       this.getExecutiveDashboardSection(),
       this.getNoShowDashboardSection(),
+      this.getReversionDashboardSection(),
     ]);
 
     return {
       ...executive,
       ...noShow,
+      reversion,
+    };
+  }
+
+  private async getReversionDashboardSection() {
+    const prisma = this.prisma as any;
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Last 7 days window
+    const days: string[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      days.push(d.toISOString().slice(0, 10));
+    }
+
+    const [availabilitiesAll, assignedDriverIds] = await Promise.all([
+      prisma.driverQueueAvailability.findMany({
+        where: { date: { in: days } },
+        select: { driverId: true, clusters: true, date: true },
+      }),
+      prisma.route.findMany({
+        where: { status: { in: ['ATRIBUIDA', 'APROVADA'] }, driverId: { not: null } },
+        select: { driverId: true },
+      }),
+    ]);
+
+    const assignedSet = new Set<string>(assignedDriverIds.map((r: any) => r.driverId));
+
+    // Today stats
+    const todayAvails: typeof availabilitiesAll = availabilitiesAll.filter((a: any) => a.date === today);
+    const todayDriverIds = new Set<string>(todayAvails.map((a: any) => a.driverId));
+    const todayAllocated = [...todayDriverIds].filter((id) => assignedSet.has(id)).length;
+    const todayWasted = todayDriverIds.size - todayAllocated;
+    const utilizationRate = todayDriverIds.size > 0
+      ? Math.round((todayAllocated / todayDriverIds.size) * 100)
+      : 0;
+
+    // By cluster (today): count unique drivers per cluster
+    const clusterMap = new Map<string, Set<string>>();
+    for (const a of todayAvails) {
+      for (const cluster of (a.clusters as string[])) {
+        if (!clusterMap.has(cluster)) clusterMap.set(cluster, new Set());
+        clusterMap.get(cluster)!.add(a.driverId);
+      }
+    }
+    const byCluster = [...clusterMap.entries()]
+      .map(([cluster, drivers]) => ({ cluster, count: drivers.size }))
+      .sort((a, b) => b.count - a.count);
+
+    // Historical: last 7 days — inscriptions and allocations per day
+    const byDay = days.map((date) => {
+      const dayAvails = availabilitiesAll.filter((a: any) => a.date === date);
+      const uniqueDrivers = new Set<string>(dayAvails.map((a: any) => a.driverId));
+      const allocated = [...uniqueDrivers].filter((id) => assignedSet.has(id)).length;
+      return {
+        date,
+        inscricoes: uniqueDrivers.size,
+        alocados: allocated,
+        desperdicados: uniqueDrivers.size - allocated,
+      };
+    });
+
+    // Clusters with zero coverage today (have no availability at all)
+    const allClusters = AppService.INTERIOR_CLUSTERS
+      ? [...AppService.INTERIOR_CLUSTERS]
+      : [];
+    const zeroCoverage = allClusters.filter((c) => !clusterMap.has(c) || clusterMap.get(c)!.size === 0).length;
+
+    return {
+      today: {
+        inscricoes: todayDriverIds.size,
+        alocados: todayAllocated,
+        desperdicados: todayWasted,
+        utilizationRate,
+        zeroCoverageCount: zeroCoverage,
+      },
+      byCluster,
+      byDay,
     };
   }
 

@@ -20,6 +20,15 @@ import {
   type DashboardPayload,
 } from "@/lib/admin-api"
 import { toast } from "sonner"
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from "recharts"
 
 export default function DashboardPage() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null)
@@ -77,6 +86,8 @@ export default function DashboardPage() {
               <RankingTable drivers={dashboard.topDrivers} />
             </div>
 
+            <ReversionSection data={dashboard.reversion} />
+
             <NoShowAnalyticsSection data={dashboard.noShow} />
           </>
         )}
@@ -108,6 +119,123 @@ function RankingTable({ drivers }: { drivers: DashboardPayload["topDrivers"] }) 
             <span className="text-sm font-bold text-card-foreground">{d.score}%</span>
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+function ReversionSection({ data }: { data: DashboardPayload["reversion"] }) {
+  const { today, byCluster, byDay } = data
+  const top10Clusters = byCluster.slice(0, 10)
+  const max = Math.max(...byCluster.map((c) => c.count), 1)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h3 className="text-xl font-semibold text-foreground">Reversão de No-Show</h3>
+        <p className="text-sm text-muted-foreground">Disponibilidade dos motoristas e aproveitamento do processo</p>
+      </div>
+
+      {/* KPIs do dia */}
+      <div className="grid gap-4 grid-cols-2 md:grid-cols-5">
+        <Card>
+          <CardContent className="flex flex-col gap-2 p-4">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Inscrições hoje</p>
+            <p className="text-2xl font-bold">{today.inscricoes}</p>
+            <p className="text-xs text-muted-foreground">Motoristas que marcaram disponibilidade</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="flex flex-col gap-2 p-4">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Alocados</p>
+            <p className="text-2xl font-bold text-emerald-600">{today.alocados}</p>
+            <p className="text-xs text-muted-foreground">Receberam rota hoje</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="flex flex-col gap-2 p-4">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Desperdiçados</p>
+            <p className="text-2xl font-bold text-amber-600">{today.desperdicados}</p>
+            <p className="text-xs text-muted-foreground">Marcaram mas não receberam rota</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="flex flex-col gap-2 p-4">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Aproveitamento</p>
+            <p className={`text-2xl font-bold ${today.utilizationRate >= 70 ? "text-emerald-600" : today.utilizationRate >= 40 ? "text-amber-600" : "text-red-600"}`}>
+              {today.utilizationRate}%
+            </p>
+            <p className="text-xs text-muted-foreground">Inscritos que viraram rota</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="flex flex-col gap-2 p-4">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Clusters s/ cobertura</p>
+            <p className={`text-2xl font-bold ${today.zeroCoverageCount === 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {today.zeroCoverageCount}
+            </p>
+            <p className="text-xs text-muted-foreground">Regiões sem nenhum motorista</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 grid-cols-1 xl:grid-cols-2">
+        {/* Histórico 7 dias */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Histórico — Últimos 7 dias</CardTitle>
+            <CardDescription>Inscrições vs motoristas alocados por dia</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={byDay} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
+                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                <Tooltip
+                  formatter={(value, name) => [value, name === "inscricoes" ? "Inscrições" : name === "alocados" ? "Alocados" : "Desperdiçados"]}
+                  labelFormatter={(l) => `Data: ${l}`}
+                />
+                <Legend formatter={(v) => v === "inscricoes" ? "Inscrições" : v === "alocados" ? "Alocados" : "Desperdiçados"} />
+                <Bar dataKey="inscricoes" fill="#6366f1" radius={[3,3,0,0]} />
+                <Bar dataKey="alocados" fill="#10b981" radius={[3,3,0,0]} />
+                <Bar dataKey="desperdicados" fill="#f59e0b" radius={[3,3,0,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Clusters com mais motoristas */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Clusters com mais motoristas hoje</CardTitle>
+            <CardDescription>Regiões com maior cobertura de disponibilidade</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {byCluster.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">Nenhuma disponibilidade registrada hoje.</p>
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                {top10Clusters.map((item) => (
+                  <div key={item.cluster} className="space-y-1">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="truncate text-card-foreground">{item.cluster}</span>
+                      <Badge variant="outline">{item.count}</Badge>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-muted">
+                      <div
+                        className="h-1.5 rounded-full bg-violet-500 transition-all"
+                        style={{ width: `${Math.round((item.count / max) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+                {byCluster.length > 10 && (
+                  <p className="text-xs text-muted-foreground text-center pt-1">+{byCluster.length - 10} outros clusters</p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   )

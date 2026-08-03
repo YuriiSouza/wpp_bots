@@ -90,7 +90,7 @@ export class PublicController {
       'Vila Gois',
       'Viviam Parque',
     ];
-    return { ok: true, clusters };
+    return { ok: true, clusters: clusters.map((c) => ({ cluster: c, vehicleType: null })) };
   }
 
   @Post('availability')

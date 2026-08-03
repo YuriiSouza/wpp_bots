@@ -3989,11 +3989,9 @@ export class AppService {
 
     const normalizedRequired = normalizeVehicleType(route.requiredVehicleType || undefined);
     const normalizedDriver = normalizeVehicleType(driver.vehicleType || undefined);
-    if (
-      normalizedRequired === 'MOTO' &&
-      normalizedDriver !== 'MOTO'
-    ) {
-      return { ok: false, message: 'O motorista nao atende o veiculo requerido para a rota.' };
+    // Moto nunca vai para rota de passeio
+    if (normalizedRequired !== 'MOTO' && normalizedDriver === 'MOTO') {
+      return { ok: false, message: 'Motoristas de moto não podem ser atribuídos a rotas de passeio.' };
     }
 
     const nextAssignmentSource =

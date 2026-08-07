@@ -636,6 +636,17 @@ export default function NoShowReversionPage() {
                         {effective ? (
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="text-sm font-medium">{effective.name || effective.driverId}</span>
+                            {effective.vehicleType && (
+                              <Badge variant="outline" className={`text-xs ${normalizeVehicle(effective.vehicleType) === "MOTO" ? "border-blue-500/30 bg-blue-500/10 text-blue-700" : ""}`}>
+                                {effective.vehicleType}
+                              </Badge>
+                            )}
+                            {reqV === "MOTO" && normalizeVehicle(effective.vehicleType) !== "MOTO" && (
+                              <Badge variant="outline" className="text-[10px] border-amber-500/30 bg-amber-500/10 text-amber-700 flex items-center gap-1">
+                                <AlertTriangle className="h-3 w-3" />
+                                Não é moto
+                              </Badge>
+                            )}
                             <Badge variant="outline" className={`text-xs ${dsMeta.className}`}>DS {dsMeta.valueLabel}</Badge>
                             <Badge variant="outline" className="text-xs">Score {effective.priorityScore.toFixed(0)}</Badge>
                             {isOverridden && (

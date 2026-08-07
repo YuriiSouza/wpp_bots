@@ -701,17 +701,18 @@ export default function NoShowReversionPage() {
                   <TableHead className="text-xs font-semibold w-[90px]">Score</TableHead>
                   <TableHead className="text-xs font-semibold w-[90px]">No-Shows</TableHead>
                   <TableHead className="text-xs font-semibold">Clusters selecionados</TableHead>
+                  <TableHead className="text-xs font-semibold w-[80px]">Horário</TableHead>
                   <TableHead className="text-xs font-semibold w-[110px]">Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">Carregando...</TableCell>
+                    <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">Carregando...</TableCell>
                   </TableRow>
                 ) : filteredDrivers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                       Nenhum motorista registrou disponibilidade hoje.
                     </TableCell>
                   </TableRow>
@@ -765,6 +766,11 @@ export default function NoShowReversionPage() {
                             )
                           })}
                         </div>
+                      </TableCell>
+                      <TableCell className="py-2.5 text-xs text-muted-foreground font-mono tabular-nums">
+                        {driver.registeredAt
+                          ? new Date(driver.registeredAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+                          : "—"}
                       </TableCell>
                       <TableCell className="py-2.5">
                         {driver.isBlocked ? (

@@ -19,9 +19,13 @@ export class PublicController {
     const driverId = id.trim();
     const driver = await this.prisma.driver.findUnique({
       where: { id: driverId },
-      select: { id: true, name: true, vehicleType: true, priorityScore: true, ds: true },
+      select: { id: true, name: true, vehicleType: true, priorityScore: true, ds: true, noShowCount: true, declineRate: true },
     });
     if (!driver) return { ok: false, message: 'Motorista não encontrado.' };
+
+    const routesDone = await (this.prisma as any).route.count({
+      where: { driverId, status: { in: ['APROVADA', 'EXPORTADA'] } },
+    });
 
     // Verifica rota já atribuída
     const activeRoute = await (this.prisma as any).route.findFirst({
@@ -42,7 +46,7 @@ export class PublicController {
       return { ok: false, message: 'Você já registrou disponibilidade hoje.' };
     }
 
-    return { ok: true, driver };
+    return { ok: true, driver: { ...driver, routesDone } };
   }
 
   @Get('clusters')

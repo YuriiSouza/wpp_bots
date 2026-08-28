@@ -487,7 +487,7 @@ export default function SupportCenterPage() {
 
                   <dl className="grid grid-cols-2 gap-3 text-sm">
                     <MetricCell label="NoShowCount" value={String(contextQuery.data.noShowCount)} />
-                    <MetricCell label="DeclineRate" value={`${Math.round(contextQuery.data.declineRate * 100)}%`} />
+                    <MetricCell label="DeclineRate" value={`${Math.round(contextQuery.data.declineRate)}%`} />
                     <MetricCell label="PriorityScore" value={contextQuery.data.priorityScore.toFixed(1)} />
                     <MetricCell label="Bloqueado" value={contextQuery.data.isBlocked ? "Sim" : "Nao"} />
                     <MetricCell label="Rota ativa" value={contextQuery.data.hasActiveRoute ? "Sim" : "Nao"} />

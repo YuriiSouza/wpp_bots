@@ -42,11 +42,8 @@ export class PublicController {
       where: { driverId_date: { driverId, date: today } },
       select: { clusters: true },
     });
-    if (existing) {
-      return { ok: false, message: 'Você já registrou disponibilidade hoje.' };
-    }
 
-    return { ok: true, driver: { ...driver, routesDone } };
+    return { ok: true, driver: { ...driver, routesDone }, existingClusters: existing?.clusters ?? null };
   }
 
   @Get('clusters')

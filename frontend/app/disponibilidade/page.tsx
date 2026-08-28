@@ -28,6 +28,8 @@ interface ClusterOption {
 
 type Step = "identify" | "select" | "done"
 
+type EditMode = "new" | "edit"
+
 const TOOLTIPS: Record<string, { label: string; description: string }> = {
   rotas: {
     label: "Rotas realizadas",
@@ -133,6 +135,7 @@ function StatCard({
 
 export default function DisponibilidadePage() {
   const [step, setStep] = useState<Step>("identify")
+  const [editMode, setEditMode] = useState<EditMode>("new")
   const [driverId, setDriverId] = useState("")
   const [driver, setDriver] = useState<DriverInfo | null>(null)
   const [clusters, setClusters] = useState<ClusterOption[]>([])
@@ -154,6 +157,13 @@ export default function DisponibilidadePage() {
       const clustersData = await clustersRes.json()
       setDriver(driverData.driver)
       setClusters(clustersData.clusters || [])
+      if (driverData.existingClusters) {
+        setEditMode("edit")
+        setSelected(new Set(driverData.existingClusters as string[]))
+      } else {
+        setEditMode("new")
+        setSelected(new Set())
+      }
       setStep("select")
     } catch {
       toast.error("Erro ao buscar dados. Tente novamente.")
@@ -297,12 +307,37 @@ export default function DisponibilidadePage() {
               </div>
             </div>
 
+            {/* Edit mode banner */}
+            {editMode === "edit" && (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 px-4 py-3 text-sm text-amber-700 flex items-center gap-2">
+                <span className="text-base">✏️</span>
+                <span>Você já registrou disponibilidade hoje. Edite as regiões e confirme para atualizar.</span>
+              </div>
+            )}
+
             {/* Clusters */}
             <div className="rounded-2xl border bg-card p-4 shadow-sm">
-              <p className="text-sm font-semibold text-foreground mb-3">
-                Selecione as regiões que você pode atender hoje
-                <span className="ml-2 text-muted-foreground font-normal text-xs">({clusters.length} disponíveis)</span>
-              </p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-semibold text-foreground">
+                  Selecione as regiões que você pode atender hoje
+                  <span className="ml-2 text-muted-foreground font-normal text-xs">({clusters.length} disponíveis)</span>
+                </p>
+                {clusters.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-primary underline-offset-2 hover:underline shrink-0"
+                    onClick={() => {
+                      if (selected.size === clusters.length) {
+                        setSelected(new Set())
+                      } else {
+                        setSelected(new Set(clusters.map((c) => c.cluster)))
+                      }
+                    }}
+                  >
+                    {selected.size === clusters.length ? "Desmarcar tudo" : "Selecionar tudo"}
+                  </button>
+                )}
+              </div>
               {clusters.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">
                   Nenhuma região disponível no momento.
@@ -344,7 +379,7 @@ export default function DisponibilidadePage() {
                 disabled={loading || selected.size === 0}
               >
                 {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Confirmar ({selected.size})
+                {editMode === "edit" ? `Atualizar (${selected.size})` : `Confirmar (${selected.size})`}
               </Button>
             </div>
           </div>
@@ -357,7 +392,9 @@ export default function DisponibilidadePage() {
               <CheckCircle2 className="h-8 w-8 text-emerald-500" />
             </div>
             <div>
-              <p className="text-lg font-semibold text-foreground">Disponibilidade registrada!</p>
+              <p className="text-lg font-semibold text-foreground">
+                {editMode === "edit" ? "Disponibilidade atualizada!" : "Disponibilidade registrada!"}
+              </p>
               <p className="text-sm text-muted-foreground mt-1">
                 Você marcou {selected.size} região{selected.size !== 1 ? "ões" : ""}. O analista vai atribuir a melhor rota para você.
               </p>

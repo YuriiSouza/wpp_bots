@@ -119,7 +119,7 @@ export default function DriversPage() {
   )
 
   const getRiskLevel = (d: Driver) => {
-    const risk = d.noShowCount * 10 + d.declineRate * 100
+    const risk = d.noShowCount * 10 + d.declineRate
     if (risk > 60) return { level: "Alto", color: "text-destructive", bg: "bg-destructive/15" }
     if (risk > 30) return { level: "Medio", color: "text-warning", bg: "bg-warning/15" }
     return { level: "Baixo", color: "text-success", bg: "bg-success/15" }
@@ -308,8 +308,8 @@ export default function DriversPage() {
                 description="Quem exige mais atencao"
                 items={analytics.topRisk.map((driver) => ({
                   label: driver.name || driver.id,
-                  value: `${driver.noShowCount} no-show | ${(driver.declineRate * 100).toFixed(0)}% decline`,
-                  progress: Math.min(100, driver.noShowCount * 10 + driver.declineRate * 100),
+                  value: `${driver.noShowCount} no-show | ${driver.declineRate.toFixed(0)}% decline`,
+                  progress: Math.min(100, driver.noShowCount * 10 + driver.declineRate),
                 }))}
               />
             </div>
@@ -433,7 +433,7 @@ export default function DriversPage() {
                               <DriverMetric label="DS" value={driver.ds || "-"} />
                               <DriverMetric label="Score" value={String(driver.priorityScore)} />
                               <DriverMetric label="No-Show" value={String(driver.noShowCount)} />
-                              <DriverMetric label="Decline" value={`${(driver.declineRate * 100).toFixed(0)}%`} />
+                              <DriverMetric label="Decline" value={`${driver.declineRate.toFixed(0)}%`} />
                             </div>
 
                             <div className="space-y-2">

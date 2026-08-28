@@ -18,7 +18,7 @@ interface DriverInfo {
   ds: string | null
   noShowCount: number
   declineRate: number
-  routesDone: number
+
 }
 
 interface ClusterOption {
@@ -31,10 +31,6 @@ type Step = "identify" | "select" | "done"
 type EditMode = "new" | "edit"
 
 const TOOLTIPS: Record<string, { label: string; description: string }> = {
-  rotas: {
-    label: "Rotas realizadas",
-    description: "Quantidade de rotas que você aceitou e concluiu com sucesso (status Aprovada ou Exportada).",
-  },
   ds: {
     label: "DS — Desempenho de Serviço",
     description:
@@ -264,11 +260,6 @@ export default function DisponibilidadePage() {
               {/* Stats grid */}
               <div className="grid grid-cols-2 gap-2">
                 <StatCard
-                  label="Rotas realizadas"
-                  tooltipId="rotas"
-                  value={driver.routesDone != null ? String(driver.routesDone) : "—"}
-                />
-                <StatCard
                   label="DS"
                   tooltipId="ds"
                   value={formatDs(driver.ds)}
@@ -292,8 +283,8 @@ export default function DisponibilidadePage() {
                 <StatCard
                   label="Recusas"
                   tooltipId="recusas"
-                  value={driver.declineRate > 0 ? `${(driver.declineRate * 100).toFixed(1)}%` : "0%"}
-                  accent={driver.declineRate > 0.2 ? "text-amber-600" : undefined}
+                  value={driver.declineRate > 0 ? `${driver.declineRate.toFixed(1)}%` : "0%"}
+                  accent={driver.declineRate > 20 ? "text-amber-600" : undefined}
                 />
               </div>
 

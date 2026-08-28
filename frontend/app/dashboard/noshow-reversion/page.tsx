@@ -38,6 +38,7 @@ import {
   UserCheck,
   RotateCcw,
   KeyRound,
+  ClipboardList,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -52,6 +53,7 @@ import {
   saveSpxCredentials,
   fetchSpxCredentialsStatus,
   spxReassign,
+  bulkAssignRoutes,
   getApiErrorMessage,
   type NoShowReversionBoard,
   type NoShowReversionDriver,
@@ -209,6 +211,10 @@ export default function NoShowReversionPage() {
   const [spxModalOpen, setSpxModalOpen] = useState(false)
   const [spxCurlInput, setSpxCurlInput] = useState("")
   const [spxSending, setSpxSending] = useState(false)
+  const [bulkModalOpen, setBulkModalOpen] = useState(false)
+  const [bulkInput, setBulkInput] = useState("")
+  const [bulkRunning, setBulkRunning] = useState(false)
+  const [bulkResults, setBulkResults] = useState<{ atId: string; driverId: string; ok: boolean; message: string }[] | null>(null)
 
   const todayKey = `noshow-overrides-${new Date().toISOString().slice(0, 10)}`
 
@@ -298,6 +304,45 @@ export default function NoShowReversionPage() {
     setOverrides(displacementConfirm.newOverrides)
     setDisplacementConfirm(null)
     setAssignModal(null)
+  }
+
+  const parseBulkInput = (text: string) => {
+    return text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const parts = l.split(/[\t\s]+/)
+        return parts.length >= 2 ? { driverId: parts[0], atId: parts[1] } : null
+      })
+      .filter(Boolean) as { driverId: string; atId: string }[]
+  }
+
+  const handleBulkAssign = async () => {
+    const assignments = parseBulkInput(bulkInput)
+    if (assignments.length === 0) { toast.error("Nenhuma atribuição válida encontrada."); return }
+    setBulkRunning(true)
+    setBulkResults(null)
+    try {
+      const { results } = await bulkAssignRoutes(assignments)
+      setBulkResults(results)
+      if (spxConfigured) {
+        for (const r of results) {
+          if (r.ok) {
+            try { await spxReassign(r.driverId, r.atId) } catch { /* ignora, resultado já no nosso sistema */ }
+          }
+        }
+      }
+      const ok = results.filter((r) => r.ok).length
+      const fail = results.length - ok
+      if (ok > 0) toast.success(`${ok} rota${ok !== 1 ? "s" : ""} atribuída${ok !== 1 ? "s" : ""}${fail > 0 ? `, ${fail} falha${fail !== 1 ? "s" : ""}` : ""}`)
+      else toast.error("Nenhuma rota foi atribuída")
+      await loadBoard()
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Erro na atribuição em lote"))
+    } finally {
+      setBulkRunning(false)
+    }
   }
 
   const parseCurl = (curl: string): Record<string, string> => {
@@ -520,6 +565,14 @@ export default function NoShowReversionPage() {
         >
           <KeyRound className="mr-1.5 h-4 w-4" />
           {spxConfigured ? "SPX configurado" : "Configurar SPX"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => { setBulkInput(""); setBulkResults(null); setBulkModalOpen(true) }}
+        >
+          <ClipboardList className="mr-1.5 h-4 w-4" />
+          Atribuição em lote
         </Button>
         {board && (
           <span className="ml-auto text-xs text-muted-foreground">
@@ -1116,6 +1169,60 @@ export default function NoShowReversionPage() {
     </Dialog>
 
     {/* Displacement confirmation dialog */}
+    {/* Bulk assign modal */}
+    <Dialog open={bulkModalOpen} onOpenChange={(open) => { if (!open) setBulkModalOpen(false) }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ClipboardList className="h-5 w-5" />
+            Atribuição em lote
+          </DialogTitle>
+          <DialogDescription>
+            Cole os pares de motorista e rota, um por linha, separados por TAB ou espaço.<br />
+            Formato: <code className="text-xs bg-muted px-1 rounded">driverId{"\t"}AtId</code>
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <textarea
+            className="w-full min-h-[160px] rounded-md border bg-muted/30 p-3 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/50"
+            placeholder={"123456\tAT-001\n789012\tAT-002"}
+            value={bulkInput}
+            onChange={(e) => setBulkInput(e.target.value)}
+            disabled={bulkRunning}
+          />
+          {bulkInput.trim() && (() => {
+            const parsed = parseBulkInput(bulkInput)
+            return parsed.length > 0 ? (
+              <p className="text-xs text-muted-foreground">{parsed.length} par{parsed.length !== 1 ? "es" : ""} encontrado{parsed.length !== 1 ? "s" : ""}</p>
+            ) : (
+              <p className="text-xs text-red-500">Nenhum par válido encontrado. Use TAB ou espaço entre driverId e AtId.</p>
+            )
+          })()}
+          {bulkResults && (
+            <div className="rounded-lg border bg-muted/20 p-3 space-y-1.5 max-h-48 overflow-y-auto">
+              <p className="text-xs font-semibold text-muted-foreground mb-2">Resultado:</p>
+              {bulkResults.map((r, i) => (
+                <div key={i} className={`flex items-center gap-2 text-xs rounded px-2 py-1 ${r.ok ? "bg-emerald-500/10 text-emerald-700" : "bg-red-500/10 text-red-700"}`}>
+                  <span className={`h-2 w-2 rounded-full flex-shrink-0 ${r.ok ? "bg-emerald-500" : "bg-red-500"}`} />
+                  <span className="font-mono">{r.driverId} → {r.atId}</span>
+                  {!r.ok && <span className="ml-auto text-[11px] opacity-80">{r.message}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setBulkModalOpen(false)} disabled={bulkRunning}>Fechar</Button>
+          <Button
+            disabled={!bulkInput.trim() || bulkRunning || parseBulkInput(bulkInput).length === 0}
+            onClick={() => void handleBulkAssign()}
+          >
+            {bulkRunning ? "Atribuindo..." : `Atribuir ${parseBulkInput(bulkInput).length > 0 ? `(${parseBulkInput(bulkInput).length})` : ""}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <Dialog open={!!displacementConfirm} onOpenChange={(open) => { if (!open) setDisplacementConfirm(null) }}>
       <DialogContent className="max-w-md">
         <DialogHeader>

@@ -7468,6 +7468,23 @@ export class AppService {
 `;
   }
 
+  async bulkAssignRoutes(assignments: { driverId: string; atId: string }[]) {
+    const results: { atId: string; driverId: string; ok: boolean; message: string }[] = [];
+    for (const { driverId, atId } of assignments) {
+      const route = await (this.prisma as any).route.findFirst({
+        where: { atId: { equals: atId.trim(), mode: 'insensitive' } },
+        select: { id: true, atId: true },
+      });
+      if (!route) {
+        results.push({ atId, driverId, ok: false, message: 'Rota não encontrada.' });
+        continue;
+      }
+      const result = await this.assignRoute(route.id, driverId.trim());
+      results.push({ atId, driverId, ok: result.ok, message: result.message ?? '' });
+    }
+    return { results };
+  }
+
   private readonly SPX_CREDS_KEY = 'spx:credentials';
 
   async saveSpxCredentials(creds: Record<string, string>) {

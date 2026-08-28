@@ -758,6 +758,21 @@ export async function saveAvailabilityEnabled(enabled: boolean) {
   return response.data
 }
 
+export async function saveSpxCredentials(creds: Record<string, string>) {
+  const response = await api.put<{ ok: boolean; message: string }>('/api/spx/credentials', creds)
+  return response.data
+}
+
+export async function fetchSpxCredentialsStatus() {
+  const response = await api.get<{ configured: boolean; deviceId?: string | null }>('/api/spx/credentials/status')
+  return response.data
+}
+
+export async function spxReassign(driverId: string, atId: string) {
+  const response = await api.post<{ ok: boolean; message: string }>('/api/spx/reassign', { driverId, atId })
+  return response.data
+}
+
 export async function updateSelfProfile(payload: { name?: string; hubId?: string | null }) {
   const response = await api.put<ApiActionResponse & { user: Record<string, unknown>; accessToken: string }>('/api/profile', payload)
   return response.data

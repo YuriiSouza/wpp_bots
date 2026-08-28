@@ -37,6 +37,7 @@ import {
   Building2,
   UserCheck,
   RotateCcw,
+  KeyRound,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -48,6 +49,9 @@ import {
   fetchAvailabilityEnabled,
   saveAvailabilityEnabled,
   removeBlocklistDriver,
+  saveSpxCredentials,
+  fetchSpxCredentialsStatus,
+  spxReassign,
   getApiErrorMessage,
   type NoShowReversionBoard,
   type NoShowReversionDriver,
@@ -201,6 +205,10 @@ export default function NoShowReversionPage() {
   const [isTogglingAvail, setIsTogglingAvail] = useState(false)
   const [returningRouteId, setReturningRouteId] = useState<string | null>(null)
   const [unblockingDriverId, setUnblockingDriverId] = useState<string | null>(null)
+  const [spxConfigured, setSpxConfigured] = useState(false)
+  const [spxModalOpen, setSpxModalOpen] = useState(false)
+  const [spxCurlInput, setSpxCurlInput] = useState("")
+  const [spxSending, setSpxSending] = useState(false)
 
   const todayKey = `noshow-overrides-${new Date().toISOString().slice(0, 10)}`
 
@@ -244,6 +252,7 @@ export default function NoShowReversionPage() {
   useEffect(() => {
     void loadBoard()
     void fetchAvailabilityEnabled().then(setAvailabilityEnabled).catch(() => {})
+    void fetchSpxCredentialsStatus().then((s) => setSpxConfigured(s.configured)).catch(() => {})
   }, [loadBoard])
 
   useEffect(() => {
@@ -291,23 +300,82 @@ export default function NoShowReversionPage() {
     setAssignModal(null)
   }
 
+  const parseCurl = (curl: string): Record<string, string> => {
+    const creds: Record<string, string> = {}
+    const cookieMatch = curl.match(/-b\s+'([^']+)'/)
+    if (cookieMatch) creds['cookie'] = cookieMatch[1]
+    const extract = (pattern: RegExp) => { const m = curl.match(pattern); return m ? m[1].trim() : undefined }
+    const csrftoken = extract(/x-csrftoken:\s*([^\s'\\]+)/i)
+    if (csrftoken) creds['x-csrftoken'] = csrftoken
+    const sapRi = extract(/x-sap-ri:\s*([^\s'\\]+)/i)
+    if (sapRi) creds['x-sap-ri'] = sapRi
+    const deviceId = extract(/device-id:\s*([^\s'\\]+)/i)
+    if (deviceId) creds['device-id'] = deviceId
+    // x-sap-sec: value may be long and multiline — grab until next header or end of string
+    const sapSecMatch = curl.match(/x-sap-sec:\s*([^']+?)'[\s\\]*(?:-H|--data|$)/i)
+    if (sapSecMatch) creds['x-sap-sec'] = sapSecMatch[1].trim()
+    return creds
+  }
+
+  const handleSaveSpxCreds = async () => {
+    const creds = parseCurl(spxCurlInput)
+    if (!creds['cookie'] || !creds['x-csrftoken']) {
+      toast.error("Não foi possível extrair as credenciais. Verifique o curl copiado.")
+      return
+    }
+    try {
+      await saveSpxCredentials(creds)
+      setSpxConfigured(true)
+      setSpxModalOpen(false)
+      setSpxCurlInput("")
+      toast.success("Credenciais SPX salvas com sucesso.")
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Erro ao salvar credenciais"))
+    }
+  }
+
   const handleAssign = async () => {
     if (isAssigning || effectiveAssignments.size === 0) return
     setIsAssigning(true)
     let ok = 0
     let fail = 0
+    let spxOk = 0
+    let spxFail = 0
     try {
       for (const [routeId, driver] of effectiveAssignments) {
+        const route = board?.routes.find((r) => r.id === routeId)
         try {
           const result = await assignRoute(routeId, driver.driverId)
-          if (result.ok) ok++
-          else fail++
-        } catch {
-          fail++
-        }
+          if (result.ok) {
+            ok++
+            if (spxConfigured && route) {
+              try {
+                const spxResult = await spxReassign(driver.driverId, route.atId)
+                if (spxResult.ok) spxOk++
+                else { spxFail++; console.warn(`SPX falhou para ${route.atId}:`, spxResult.message) }
+              } catch { spxFail++ }
+            }
+          } else fail++
+        } catch { fail++ }
       }
-      if (ok > 0) toast.success(`${ok} rota${ok !== 1 ? "s" : ""} atribuída${ok !== 1 ? "s" : ""}${fail > 0 ? `, ${fail} falha${fail !== 1 ? "s" : ""}` : ""}`)
-      else toast.error("Nenhuma rota foi atribuída")
+
+      const mainMsg = ok > 0
+        ? `${ok} rota${ok !== 1 ? "s" : ""} atribuída${ok !== 1 ? "s" : ""}${fail > 0 ? `, ${fail} falha${fail !== 1 ? "s" : ""}` : ""}`
+        : "Nenhuma rota foi atribuída"
+
+      if (ok > 0) {
+        const spxMsg = spxConfigured
+          ? ` | SPX: ${spxOk} ok${spxFail > 0 ? `, ${spxFail} falha${spxFail !== 1 ? "s" : ""}` : ""}`
+          : ""
+        toast.success(mainMsg + spxMsg)
+      } else {
+        toast.error(mainMsg)
+      }
+
+      if (spxConfigured && spxFail > 0) {
+        toast.warning(`${spxFail} rota${spxFail !== 1 ? "s" : ""} não foram atribuídas no SPX — verifique as credenciais.`)
+      }
+
       setOverrides(new Map())
       await loadBoard()
     } finally {
@@ -444,6 +512,15 @@ export default function NoShowReversionPage() {
             {availabilityEnabled ? "Disponibilidade aberta" : "Disponibilidade fechada"}
           </Label>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => { setSpxCurlInput(""); setSpxModalOpen(true) }}
+          className={spxConfigured ? "border-emerald-500/40 text-emerald-700" : "border-amber-500/40 text-amber-700"}
+        >
+          <KeyRound className="mr-1.5 h-4 w-4" />
+          {spxConfigured ? "SPX configurado" : "Configurar SPX"}
+        </Button>
         {board && (
           <span className="ml-auto text-xs text-muted-foreground">
             Disponibilidades de: {board.date}
@@ -987,6 +1064,52 @@ export default function NoShowReversionPage() {
             }}
           >
             {isClearingAvail ? "Apagando..." : "Apagar"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    {/* SPX credentials modal */}
+    <Dialog open={spxModalOpen} onOpenChange={(open) => { if (!open) setSpxModalOpen(false) }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <KeyRound className="h-5 w-5 text-primary" />
+            Credenciais SPX
+          </DialogTitle>
+          <DialogDescription>
+            Cole o curl copiado do navegador (F12 → Network → botão direito na requisição → "Copy as cURL"). O sistema extrai automaticamente os cookies e headers de autenticação.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <textarea
+            className="w-full h-48 rounded-lg border bg-muted/30 p-3 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+            placeholder="Cole o curl aqui..."
+            value={spxCurlInput}
+            onChange={(e) => setSpxCurlInput(e.target.value)}
+          />
+          {spxCurlInput && (() => {
+            const preview = parseCurl(spxCurlInput)
+            const hasAll = preview['cookie'] && preview['x-csrftoken'] && preview['x-sap-ri'] && preview['x-sap-sec']
+            return (
+              <div className={`rounded-lg border p-3 text-xs space-y-1 ${hasAll ? "border-emerald-500/30 bg-emerald-500/5" : "border-amber-500/30 bg-amber-500/5"}`}>
+                <p className="font-semibold mb-2">{hasAll ? "✓ Credenciais identificadas" : "⚠ Algumas credenciais não encontradas"}</p>
+                <p><span className="text-muted-foreground">cookie:</span> {preview['cookie'] ? `${preview['cookie'].slice(0, 40)}…` : "não encontrado"}</p>
+                <p><span className="text-muted-foreground">x-csrftoken:</span> {preview['x-csrftoken'] ?? "não encontrado"}</p>
+                <p><span className="text-muted-foreground">device-id:</span> {preview['device-id'] ?? "não encontrado"}</p>
+                <p><span className="text-muted-foreground">x-sap-ri:</span> {preview['x-sap-ri'] ?? "não encontrado"}</p>
+                <p><span className="text-muted-foreground">x-sap-sec:</span> {preview['x-sap-sec'] ? `${preview['x-sap-sec'].slice(0, 30)}…` : "não encontrado"}</p>
+              </div>
+            )
+          })()}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setSpxModalOpen(false)}>Cancelar</Button>
+          <Button
+            disabled={!spxCurlInput.trim() || spxSending}
+            onClick={async () => { setSpxSending(true); try { await handleSaveSpxCreds() } finally { setSpxSending(false) } }}
+          >
+            {spxSending ? "Salvando..." : "Salvar credenciais"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -7467,4 +7467,61 @@ export class AppService {
 </html>
 `;
   }
+
+  private readonly SPX_CREDS_KEY = 'spx:credentials';
+
+  async saveSpxCredentials(creds: Record<string, string>) {
+    await this.redisService.set(this.SPX_CREDS_KEY, creds);
+    return { ok: true, message: 'Credenciais SPX salvas.' };
+  }
+
+  async getSpxCredentialsStatus() {
+    const creds = await this.redisService.get<Record<string, string>>(this.SPX_CREDS_KEY);
+    if (!creds) return { configured: false };
+    return { configured: true, deviceId: creds['device-id'] ?? null };
+  }
+
+  async spxReassign(driverIdRaw: string, atId: string) {
+    const creds = await this.redisService.get<Record<string, string>>(this.SPX_CREDS_KEY);
+    if (!creds) return { ok: false, message: 'Credenciais SPX não configuradas.' };
+
+    const driverIdNum = parseInt(driverIdRaw, 10);
+    if (isNaN(driverIdNum)) return { ok: false, message: `Driver ID inválido: ${driverIdRaw}` };
+
+    const axios = (await import('axios')).default;
+    try {
+      const res = await axios.post(
+        'https://spx.shopee.com.br/spx_delivery/admin/assignment/assignment_task/reassign',
+        {
+          driver_id: driverIdNum,
+          assignment_task_id: atId,
+          assign_driver_across_station: false,
+          driver_vehicle_id: '',
+        },
+        {
+          headers: {
+            'accept': 'application/json, text/plain, */*',
+            'accept-language': 'en-US,en;q=0.9,pt;q=0.8',
+            'app': 'FMS Portal',
+            'content-type': 'application/json;charset=UTF-8',
+            'cookie': creds['cookie'] ?? '',
+            'device-id': creds['device-id'] ?? '',
+            'origin': 'https://spx.shopee.com.br',
+            'referer': 'https://spx.shopee.com.br/',
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+            'x-csrftoken': creds['x-csrftoken'] ?? '',
+            'x-sap-ri': creds['x-sap-ri'] ?? '',
+            'x-sap-sec': creds['x-sap-sec'] ?? '',
+          },
+          timeout: 10000,
+        },
+      );
+      const data = res.data as any;
+      const ok = data?.code === 0 || data?.success === true || res.status === 200;
+      return { ok, message: ok ? 'Atribuído no SPX.' : (data?.msg || data?.message || 'Erro desconhecido do SPX'), data };
+    } catch (err: any) {
+      const msg = err?.response?.data?.msg || err?.response?.data?.message || err?.message || 'Erro ao chamar SPX';
+      return { ok: false, message: msg };
+    }
+  }
 }

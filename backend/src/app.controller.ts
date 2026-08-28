@@ -189,6 +189,11 @@ export class AppController {
     return this.appService.spxReassign(body.driverId, body.atId);
   }
 
+  @Post('api/routes/bulk-assign')
+  async bulkAssignRoutes(@Body() body: { assignments: { driverId: string; atId: string }[] }) {
+    return this.appService.bulkAssignRoutes(body.assignments ?? []);
+  }
+
   @Post('api/routes/:routeId/unassign')
   async unassignRoute(
     @Param('routeId') routeId: string,

@@ -108,7 +108,7 @@ function parseDsValue(value?: string | null) {
 function formatDs(value?: string | null) {
   const ds = parseDsValue(value)
   if (ds === null) return "—"
-  return `${ds.toFixed(0)}%`
+  return `${ds.toFixed(2)}%`
 }
 
 function StatCard({
@@ -266,7 +266,7 @@ export default function DisponibilidadePage() {
                 <StatCard
                   label="Rotas realizadas"
                   tooltipId="rotas"
-                  value={String(driver.routesDone)}
+                  value={driver.routesDone != null ? String(driver.routesDone) : "—"}
                 />
                 <StatCard
                   label="DS"
@@ -292,7 +292,7 @@ export default function DisponibilidadePage() {
                 <StatCard
                   label="Recusas"
                   tooltipId="recusas"
-                  value={driver.declineRate > 0 ? `${(driver.declineRate * 100).toFixed(0)}%` : "0%"}
+                  value={driver.declineRate > 0 ? `${(driver.declineRate * 100).toFixed(1)}%` : "0%"}
                   accent={driver.declineRate > 0.2 ? "text-amber-600" : undefined}
                 />
               </div>
@@ -303,7 +303,7 @@ export default function DisponibilidadePage() {
                   <span className="text-sm font-medium text-foreground">Score de Prioridade</span>
                   <Tooltip id="score" />
                 </div>
-                <span className="text-2xl font-bold text-primary">{driver.priorityScore.toFixed(0)}</span>
+                <span className="text-2xl font-bold text-primary">{String(driver.priorityScore)}</span>
               </div>
             </div>
 

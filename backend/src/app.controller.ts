@@ -174,6 +174,21 @@ export class AppController {
     return { ok: true, enabled };
   }
 
+  @Put('api/spx/credentials')
+  async saveSpxCredentials(@Body() body: Record<string, string>) {
+    return this.appService.saveSpxCredentials(body);
+  }
+
+  @Get('api/spx/credentials/status')
+  async getSpxCredentialsStatus() {
+    return this.appService.getSpxCredentialsStatus();
+  }
+
+  @Post('api/spx/reassign')
+  async spxReassign(@Body() body: { driverId: string; atId: string }) {
+    return this.appService.spxReassign(body.driverId, body.atId);
+  }
+
   @Post('api/routes/:routeId/unassign')
   async unassignRoute(
     @Param('routeId') routeId: string,

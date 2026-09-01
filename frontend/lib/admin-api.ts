@@ -707,6 +707,8 @@ export interface NoShowReversionDriver {
   isBlocked: boolean
   blockReason: string | null
   registeredAt: string
+  lastRouteDate: string | null
+  totalRoutesAccepted: number
 }
 
 export interface NoShowReversionRoute {

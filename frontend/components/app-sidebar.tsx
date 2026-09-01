@@ -3,22 +3,14 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
-  LayoutDashboard,
-  Map,
   Users,
-  MapPin,
   ShieldBan,
-  MessageCircleQuestion,
   RefreshCw,
-  Table2,
-  Headset,
-  History,
-  BarChart3,
   FileText,
-  Bot,
   Settings,
   UserCircle2,
   RotateCcw,
+  Headset,
 } from "lucide-react"
 import {
   Sidebar,
@@ -36,28 +28,17 @@ import {
 import { useAuthContext } from "@/components/auth-provider"
 
 const mainNav = [
-  { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { title: "Motoristas", href: "/dashboard/drivers", icon: Users },
-  { title: "Rotas", href: "/dashboard/routes", icon: MapPin },
   { title: "Reversão NoShow", href: "/dashboard/noshow-reversion", icon: RotateCcw },
-  { title: "Overview", href: "/dashboard/overview", icon: Table2 },
-]
-
-const supportNav = [
-  { title: "Atendimento", href: "/dashboard/support", icon: Headset },
-  { title: "Historico", href: "/dashboard/history", icon: History },
-  { title: "Metricas", href: "/dashboard/metrics", icon: BarChart3 },
 ]
 
 const managementNav = [
   { title: "Blocklist", href: "/dashboard/blocklist", icon: ShieldBan },
-  { title: "FAQ", href: "/dashboard/faq", icon: MessageCircleQuestion },
   { title: "Sync Monitor", href: "/dashboard/sync", icon: RefreshCw },
 ]
 
 const systemNav = [
   { title: "Auditoria", href: "/dashboard/audit", icon: FileText },
-  { title: "Saude do Bot", href: "/dashboard/bot-health", icon: Bot },
   { title: "Configuracoes", href: "/dashboard/settings", icon: Settings },
 ]
 
@@ -90,23 +71,6 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {mainNav.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton asChild isActive={isActive(item.href)} tooltip={item.title}>
-                    <Link href={item.href}>
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-        <SidebarGroup>
-          <SidebarGroupLabel>Atendimento</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {supportNav.map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton asChild isActive={isActive(item.href)} tooltip={item.title}>
                     <Link href={item.href}>

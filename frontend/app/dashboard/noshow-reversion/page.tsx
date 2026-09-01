@@ -818,6 +818,16 @@ export default function NoShowReversionPage() {
                                 {effective.noShowCount} no-show{effective.noShowCount !== 1 ? "s" : ""}
                               </Badge>
                             )}
+                            <span className="text-[10px] text-muted-foreground">
+                              {effective.lastRouteDate
+                                ? (() => {
+                                    const days = Math.floor((Date.now() - new Date(effective.lastRouteDate).getTime()) / 86400000)
+                                    if (days === 0) return "Rodou hoje"
+                                    if (days === 1) return "1 dia sem rota"
+                                    return `${days} dias sem rota`
+                                  })()
+                                : "Nunca rodou"}
+                            </span>
                           </div>
                         ) : (
                           <span className="text-xs text-muted-foreground flex items-center gap-1">

@@ -31,6 +31,8 @@ export const mockDrivers: Driver[] = driverNames.map((name, i) => ({
   noShowCount: Math.floor(Math.random() * 8),
   declineRate: Math.round(Math.random() * 40) / 100,
   priorityScore: Math.round((Math.random() * 80 + 20) * 10) / 10,
+  lastRouteDate: new Date(Date.now() - Math.floor(Math.random() * 30) * 86400000).toISOString().slice(0, 10),
+  totalRoutesAccepted: Math.floor(Math.random() * 50),
   updatedAt: new Date(Date.now() - Math.random() * 7 * 86400000).toISOString(),
   createdAt: new Date(Date.now() - Math.random() * 90 * 86400000).toISOString(),
 }))

@@ -14,6 +14,8 @@ export interface Driver {
   noShowCount: number
   declineRate: number
   priorityScore: number
+  lastRouteDate: string | null
+  totalRoutesAccepted: number
   updatedAt: string
   createdAt: string
 }

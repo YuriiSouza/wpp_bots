@@ -429,11 +429,22 @@ export default function DriversPage() {
                               </div>
                             </div>
 
-                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                               <DriverMetric label="DS" value={driver.ds || "-"} />
                               <DriverMetric label="Score" value={String(driver.priorityScore)} />
                               <DriverMetric label="No-Show" value={String(driver.noShowCount)} />
                               <DriverMetric label="Decline" value={`${driver.declineRate.toFixed(0)}%`} />
+                              <DriverMetric label="Rotas aceitas" value={String(driver.totalRoutesAccepted ?? 0)} />
+                              <DriverMetric
+                                label="Última rota"
+                                value={(() => {
+                                  if (!driver.lastRouteDate) return "Nunca"
+                                  const days = Math.floor((Date.now() - new Date(driver.lastRouteDate).getTime()) / 86400000)
+                                  if (days === 0) return "Hoje"
+                                  if (days === 1) return "Ontem"
+                                  return `${days} dias atrás`
+                                })()}
+                              />
                             </div>
 
                             <div className="space-y-2">

@@ -130,6 +130,8 @@ export default function BlocklistPage() {
           noShowCount: 0,
           declineRate: 0,
           priorityScore: 0,
+          lastRouteDate: null,
+          totalRoutesAccepted: 0,
           updatedAt: new Date().toISOString(),
           createdAt: new Date().toISOString(),
         }))

@@ -343,7 +343,7 @@ export default function NoShowReversionPage() {
         if (spxConfigured) {
           try {
             const res = await spxReassign(driverId, atId)
-            spxOk = res?.ok !== false
+            spxOk = res?.ok === true
             spxMessage = res?.message
           } catch (e: any) {
             spxOk = false
@@ -893,8 +893,23 @@ export default function NoShowReversionPage() {
                   return (
                     <TableRow key={driver.driverId} className={driver.isBlocked ? "bg-red-500/5" : ""}>
                       <TableCell className="py-2.5">
-                        <p className="text-sm font-medium">{driver.name || driver.driverId}</p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-sm font-medium">{driver.name || driver.driverId}</p>
+                          {driver.totalRoutesAccepted === 0 && (
+                            <Badge variant="outline" className="text-[10px] border-violet-500/30 bg-violet-500/10 text-violet-700">Novato</Badge>
+                          )}
+                        </div>
                         <p className="text-xs text-muted-foreground font-mono">{driver.driverId}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {driver.lastRouteDate
+                            ? (() => {
+                                const days = Math.floor((Date.now() - new Date(driver.lastRouteDate).getTime()) / 86400000)
+                                if (days === 0) return "Rodou hoje"
+                                if (days === 1) return "1 dia sem rota"
+                                return `${days} dias sem rota`
+                              })()
+                            : "Nunca rodou"}
+                        </p>
                       </TableCell>
                       <TableCell className="py-2.5">
                         {driver.vehicleType

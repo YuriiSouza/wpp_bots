@@ -7544,8 +7544,9 @@ export class AppService {
         },
       );
       const data = res.data as any;
-      const ok = data?.code === 0 || data?.success === true || res.status === 200;
-      return { ok, message: ok ? 'Atribuído no SPX.' : (data?.msg || data?.message || 'Erro desconhecido do SPX'), data };
+      const ok = data?.code === 0 || data?.success === true;
+      const errMsg = data?.msg || data?.message || data?.error || 'Erro desconhecido do SPX';
+      return { ok, message: ok ? 'Atribuído no SPX.' : errMsg, data };
     } catch (err: any) {
       const msg = err?.response?.data?.msg || err?.response?.data?.message || err?.message || 'Erro ao chamar SPX';
       return { ok: false, message: msg };

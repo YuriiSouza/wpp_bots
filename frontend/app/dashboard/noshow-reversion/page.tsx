@@ -31,6 +31,8 @@ import {
   MapPin,
   Ban,
   CheckCircle2,
+  XCircle,
+  Loader2,
   AlertTriangle,
   Users,
   Route as RouteIcon,
@@ -214,7 +216,7 @@ export default function NoShowReversionPage() {
   const [bulkModalOpen, setBulkModalOpen] = useState(false)
   const [bulkInput, setBulkInput] = useState("")
   const [bulkRunning, setBulkRunning] = useState(false)
-  const [bulkResults, setBulkResults] = useState<{ atId: string; driverId: string; ok: boolean; message: string }[] | null>(null)
+  const [bulkResults, setBulkResults] = useState<{ atId: string; driverId: string; ok: boolean; message: string; status: "pending" | "done"; spxOk?: boolean; spxMessage?: string }[] | null>(null)
 
   const todayKey = `noshow-overrides-${new Date().toISOString().slice(0, 10)}`
 
@@ -322,21 +324,45 @@ export default function NoShowReversionPage() {
     const assignments = parseBulkInput(bulkInput)
     if (assignments.length === 0) { toast.error("Nenhuma atribuição válida encontrada."); return }
     setBulkRunning(true)
-    setBulkResults(null)
+    // Inicializa a lista com todos os itens em estado "aguardando"
+    setBulkResults(assignments.map(({ driverId, atId }) => ({ driverId, atId, ok: false, message: "", status: "pending" as const })))
     try {
-      const { results } = await bulkAssignRoutes(assignments)
-      setBulkResults(results)
-      if (spxConfigured) {
-        for (const r of results) {
-          if (r.ok) {
-            try { await spxReassign(r.driverId, r.atId) } catch { /* ignora, resultado já no nosso sistema */ }
+      for (let i = 0; i < assignments.length; i++) {
+        const { driverId, atId } = assignments[i]
+        let localOk = false
+        let localMsg = "Rota não encontrada no sistema local"
+        let spxOk: boolean | undefined
+        let spxMessage: string | undefined
+
+        try {
+          const localRes = await bulkAssignRoutes([{ driverId, atId }])
+          const r = localRes.results?.[0]
+          if (r) { localOk = r.ok; localMsg = r.message }
+        } catch { /* segue */ }
+
+        if (spxConfigured) {
+          try {
+            const res = await spxReassign(driverId, atId)
+            spxOk = res?.ok !== false
+            spxMessage = res?.message
+          } catch (e: any) {
+            spxOk = false
+            spxMessage = e?.message || "Erro SPX"
           }
         }
+
+        const ok = localOk || spxOk === true
+        const message = localOk ? "Sistema ✓" : spxOk ? "SPX ✓" : localMsg
+
+        // Atualiza apenas o item atual na lista
+        setBulkResults((prev) => {
+          if (!prev) return prev
+          const next = [...prev]
+          next[i] = { driverId, atId, ok, message, status: "done", spxOk, spxMessage }
+          return next
+        })
       }
-      const ok = results.filter((r) => r.ok).length
-      const fail = results.length - ok
-      if (ok > 0) toast.success(`${ok} rota${ok !== 1 ? "s" : ""} atribuída${ok !== 1 ? "s" : ""}${fail > 0 ? `, ${fail} falha${fail !== 1 ? "s" : ""}` : ""}`)
-      else toast.error("Nenhuma rota foi atribuída")
+
       await loadBoard()
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Erro na atribuição em lote"))
@@ -777,6 +803,11 @@ export default function NoShowReversionPage() {
                                 Não é moto
                               </Badge>
                             )}
+                            {(effective.totalRoutesAccepted === 0) && (
+                              <Badge variant="outline" className="text-[10px] border-violet-500/30 bg-violet-500/10 text-violet-700">
+                                Novato
+                              </Badge>
+                            )}
                             <Badge variant="outline" className={`text-xs ${dsMeta.className}`}>DS {dsMeta.valueLabel}</Badge>
                             <Badge variant="outline" className="text-xs">Score {effective.priorityScore.toFixed(0)}</Badge>
                             {isOverridden && (
@@ -1170,7 +1201,7 @@ export default function NoShowReversionPage() {
 
     {/* Displacement confirmation dialog */}
     {/* Bulk assign modal */}
-    <Dialog open={bulkModalOpen} onOpenChange={(open) => { if (!open) setBulkModalOpen(false) }}>
+    <Dialog open={bulkModalOpen} onOpenChange={(open) => { if (!open && !bulkRunning) { setBulkModalOpen(false); setBulkResults(null); setBulkInput("") } }}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -1178,46 +1209,102 @@ export default function NoShowReversionPage() {
             Atribuição em lote
           </DialogTitle>
           <DialogDescription>
-            Cole os pares de motorista e rota, um por linha, separados por TAB ou espaço.<br />
+            Cole os pares abaixo, um por linha — separados por TAB ou espaço.<br />
             Formato: <code className="text-xs bg-muted px-1 rounded">driverId{"\t"}AtId</code>
           </DialogDescription>
         </DialogHeader>
+
         <div className="space-y-3">
-          <textarea
-            className="w-full min-h-[160px] rounded-md border bg-muted/30 p-3 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/50"
-            placeholder={"123456\tAT-001\n789012\tAT-002"}
-            value={bulkInput}
-            onChange={(e) => setBulkInput(e.target.value)}
-            disabled={bulkRunning}
-          />
-          {bulkInput.trim() && (() => {
-            const parsed = parseBulkInput(bulkInput)
-            return parsed.length > 0 ? (
-              <p className="text-xs text-muted-foreground">{parsed.length} par{parsed.length !== 1 ? "es" : ""} encontrado{parsed.length !== 1 ? "s" : ""}</p>
-            ) : (
-              <p className="text-xs text-red-500">Nenhum par válido encontrado. Use TAB ou espaço entre driverId e AtId.</p>
-            )
-          })()}
+          {/* Fase de input — some quando está rodando ou já tem resultados */}
+          {!bulkResults && (
+            <>
+              <textarea
+                className="w-full min-h-[180px] rounded-md border bg-muted/30 p-3 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-primary/50"
+                placeholder={"464975\tAT2026090196YQX\n2435937\tAT2026090196Z5N"}
+                value={bulkInput}
+                onChange={(e) => setBulkInput(e.target.value)}
+                autoFocus
+              />
+              {bulkInput.trim() && (() => {
+                const parsed = parseBulkInput(bulkInput)
+                return parsed.length > 0
+                  ? <p className="text-xs text-muted-foreground">{parsed.length} par{parsed.length !== 1 ? "es" : ""} reconhecido{parsed.length !== 1 ? "s" : ""}</p>
+                  : <p className="text-xs text-red-500">Nenhum par válido. Use TAB ou espaço entre os dois valores.</p>
+              })()}
+            </>
+          )}
+
+          {/* Lista de resultados — aparece assim que começa a processar */}
           {bulkResults && (
-            <div className="rounded-lg border bg-muted/20 p-3 space-y-1.5 max-h-48 overflow-y-auto">
-              <p className="text-xs font-semibold text-muted-foreground mb-2">Resultado:</p>
+            <div className="rounded-lg border divide-y overflow-hidden max-h-[360px] overflow-y-auto">
               {bulkResults.map((r, i) => (
-                <div key={i} className={`flex items-center gap-2 text-xs rounded px-2 py-1 ${r.ok ? "bg-emerald-500/10 text-emerald-700" : "bg-red-500/10 text-red-700"}`}>
-                  <span className={`h-2 w-2 rounded-full flex-shrink-0 ${r.ok ? "bg-emerald-500" : "bg-red-500"}`} />
-                  <span className="font-mono">{r.driverId} → {r.atId}</span>
-                  {!r.ok && <span className="ml-auto text-[11px] opacity-80">{r.message}</span>}
+                <div key={i} className={`flex items-center gap-3 px-3 py-2.5 text-sm ${
+                  r.status === "pending" ? "bg-muted/20" :
+                  r.ok ? "bg-emerald-500/8" : "bg-red-500/8"
+                }`}>
+                  {/* Ícone de status */}
+                  <div className="flex-shrink-0 w-5 flex items-center justify-center">
+                    {r.status === "pending"
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                      : r.ok
+                        ? <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                        : <XCircle className="h-4 w-4 text-red-500" />
+                    }
+                  </div>
+
+                  {/* Dados */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 font-mono text-xs">
+                      <span className="text-muted-foreground">{r.driverId}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <span className="font-semibold text-foreground">{r.atId}</span>
+                    </div>
+                    {r.status === "done" && (
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <span className={`text-[11px] ${r.ok ? "text-emerald-700" : "text-red-600"}`}>{r.message}</span>
+                        {r.spxOk !== undefined && (
+                          <span className={`text-[11px] ${r.spxOk ? "text-emerald-600" : "text-amber-600"}`}>
+                            · SPX {r.spxOk ? "✓" : `✗${r.spxMessage ? ` — ${r.spxMessage}` : ""}`}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           )}
+
+          {/* Resumo após concluir */}
+          {bulkResults && !bulkRunning && (() => {
+            const done = bulkResults.filter((r) => r.status === "done")
+            const ok = done.filter((r) => r.ok).length
+            const fail = done.length - ok
+            return (
+              <p className="text-xs text-muted-foreground text-right">
+                {ok > 0 && <span className="text-emerald-600">{ok} ok</span>}
+                {ok > 0 && fail > 0 && " · "}
+                {fail > 0 && <span className="text-red-500">{fail} falha{fail !== 1 ? "s" : ""}</span>}
+              </p>
+            )
+          })()}
         </div>
+
         <DialogFooter>
-          <Button variant="outline" onClick={() => setBulkModalOpen(false)} disabled={bulkRunning}>Fechar</Button>
+          {bulkResults
+            ? <Button variant="outline" onClick={() => { setBulkResults(null); setBulkInput("") }} disabled={bulkRunning}>
+                Novo lote
+              </Button>
+            : <Button variant="outline" onClick={() => setBulkModalOpen(false)}>Cancelar</Button>
+          }
           <Button
-            disabled={!bulkInput.trim() || bulkRunning || parseBulkInput(bulkInput).length === 0}
+            disabled={bulkRunning || (!bulkResults && (parseBulkInput(bulkInput).length === 0))}
             onClick={() => void handleBulkAssign()}
           >
-            {bulkRunning ? "Atribuindo..." : `Atribuir ${parseBulkInput(bulkInput).length > 0 ? `(${parseBulkInput(bulkInput).length})` : ""}`}
+            {bulkRunning
+              ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" />Atribuindo...</>
+              : bulkResults ? "Repetir" : `Atribuir (${parseBulkInput(bulkInput).length})`
+            }
           </Button>
         </DialogFooter>
       </DialogContent>

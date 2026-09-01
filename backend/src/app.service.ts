@@ -4227,10 +4227,10 @@ export class AppService {
       driverId: string;
       clusters: string[];
       vehicleType: string | null;
-      driver: { priorityScore: number; vehicleType: string | null };
+      driver: { priorityScore: number; vehicleType: string | null; lastRouteDate: string | null; totalRoutesAccepted: number };
     }> = await prisma.driverQueueAvailability.findMany({
       where: { date: today },
-      include: { driver: { select: { priorityScore: true, vehicleType: true } } },
+      include: { driver: { select: { priorityScore: true, vehicleType: true, lastRouteDate: true, totalRoutesAccepted: true } } },
     });
 
     // IDs de motoristas bloqueados
@@ -4292,7 +4292,15 @@ export class AppService {
           const va = vehiclePriority(normalizeVehicleType(a.vehicleType || a.driver.vehicleType || undefined));
           const vb = vehiclePriority(normalizeVehicleType(b.vehicleType || b.driver.vehicleType || undefined));
           if (va !== vb) return va - vb;
-          return b.driver.priorityScore - a.driver.priorityScore;
+          const scoreDiff = b.driver.priorityScore - a.driver.priorityScore;
+          // Desempate por tempo: se a diferença de score for menor que 3 pontos,
+          // quem está há mais tempo sem rota tem prioridade
+          if (Math.abs(scoreDiff) < 3) {
+            const lastA = a.driver.lastRouteDate ?? '';
+            const lastB = b.driver.lastRouteDate ?? '';
+            if (lastA !== lastB) return lastA < lastB ? -1 : 1; // data menor = mais tempo sem rota = vai na frente
+          }
+          return scoreDiff;
         });
 
       if (!candidates.length) {
@@ -4362,7 +4370,7 @@ export class AppService {
     const [availabilities, blockedIds, routes] = await Promise.all([
       prisma.driverQueueAvailability.findMany({
         where: { date: today },
-        include: { driver: { select: { id: true, name: true, vehicleType: true, priorityScore: true, ds: true, noShowCount: true } } },
+        include: { driver: { select: { id: true, name: true, vehicleType: true, priorityScore: true, ds: true, noShowCount: true, lastRouteDate: true, totalRoutesAccepted: true } } },
         orderBy: { createdAt: 'asc' },
       }),
       this.prisma.driverBlocklist.findMany({ where: { status: 'BLOCKED' }, select: { driverId: true, reason: true } }),
@@ -4389,6 +4397,8 @@ export class AppService {
       isBlocked: blockedMap.has(a.driverId),
       blockReason: blockedMap.get(a.driverId) ?? null,
       registeredAt: a.createdAt,
+      lastRouteDate: a.driver?.lastRouteDate ?? null,
+      totalRoutesAccepted: a.driver?.totalRoutesAccepted ?? 0,
     }));
 
     const interiorClusters = AppService.INTERIOR_CLUSTERS;

@@ -342,6 +342,13 @@ export class SyncService implements OnModuleInit {
     return [];
   }
 
+  private parseCallupDate(raw: string): string | null {
+    // Formato: "2026/09/01 3:30:09" → "2026-09-01"
+    const match = raw.trim().match(/^(\d{4})\/(\d{2})\/(\d{2})/);
+    if (!match) return null;
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+
   private async syncDriverPriorityMetrics(): Promise<void> {
     const algorithm = await this.getAlgorithmConfig();
     const disponibilidadeRows = await this.getRowsFromAnyRange([
@@ -353,6 +360,29 @@ export class SyncService implements OnModuleInit {
       `'Convocacao'!A:J`,
       `'convocacao'!A:J`,
     ]);
+    const callupRows = await this.getRowsFromAnyRange([
+      `'Driver callup'!A:L`,
+      `'driver callup'!A:L`,
+      `'Driver Callup'!A:L`,
+    ]);
+
+    // Driver callup: col D = "[id] NOME", col J = Status, col K = Trigger Time
+    // lastRouteDate = última data de qualquer convocação (col K), independente do status
+    // totalRoutesAccepted = apenas linhas com status "accepted"
+    const callupByDriver = new Map<string, { lastDate: string; total: number }>();
+    callupRows.slice(1).forEach((row) => {
+      const driverId = this.extractDriverIdFromBrackets(row[3]);
+      if (!driverId) return;
+      const date = this.parseCallupDate(String(row[10] || ''));
+      if (!date) return;
+      const status = String(row[9] || '').trim().toLowerCase();
+      const isAccepted = status.includes('accept');
+      const prev = callupByDriver.get(driverId);
+      callupByDriver.set(driverId, {
+        lastDate: prev ? (date > prev.lastDate ? date : prev.lastDate) : date,
+        total: (prev?.total ?? 0) + (isAccepted ? 1 : 0),
+      });
+    });
 
     const noShowByDriver = new Map<string, number>();
     disponibilidadeRows.slice(1).forEach((row) => {
@@ -398,12 +428,17 @@ export class SyncService implements OnModuleInit {
       const dsPercent = this.parsePercent(driver.ds);
       const priorityScore = this.calculatePriorityScore(dsPercent, declineRate, noShowCount, algorithm);
 
+      const callup = callupByDriver.get(driver.id);
       await prisma.driver.update({
         where: { id: driver.id },
         data: {
           noShowCount,
           declineRate: Number(declineRate.toFixed(2)),
           priorityScore,
+          ...(callup ? {
+            lastRouteDate: callup.lastDate,
+            totalRoutesAccepted: callup.total,
+          } : {}),
         },
       });
 

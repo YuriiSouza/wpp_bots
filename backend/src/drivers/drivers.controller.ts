@@ -1,6 +1,10 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { DriversService } from './drivers.service';
 
+interface ImportCsvBody {
+  csv: string
+}
+
 @Controller()
 export class DriversController {
   constructor(private readonly driversService: DriversService) {}
@@ -21,6 +25,11 @@ export class DriversController {
   @Post('api/drivers/:driverId/reset-no-show')
   async resetDriverNoShow(@Param('driverId') driverId: string) {
     return this.driversService.resetDriverNoShow(driverId);
+  }
+
+  @Post('api/drivers/import-spx-csv')
+  async importSpxCsv(@Body() body: ImportCsvBody) {
+    return this.driversService.importSpxCsv(body?.csv ?? '')
   }
 
   @Get('api/blocklist')

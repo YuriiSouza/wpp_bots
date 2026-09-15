@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { AdminCommonService } from '../admin-common/admin-common.service';
 
 @Injectable()
 export class DriversService {
+  private readonly logger = new Logger(DriversService.name);
   constructor(private readonly common: AdminCommonService) {}
 
   async getDrivers() {
@@ -60,6 +61,133 @@ export class DriversService {
     });
 
     return { ok: true, message: 'No-show resetado com sucesso.' };
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // SPX CSV import — enriches Driver rows with registration data
+  // ──────────────────────────────────────────────────────────────────────
+
+  private normalizeSpxId(raw: string): string {
+    // SPX exports Driver ID in scientific notation (Excel artifact): "4.250019e+06" → "4250019"
+    const trimmed = String(raw || '').trim()
+    if (!trimmed) return ''
+    const asFloat = parseFloat(trimmed)
+    if (!isNaN(asFloat)) return String(Math.round(asFloat))
+    return trimmed
+  }
+
+  private parseSpxCsv(csvText: string): Record<string, string>[] {
+    // Strip BOM if present
+    const text = csvText.replace(/^﻿/, '')
+    const lines = text.split(/\r?\n/)
+    if (lines.length < 2) return []
+
+    const parseLine = (line: string): string[] => {
+      const cols: string[] = []
+      let inQuotes = false
+      let cur = ''
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') { cur += '"'; i++ }
+          else inQuotes = !inQuotes
+        } else if (ch === ',' && !inQuotes) {
+          cols.push(cur.trim())
+          cur = ''
+        } else {
+          cur += ch
+        }
+      }
+      cols.push(cur.trim())
+      return cols
+    }
+
+    const headers = parseLine(lines[0])
+    const rows: Record<string, string>[] = []
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim()
+      if (!line) continue
+      const cols = parseLine(line)
+      const row: Record<string, string> = {}
+      headers.forEach((h, idx) => {
+        // Strip leading single-quote (Excel "force text" prefix)
+        row[h.trim()] = String(cols[idx] ?? '').replace(/^'/, '').trim()
+      })
+      rows.push(row)
+    }
+    return rows
+  }
+
+  async importSpxCsv(csvText: string): Promise<{
+    ok: boolean
+    total: number
+    updated: number
+    skipped: number
+    message: string
+  }> {
+    const rows = this.parseSpxCsv(csvText)
+    if (!rows.length) return { ok: false, total: 0, updated: 0, skipped: 0, message: 'CSV vazio ou sem dados válidos.' }
+
+    const firstRow = rows[0]
+    if (!('Driver ID' in firstRow) || !('Driver Name' in firstRow)) {
+      return { ok: false, total: 0, updated: 0, skipped: 0, message: 'CSV não parece ser o relatório de motoristas da SPX (colunas "Driver ID" e "Driver Name" ausentes).' }
+    }
+
+    const prisma = this.common.prisma as any
+    let updated = 0
+    let skipped = 0
+
+    for (const row of rows) {
+      const rawId = row['Driver ID']
+      const driverId = this.normalizeSpxId(rawId)
+      if (!driverId) { skipped++; continue }
+
+      const data: Record<string, unknown> = {
+        name: row['Driver Name'] || undefined,
+        vehicleType: row['Vehicle Type'] || undefined,
+        status: row['Status'] || undefined,
+        gender: row['Gender'] || null,
+        phoneNumber: row['Phone Number'] || null,
+        licensePlate: row['License Plate'] || null,
+        licenseExpiryDate: row['License Expiry Date'] || null,
+        contractType: row['Contract Type'] || null,
+        joinedDate: row['Joined Date'] || null,
+        city: row['City'] || null,
+        agency: row['Agency'] || null,
+        dateOfBirth: row['Date of Birth'] || null,
+        vehicleManufacturer: row["Vehicle's manufacturer"] || null,
+        vehicleManufacturingYear: row["Vehicle's manufacturing year"] || null,
+        lastKycDate: row['Last KYC Date'] || null,
+        vehicleKycDate: row['Vehicle KYC Date'] || null,
+        suspensionReason: row['Suspension Reason'] || null,
+        spxBlocklisted: String(row['Blocklist'] || '').toUpperCase() === 'YES',
+      }
+
+      // Remove undefined values (don't overwrite existing data with empty)
+      Object.keys(data).forEach(k => { if (data[k] === undefined) delete data[k] })
+
+      try {
+        await prisma.driver.upsert({
+          where: { id: driverId },
+          update: data,
+          create: { id: driverId, ...data },
+        })
+        updated++
+      } catch (err) {
+        this.logger.warn(`importSpxCsv: erro ao upsert driver ${driverId}: ${err}`)
+        skipped++
+      }
+    }
+
+    this.logger.log(`importSpxCsv: ${updated} atualizados, ${skipped} ignorados de ${rows.length} linhas`)
+    return {
+      ok: true,
+      total: rows.length,
+      updated,
+      skipped,
+      message: `${updated} motoristas atualizados com dados cadastrais da SPX.`,
+    }
   }
 
   async getBlocklist() {

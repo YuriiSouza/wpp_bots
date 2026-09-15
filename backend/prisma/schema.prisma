@@ -29,6 +29,22 @@ model Driver {
   hasActiveRoute       Boolean  @default(false)
   lastRouteDate        String?
   totalRoutesAccepted  Int      @default(0)
+  // Campos enriquecidos via import do CSV da SPX
+  gender               String?
+  phoneNumber          String?
+  licensePlate         String?
+  licenseExpiryDate    String?
+  contractType         String?
+  joinedDate           String?
+  city                 String?
+  agency               String?
+  dateOfBirth          String?
+  vehicleManufacturer  String?
+  vehicleManufacturingYear String?
+  lastKycDate          String?
+  vehicleKycDate       String?
+  suspensionReason     String?
+  spxBlocklisted       Boolean  @default(false)
   updatedAt      DateTime @updatedAt
   createdAt      DateTime @default(now())
 

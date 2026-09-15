@@ -16,6 +16,22 @@ export interface Driver {
   priorityScore: number
   lastRouteDate: string | null
   totalRoutesAccepted: number
+  // Campos enriquecidos via import do CSV da SPX
+  gender: string | null
+  phoneNumber: string | null
+  licensePlate: string | null
+  licenseExpiryDate: string | null
+  contractType: string | null
+  joinedDate: string | null
+  city: string | null
+  agency: string | null
+  dateOfBirth: string | null
+  vehicleManufacturer: string | null
+  vehicleManufacturingYear: string | null
+  lastKycDate: string | null
+  vehicleKycDate: string | null
+  suspensionReason: string | null
+  spxBlocklisted: boolean
   updatedAt: string
   createdAt: string
 }

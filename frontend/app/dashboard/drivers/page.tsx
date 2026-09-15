@@ -11,6 +11,7 @@ import {
   Trophy,
   TrendingDown,
   TrendingUp,
+  Upload,
   Users,
 } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
@@ -67,6 +68,10 @@ export default function DriversPage() {
   const [totalPages, setTotalPages] = useState(1)
   const [blockedIds, setBlockedIds] = useState<Set<string>>(new Set())
   const [isLoading, setIsLoading] = useState(true)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importResult, setImportResult] = useState<{ ok: boolean; message: string; updated?: number; total?: number } | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -107,7 +112,7 @@ export default function DriversPage() {
     return () => {
       active = false
     }
-  }, [page, search, vehicleFilter, dsFilter, sortBy, sortDir])
+  }, [page, search, vehicleFilter, dsFilter, sortBy, sortDir, refreshKey])
 
   const vehicleTypes = useMemo(
     () => analyticsPayload?.filterOptions.vehicleTypes || [],
@@ -219,15 +224,48 @@ export default function DriversPage() {
     }
   }
 
+  const handleImportCsv = async (file: File) => {
+    setImportLoading(true)
+    setImportResult(null)
+    try {
+      const text = await file.text()
+      const res = await fetch("/api/drivers/import-spx-csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv: text }),
+      })
+      const data = await res.json() as { ok: boolean; message: string; updated?: number; total?: number }
+      setImportResult(data)
+      if (data.ok) {
+        toast.success(data.message)
+        setRefreshKey(k => k + 1)
+      } else {
+        toast.error(data.message)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Erro ao importar CSV"
+      setImportResult({ ok: false, message: msg })
+      toast.error(msg)
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
   return (
     <div className="flex flex-col">
       <PageHeader title="Motoristas" breadcrumbs={[{ label: "Motoristas" }]} />
       <div className="flex flex-col gap-6 p-6">
-        <div>
-          <h2 className="text-2xl font-bold text-foreground">Dashboard de Motoristas</h2>
-          <p className="text-sm text-muted-foreground">
-            Analise operacional dos motoristas e busca individual logo abaixo
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold text-foreground">Dashboard de Motoristas</h2>
+            <p className="text-sm text-muted-foreground">
+              Analise operacional dos motoristas e busca individual logo abaixo
+            </p>
+          </div>
+          <Button variant="outline" size="sm" className="shrink-0 gap-2" onClick={() => { setImportResult(null); setImportOpen(true) }}>
+            <Upload className="h-4 w-4" />
+            Importar cadastro SPX
+          </Button>
         </div>
 
         {isLoading ? (
@@ -447,6 +485,32 @@ export default function DriversPage() {
                               />
                             </div>
 
+                            {/* Dados cadastrais enriquecidos (quando importados via CSV da SPX) */}
+                            {(driver.agency || driver.city || driver.joinedDate || driver.licenseExpiryDate || driver.contractType) && (
+                              <div className="rounded-md border border-border/50 bg-muted/20 p-3">
+                                <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">Cadastro SPX</p>
+                                <div className="grid gap-2 grid-cols-2 xl:grid-cols-3 text-xs">
+                                  {driver.agency && <div><span className="text-muted-foreground">Agência: </span><span className="font-medium">{driver.agency === "SPXOWNFLEET" ? "Frota própria" : driver.agency}</span></div>}
+                                  {driver.contractType && <div><span className="text-muted-foreground">Contrato: </span><span className="font-medium">{driver.contractType}</span></div>}
+                                  {driver.city && <div><span className="text-muted-foreground">Cidade: </span><span className="font-medium">{driver.city}</span></div>}
+                                  {driver.joinedDate && <div><span className="text-muted-foreground">Entrada: </span><span className="font-medium">{driver.joinedDate}</span></div>}
+                                  {driver.licensePlate && <div><span className="text-muted-foreground">Placa: </span><span className="font-medium">{driver.licensePlate}</span></div>}
+                                  {driver.vehicleManufacturer && <div><span className="text-muted-foreground">Veículo: </span><span className="font-medium">{driver.vehicleManufacturer} {driver.vehicleManufacturingYear || ""}</span></div>}
+                                  {driver.licenseExpiryDate && (
+                                    <div>
+                                      <span className="text-muted-foreground">Val. CNH: </span>
+                                      <span className={`font-medium ${new Date(driver.licenseExpiryDate) < new Date() ? "text-red-500" : new Date(driver.licenseExpiryDate) < new Date(Date.now() + 90 * 86400000) ? "text-amber-500" : ""}`}>
+                                        {driver.licenseExpiryDate}
+                                        {new Date(driver.licenseExpiryDate) < new Date() ? " ⚠ vencida" : ""}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {driver.lastKycDate && <div><span className="text-muted-foreground">Último KYC: </span><span className="font-medium">{driver.lastKycDate}</span></div>}
+                                  {driver.spxBlocklisted && <div className="col-span-2"><Badge variant="outline" className="text-[10px] border-red-500/30 bg-red-500/10 text-red-700">Blocklist SPX</Badge></div>}
+                                </div>
+                              </div>
+                            )}
+
                             <div className="space-y-2">
                               <div className="flex items-center justify-between text-xs text-muted-foreground">
                                 <span>Priority score</span>
@@ -545,6 +609,63 @@ export default function DriversPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditDriver(null)}>Cancelar</Button>
             <Button onClick={handleSaveScore}>Salvar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import SPX CSV modal */}
+      <Dialog open={importOpen} onOpenChange={open => { if (!importLoading) setImportOpen(open) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Importar cadastro SPX</DialogTitle>
+            <DialogDescription>
+              Selecione o relatório de motoristas exportado da SPX (CSV). Os dados cadastrais serão
+              vinculados pelo Driver ID e enriquecerão o banco sem sobrescrever métricas operacionais.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-4 py-2">
+            <label
+              htmlFor="spx-csv-input"
+              className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-8 text-center cursor-pointer transition-colors ${importLoading ? "opacity-50 pointer-events-none" : "hover:border-primary/50 hover:bg-muted/30"}`}
+            >
+              <Upload className="h-8 w-8 text-muted-foreground" />
+              <span className="text-sm font-medium">{importLoading ? "Processando..." : "Clique ou arraste o CSV aqui"}</span>
+              <span className="text-xs text-muted-foreground">br_driver_*.csv</span>
+              <input
+                id="spx-csv-input"
+                type="file"
+                accept=".csv,.txt"
+                className="hidden"
+                disabled={importLoading}
+                onChange={e => {
+                  const file = e.target.files?.[0]
+                  if (file) void handleImportCsv(file)
+                  e.target.value = ""
+                }}
+              />
+            </label>
+
+            {importResult && (
+              <div className={`rounded-md border px-4 py-3 text-sm ${importResult.ok ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700" : "border-red-500/30 bg-red-500/10 text-red-700"}`}>
+                <p className="font-medium">{importResult.ok ? "✓ Importação concluída" : "✗ Erro na importação"}</p>
+                <p className="text-xs mt-1 opacity-80">{importResult.message}</p>
+                {importResult.ok && importResult.total && (
+                  <p className="text-xs mt-1 opacity-60">{importResult.total} linhas lidas · {importResult.updated} atualizadas</p>
+                )}
+              </div>
+            )}
+
+            <div className="text-xs text-muted-foreground space-y-1">
+              <p className="font-medium">Campos importados:</p>
+              <p>Gênero · Telefone · Placa · Validade CNH · Tipo contrato · Data entrada · Cidade · Agência · Data nascimento · Fabricante/ano veículo · Datas KYC · Motivo suspensão</p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importLoading}>
+              Fechar
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -2,10 +2,9 @@ import { useEffect, useState } from 'react'
 import { localStore, type StoredDriver } from '../../lib/localStore'
 import DriverImport from './DriverImport'
 import DriverStats from './DriverStats'
-import DriverAlerts from './DriverAlerts'
 import DriverList from './DriverList'
 
-type Tab = 'stats' | 'alerts' | 'list'
+type Tab = 'stats' | 'list'
 
 interface DriversAppProps {
   onImported?: () => void
@@ -31,19 +30,6 @@ export default function DriversApp({ onImported }: DriversAppProps = {}) {
     load()
     onImported?.()
   }
-
-  const alertCount = drivers.filter(d => {
-    if (d.spxBlocklisted && d.status === 'Active') return true
-    if (d.licenseExpiryDate) {
-      const daysLeft = Math.floor((new Date(d.licenseExpiryDate).getTime() - Date.now()) / 86400000)
-      if (daysLeft < 90 && d.status === 'Active') return true
-    }
-    if (d.lastKycDate) {
-      const daysSince = Math.floor((Date.now() - new Date(d.lastKycDate).getTime()) / 86400000)
-      if (daysSince > 180 && d.status === 'Active') return true
-    }
-    return false
-  }).length
 
   if (importing || drivers.length === 0) {
     return (
@@ -90,7 +76,6 @@ export default function DriversApp({ onImported }: DriversAppProps = {}) {
         <div style={{ display: 'flex', gap: 0 }}>
           {([
             { key: 'stats', label: 'Estatísticas' },
-            { key: 'alerts', label: `Alertas${alertCount > 0 ? ` (${alertCount})` : ''}` },
             { key: 'list', label: `Lista (${drivers.length})` },
           ] as { key: Tab; label: string }[]).map(t => (
             <button
@@ -115,9 +100,8 @@ export default function DriversApp({ onImported }: DriversAppProps = {}) {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
+      <div style={{ flex: 1, overflow: tab === 'stats' ? 'hidden' : 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column' }}>
         {tab === 'stats' && <DriverStats drivers={drivers} />}
-        {tab === 'alerts' && <DriverAlerts drivers={drivers} />}
         {tab === 'list' && <DriverList drivers={drivers} />}
       </div>
     </div>

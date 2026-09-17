@@ -1,5 +1,5 @@
 import Papa from 'papaparse'
-import { analyzeCSV } from '../lib/dsCalculator'
+import { analyzeCSV, parseRoutes } from '../lib/dsCalculator'
 import type { RawRoute } from '../lib/types'
 
 self.onmessage = (e: MessageEvent<{ csv: string; options?: Record<string, number> }>) => {
@@ -24,8 +24,9 @@ self.onmessage = (e: MessageEvent<{ csv: string; options?: Record<string, number
     self.postMessage({ type: 'progress', message: `${parsed.data.length} linhas lidas. Calculando DS_Real...` })
 
     const result = analyzeCSV(parsed.data as RawRoute[], options)
+    const parsedRoutes = parseRoutes(parsed.data as RawRoute[])
 
-    self.postMessage({ type: 'done', result })
+    self.postMessage({ type: 'done', result, parsedRoutes })
   } catch (err) {
     self.postMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) })
   }

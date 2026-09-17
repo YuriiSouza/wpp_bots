@@ -13,6 +13,8 @@ export interface QueueEntry {
   agency: string
   arrival: string           // texto original "2026-09-12 05:20"
   arrivalMin: number | null // minutos desde a meia-noite (null se não parseável)
+  waitingTime: string       // texto original "00:36"
+  waitingMin: number | null // minutos aguardando (null se não parseável)
   cage: string              // "A-15"
   letter: string            // "A"
   atId: string
@@ -77,6 +79,7 @@ export function parseQueueListCsv(text: string): QueueParseResult {
   }
   const iAgency = idx('Agency')
   const iArrival = idx('Add to Queue Time')
+  const iWaiting = idx('Waiting Time')
   const iCage = idx('Corridor Cage')
   const iAt = idx('Assignment Task ID')
   const iCluster = idx('Cluster')
@@ -93,6 +96,7 @@ export function parseQueueListCsv(text: string): QueueParseResult {
     const cage = get(r, iCage)
     const letter = (cage.split('-')[0] ?? '').trim().toUpperCase()
     const arrival = get(r, iArrival)
+    const waitingTime = get(r, iWaiting)
     entries.push({
       queueNumber: get(r, iQueue),
       driverId,
@@ -100,6 +104,8 @@ export function parseQueueListCsv(text: string): QueueParseResult {
       agency: get(r, iAgency),
       arrival,
       arrivalMin: parseTimeToMinutes(arrival),
+      waitingTime,
+      waitingMin: parseTimeToMinutes(waitingTime),
       cage,
       letter,
       atId: get(r, iAt),
@@ -109,7 +115,83 @@ export function parseQueueListCsv(text: string): QueueParseResult {
   return { entries, total: entries.length, skipped }
 }
 
-// ─── Janela de carregamento por letra ───────────────────────────────────────────
+// ─── Múltiplas janelas de carregamento ──────────────────────────────────────────
+
+/**
+ * Uma janela de carregamento.
+ * startCage: gaiola onde essa janela começa, ex: "A", "A-1", "D-7".
+ *   Aceita só letra ("D") ou letra+número ("D-7"). O corte é por gaiola completa,
+ *   então AM pode ir até D-6 e PM1 começar em D-7.
+ * startTime: horário em que a startCage começa a ser carregada, ex: "11:15".
+ */
+export interface LoadWindowConfig {
+  startCage: string  // ex: "A", "D-7"
+  startTime: string  // ex: "05:30"
+}
+
+/** Extrai (letra, número) de uma gaiola: "D-7" → ['D', 7], "A" → ['A', 0]. */
+function parseCage(cage: string): { letter: string; num: number } {
+  const s = (cage ?? '').trim().toUpperCase()
+  const m = s.match(/^([A-Z])(?:-?(\d+))?$/)
+  if (!m) return { letter: '', num: 0 }
+  return { letter: m[1], num: parseInt(m[2] ?? '0') || 0 }
+}
+
+/** Compara duas gaiolas: retorna negativo se a < b, 0 se igual, positivo se a > b. */
+function cageCmp(a: string, b: string): number {
+  const pa = parseCage(a); const pb = parseCage(b)
+  const li = (letterIndex(pa.letter) ?? -1) - (letterIndex(pb.letter) ?? -1)
+  return li !== 0 ? li : pa.num - pb.num
+}
+
+/**
+ * Dado um array de janelas e uma gaiola de entrada, retorna a janela à qual essa gaiola pertence.
+ * É a janela com maior startCage que ainda seja ≤ a gaiola do motorista.
+ */
+function findWindowByCage(cage: string, windows: LoadWindowConfig[]): LoadWindowConfig | null {
+  const valid = windows.filter(w => w.startCage && w.startTime)
+  if (valid.length === 0) return null
+  const sorted = [...valid].sort((a, b) => cageCmp(a.startCage, b.startCage))
+  let best: LoadWindowConfig | null = null
+  for (const w of sorted) {
+    if (cageCmp(w.startCage, cage) <= 0) best = w
+  }
+  return best
+}
+
+/** Calcula a janela de carregamento de uma entrada usando múltiplas janelas configuradas por gaiola. */
+export function computeLoadWindowMulti(entry: QueueEntry, windows: LoadWindowConfig[], slotMin = 20): LoadWindow {
+  if (!entry.cage && !entry.letter) return { status: 'unknown', startMin: null, arriveByMin: null, lateMin: 0 }
+  const cageKey = entry.cage || entry.letter
+  const win = findWindowByCage(cageKey, windows)
+  if (!win) return { status: 'unknown', startMin: null, arriveByMin: null, lateMin: 0 }
+  const baseMin = parseTimeToMinutes(win.startTime)
+  if (baseMin === null) return { status: 'unknown', startMin: null, arriveByMin: null, lateMin: 0 }
+  // Offset em letras: cada letra adicional = +slotMin
+  const entryLi = letterIndex(entry.letter) ?? 0
+  const winLi = letterIndex(parseCage(win.startCage).letter) ?? 0
+  const startMin = baseMin + (entryLi - winLi) * slotMin
+  const arriveByMin = startMin - slotMin
+  if (entry.arrivalMin === null) return { status: 'unknown', startMin, arriveByMin, lateMin: 0 }
+  const lateMin = entry.arrivalMin - arriveByMin
+  return { status: lateMin > 0 ? 'out-of-window' : 'on-time', startMin, arriveByMin, lateMin }
+}
+
+/** Calcula a janela para motoristas que ainda não chegaram (usa a gaiola da rota, não da fila). */
+export function windowForLetterMulti(letter: string, windows: LoadWindowConfig[], slotMin = 20): { startMin: number; arriveByMin: number } | null {
+  if (!letter) return null
+  // Para quem não chegou, a gaiola completa pode não estar disponível — usa só a letra
+  const win = findWindowByCage(letter, windows)
+  if (!win) return null
+  const baseMin = parseTimeToMinutes(win.startTime)
+  if (baseMin === null) return null
+  const entryLi = letterIndex(letter) ?? 0
+  const winLi = letterIndex(parseCage(win.startCage).letter) ?? 0
+  const startMin = baseMin + (entryLi - winLi) * slotMin
+  return { startMin, arriveByMin: startMin - slotMin }
+}
+
+// ─── Janela de carregamento por letra (legado — mantido para compatibilidade) ───
 
 // Chegou: no prazo / fora da janela. Não chegou: aguardando / atrasado.
 export type LoadStatus = 'on-time' | 'out-of-window' | 'waiting' | 'overdue' | 'unknown'

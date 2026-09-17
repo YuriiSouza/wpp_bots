@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import type { AnalysisResult } from './lib/types'
+import type { AnalysisResult, ParsedRoute } from './lib/types'
 import FileUpload from './components/FileUpload'
 import Dashboard from './components/Dashboard'
 import DriversApp from './components/Motoristas'
@@ -89,6 +89,7 @@ export default function App() {
     return saved ? { phase: 'done', ...saved } : { phase: 'idle' }
   })
   const workerRef = useRef<Worker | null>(null)
+  const [parsedRoutes, setParsedRoutes] = useState<ParsedRoute[]>([])
 
   // Global header state
   const [selectedDay, setSelectedDay] = useState<string>(() => loadHeader().day ?? localDateStr())
@@ -121,11 +122,12 @@ export default function App() {
     workerRef.current = worker
 
     worker.onmessage = (e) => {
-      const { type, message, result } = e.data
+      const { type, message, result, parsedRoutes: pr } = e.data
       if (type === 'progress') setDsState({ phase: 'processing', message })
       else if (type === 'done') {
         saveDsResult(result, fileName)
         setDsState({ phase: 'done', result, fileName })
+        if (pr) setParsedRoutes(pr)
         worker.terminate()
       }
       else if (type === 'error') { setDsState({ phase: 'error', message }); worker.terminate() }
@@ -307,7 +309,7 @@ export default function App() {
             {dsState.phase === 'idle' && <GoToUploads label="Nenhum relatório de rotas carregado." onGo={() => setSection('uploads')} />}
             {dsState.phase === 'processing' && <Spinner message={dsState.message} />}
             {dsState.phase === 'error' && <ErrorView message={dsState.message} onRetry={handleResetDS} />}
-            {dsState.phase === 'done' && <Dashboard result={dsState.result} fileName={dsState.fileName} onReset={handleResetDS} />}
+            {dsState.phase === 'done' && <Dashboard result={dsState.result} fileName={dsState.fileName} onReset={handleResetDS} parsedRoutes={parsedRoutes} />}
           </>
         )}
 

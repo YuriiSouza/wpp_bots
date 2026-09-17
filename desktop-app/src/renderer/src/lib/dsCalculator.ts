@@ -230,7 +230,7 @@ export function computeDriverResults(routes: ParsedRoute[]): DriverResult[] {
 // Part 2 — Additional dashboard metrics
 // ──────────────────────────────────────────────────────────────────────────────
 
-function computeSummary(routes: ParsedRoute[], drivers: DriverResult[]): SummaryStats {
+export function computeSummary(routes: ParsedRoute[], drivers: DriverResult[]): SummaryStats {
   const dates = routes.map(r => r.date).filter(Boolean).sort()
   const dsValues = drivers.map(d => d.DS_Real).filter(v => v !== null) as number[]
   const statusCounts = { Melhorando: 0, Piorando: 0, Estagnado: 0 }
@@ -247,7 +247,7 @@ function computeSummary(routes: ParsedRoute[], drivers: DriverResult[]): Summary
   }
 }
 
-function computeTurnStats(routes: ParsedRoute[]): TurnStats[] {
+export function computeTurnStats(routes: ParsedRoute[]): TurnStats[] {
   const turns = ['AM', 'PM1']
   return turns.map(turn => {
     const turnRoutes = routes.filter(r => r.dispatch_window === turn)
@@ -275,7 +275,7 @@ function computeTurnStats(routes: ParsedRoute[]): TurnStats[] {
   })
 }
 
-function computeClusterStats(routes: ParsedRoute[], minRoutes = 15): ClusterStats[] {
+export function computeClusterStats(routes: ParsedRoute[], minRoutes = 15): ClusterStats[] {
   const byCluster = new Map<string, ParsedRoute[]>()
   for (const r of routes) {
     if (!r.cluster_name) continue
@@ -316,7 +316,7 @@ function computeClusterStats(routes: ParsedRoute[], minRoutes = 15): ClusterStat
   return stats.sort((a, b) => a.avgPerformance - b.avgPerformance)
 }
 
-function computeTimeline(routes: ParsedRoute[]): TimelinePoint[] {
+export function computeTimeline(routes: ParsedRoute[]): TimelinePoint[] {
   const byDate = new Map<string, number>()
   for (const r of routes) {
     if (!r.date) continue
@@ -339,7 +339,7 @@ const DS_BUCKETS: { label: string; min: number; max: number }[] = [
   { label: '99–100%', min: 0.99, max: 1.0001 },
 ]
 
-function computeDsBuckets(drivers: DriverResult[]): DsBucket[] {
+export function computeDsBuckets(drivers: DriverResult[]): DsBucket[] {
   return DS_BUCKETS.map(b => ({
     ...b,
     count: drivers.filter(d => d.DS_Real !== null && d.DS_Real >= b.min && d.DS_Real < b.max).length,

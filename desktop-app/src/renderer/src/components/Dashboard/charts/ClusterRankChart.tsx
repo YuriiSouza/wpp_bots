@@ -22,7 +22,9 @@ export default function ClusterRankChart({ clusters, maxItems = 20 }: Props) {
         <XAxis type="number" domain={[80, 100]} tick={{ fill: '#8892a4', fontSize: 11 }} axisLine={false} tickLine={false} unit="%" />
         <YAxis type="category" dataKey="name" width={110} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
         <Tooltip
-          contentStyle={{ background: '#1a1d27', border: '1px solid #2d3048', borderRadius: 6, fontSize: 12 }}
+          contentStyle={{ background: '#1a1d27', border: '1px solid #2d3048', borderRadius: 6, fontSize: 12, color: '#e2e8f0' }}
+          labelStyle={{ color: '#e2e8f0', fontWeight: 600 }}
+          itemStyle={{ color: '#94a3b8' }}
           labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName || ''}
           formatter={(v: number, _: string, props) => [
             `${v.toFixed(2)}% (${props.payload.routeCount} rotas)${props.payload.sensitive ? ' ⚠️ sensível a volume' : ''}`,

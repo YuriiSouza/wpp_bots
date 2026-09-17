@@ -8,9 +8,9 @@ function bucketColor(label: string): string {
   return '#22c55e'
 }
 
-export default function DSDistributionChart({ buckets }: { buckets: DsBucket[] }) {
+export default function DSDistributionChart({ buckets, height }: { buckets: DsBucket[]; height?: number }) {
   return (
-    <ResponsiveContainer width="100%" height={220}>
+    <ResponsiveContainer width="100%" height={height ?? 220}>
       <BarChart data={buckets} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" vertical={false} />
         <XAxis dataKey="label" tick={{ fill: '#8892a4', fontSize: 11 }} axisLine={false} tickLine={false} />

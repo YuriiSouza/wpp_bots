@@ -1,7 +1,7 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts'
 import type { TimelinePoint } from '../../../lib/types'
 
-export default function TimelineChart({ timeline }: { timeline: TimelinePoint[] }) {
+export default function TimelineChart({ timeline, height }: { timeline: TimelinePoint[]; height?: number }) {
   if (timeline.length === 0) return <p style={{ color: '#8892a4', fontSize: 13 }}>Sem dados de data disponíveis.</p>
 
   const maxCount = Math.max(...timeline.map(t => t.routeCount))
@@ -18,7 +18,7 @@ export default function TimelineChart({ timeline }: { timeline: TimelinePoint[] 
 
   return (
     <div>
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveContainer width="100%" height={height ?? 220}>
         <LineChart data={timeline} margin={{ top: 4, right: 16, left: -16, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" vertical={false} />
           <XAxis dataKey="date" tick={{ fill: '#8892a4', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={tickFormatter} />

@@ -20,6 +20,7 @@ export interface GlobalConfig {
   rodizio: RodizioConfig
   scoreWeights: ScoreWeightsConfig
   hubName: string
+  downloadsFolder: string
 }
 
 export const DEFAULT_CONFIG: GlobalConfig = {
@@ -31,6 +32,7 @@ export const DEFAULT_CONFIG: GlobalConfig = {
   rodizio: { mediaMinDays: 4, altaMinDays: 8 },
   scoreWeights: { dsWeight: 20, declineWeight: 25, noShowWeight: 30 },
   hubName: '',
+  downloadsFolder: '',
 }
 
 const CONFIG_KEY = 'spx:global-config'
@@ -45,6 +47,7 @@ export function getGlobalConfig(): GlobalConfig {
       rodizio: { ...DEFAULT_CONFIG.rodizio, ...saved.rodizio },
       scoreWeights: { ...DEFAULT_CONFIG.scoreWeights, ...saved.scoreWeights },
       hubName: saved.hubName ?? DEFAULT_CONFIG.hubName,
+      downloadsFolder: saved.downloadsFolder ?? DEFAULT_CONFIG.downloadsFolder,
     }
   } catch {
     return DEFAULT_CONFIG

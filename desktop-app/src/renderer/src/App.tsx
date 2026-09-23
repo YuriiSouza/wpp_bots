@@ -15,6 +15,7 @@ import GlobalHeader from './components/GlobalHeader'
 import Configuracoes from './components/Configuracoes'
 
 import { localStore } from './lib/localStore'
+import { parseDriverCsv } from './lib/driverParser'
 import { reportStore } from './lib/reportStore'
 import { routeStore } from './lib/routeStore'
 import { parseRoutesTsv } from './lib/noshowRouteParser'
@@ -29,6 +30,7 @@ import type { CallUpAnalysis } from './lib/callUpParser'
 import type { ForwardOrderAnalysis } from './lib/forwardOrderParser'
 import type { WorkPreferenceData } from './lib/workPreferenceParser'
 import { getGlobalConfig, driverMatchesShift } from './lib/globalConfig'
+import { findLatestFile, FILE_PATTERNS } from './lib/fileFinder'
 import { noShowQueueStore } from './lib/noShowQueueStore'
 import type { QueueDriver } from './lib/noShowQueueStore'
 import type { Shift } from './lib/globalConfig'
@@ -703,6 +705,48 @@ function SpxWorkPrefFetchButton({ selectedDay, workPref, onData }: { selectedDay
   )
 }
 
+function AutoFindButton({ pattern, onFound, color }: { pattern: string; onFound: (content: string, name: string) => void; color: string }) {
+  const [status, setStatus] = useState<'idle' | 'searching' | 'ok' | 'err'>('idle')
+  const [msg, setMsg] = useState('')
+  const folder = getGlobalConfig().downloadsFolder
+
+  if (!folder) return (
+    <p style={{ margin: 0, fontSize: 11, color: '#fbbf24' }}>
+      ⚠ Configure a pasta de downloads nas <strong>Configurações</strong> para busca automática.
+    </p>
+  )
+
+  const handleFind = async () => {
+    setStatus('searching')
+    setMsg('')
+    const res = await findLatestFile(folder, pattern)
+    if ('error' in res) {
+      setStatus('err')
+      setMsg(res.error)
+    } else {
+      setStatus('ok')
+      setMsg(res.name)
+      onFound(res.content, res.name)
+      setTimeout(() => setStatus('idle'), 2000)
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <button
+        onClick={() => void handleFind()}
+        disabled={status === 'searching'}
+        style={{ background: status === 'searching' ? '#2d3048' : color + '22', color: color, border: `1px solid ${color}44`, borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: status === 'searching' ? 'default' : 'pointer' }}
+      >
+        {status === 'searching' ? '🔍 Buscando…' : '🔍 Buscar automaticamente'}
+      </button>
+      {status === 'ok' && <span style={{ fontSize: 11, color: '#4ade80', fontWeight: 600 }}>✓ {msg}</span>}
+      {status === 'err' && <span style={{ fontSize: 11, color: '#f87171' }}>✕ {msg}</span>}
+      {status === 'idle' && <span style={{ fontSize: 11, color: '#64748b' }}>Busca o mais recente: <code style={{ background: '#1a1d27', padding: '1px 4px', borderRadius: 3 }}>{pattern}</code></span>}
+    </div>
+  )
+}
+
 function UploadsPage(props: UploadsProps) {
   const { dsState, driversMeta, callUp, forwardOrder, workPref, selectedDay, selectedShift } = props
   const [showDriverUpload, setShowDriverUpload] = useState(false)
@@ -729,7 +773,11 @@ function UploadsPage(props: UploadsProps) {
           processing={dsProcessing}
           onClear={dsMeta ? props.onDsReset : undefined}
         >
-          <FileUpload onFile={props.onDsFile} compact />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <AutoFindButton pattern={FILE_PATTERNS.ds} color="#3b82f6" onFound={(content, name) => props.onDsFile(content, name)} />
+            <Divider />
+            <FileUpload onFile={props.onDsFile} compact />
+          </div>
         </UploadCard>
 
         {/* Driver Registry */}
@@ -739,7 +787,14 @@ function UploadsPage(props: UploadsProps) {
           loaded={driversMeta ? `✓ ${driversMeta.total} motoristas · ${driversMeta.fileName}` : null}
           onToggle={(open) => setShowDriverUpload(open)}
         >
-          <DriverImport onImported={() => { setShowDriverUpload(false); props.onDriversImported() }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <AutoFindButton pattern={FILE_PATTERNS.driver} color="#8b5cf6" onFound={(content, name) => {
+              const parsed = parseDriverCsv(content)
+              if (!parsed.error) { localStore.saveDrivers(parsed.drivers, { total: parsed.drivers.length, fileName: name }); setShowDriverUpload(false); props.onDriversImported() }
+            }} />
+            <Divider />
+            <DriverImport onImported={() => { setShowDriverUpload(false); props.onDriversImported() }} />
+          </div>
         </UploadCard>
 
         {/* Work Preference */}
@@ -767,7 +822,11 @@ function UploadsPage(props: UploadsProps) {
           loaded={callUp ? `✓ ${callUp.totalCalls.toLocaleString('pt-BR')} chamadas · ${callUp.fileName}` : null}
           onClear={callUp ? props.onClearCallUp : undefined}
         >
-          <FileUpload onFile={props.onCallUpFile} compact />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <AutoFindButton pattern={FILE_PATTERNS.callUp} color="#f59e0b" onFound={(content, name) => props.onCallUpFile(content, name)} />
+            <Divider />
+            <FileUpload onFile={props.onCallUpFile} compact />
+          </div>
         </UploadCard>
 
         {/* Forward Order */}
@@ -777,7 +836,11 @@ function UploadsPage(props: UploadsProps) {
           loaded={forwardOrder ? `✓ ${forwardOrder.totalPackages} pacotes · ${forwardOrder.fileName}` : null}
           onClear={forwardOrder ? props.onClearForwardOrder : undefined}
         >
-          <FileUpload onFile={props.onForwardOrderFile} compact />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <AutoFindButton pattern={FILE_PATTERNS.forwardOrder} color="#ef4444" onFound={(content, name) => props.onForwardOrderFile(content, name)} />
+            <Divider />
+            <FileUpload onFile={props.onForwardOrderFile} compact />
+          </div>
         </UploadCard>
 
         {/* Roteirização por Turno */}
@@ -858,6 +921,16 @@ function UploadCard({ icon, title, description, color, loaded, processing, onCle
         )}
       </div>
       {open && <div style={{ padding: '14px 18px' }}>{children}</div>}
+    </div>
+  )
+}
+
+function Divider() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ flex: 1, height: 1, background: '#2d3048' }} />
+      <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>OU SELECIONE MANUALMENTE</span>
+      <div style={{ flex: 1, height: 1, background: '#2d3048' }} />
     </div>
   )
 }

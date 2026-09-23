@@ -1,7 +1,10 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import https from 'https'
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -66,6 +69,35 @@ ipcMain.handle('spx-post', async (_event, { url, headers, body }: { url: string;
     req.write(bodyBuf)
     req.end()
   })
+})
+
+// IPC: abre dialog para escolher pasta
+ipcMain.handle('pick-folder', async (_event, defaultPath?: string) => {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'], defaultPath: defaultPath || os.homedir() })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
+
+// IPC: encontra o arquivo mais recente numa pasta que bate com um padrão glob simples
+ipcMain.handle('find-latest-file', async (_event, { folder, pattern }: { folder: string; pattern: string }) => {
+  try {
+    const resolved = folder.replace(/^~/, os.homedir())
+    if (!fs.existsSync(resolved)) return { error: 'Pasta não encontrada: ' + resolved }
+
+    const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i')
+    const files = fs.readdirSync(resolved)
+      .filter(f => regex.test(f))
+      .map(f => ({ name: f, mtime: fs.statSync(path.join(resolved, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+
+    if (files.length === 0) return { error: 'Nenhum arquivo encontrado com o padrão "' + pattern + '"' }
+
+    const filePath = path.join(resolved, files[0].name)
+    const content = fs.readFileSync(filePath, 'utf-8')
+    return { name: files[0].name, content }
+  } catch (err) {
+    return { error: String(err) }
+  }
 })
 
 app.whenReady().then(() => {

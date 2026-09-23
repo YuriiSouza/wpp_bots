@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { getGlobalConfig, saveGlobalConfig, DEFAULT_CONFIG, type GlobalConfig, type Shift } from '../../lib/globalConfig'
+import { pickFolder } from '../../lib/fileFinder'
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
 const SHIFT_LABEL: Record<Shift, string> = { AM: 'AM (manhã)', PM1: 'PM1 (tarde)', PM2: 'PM2 (noite)' }
@@ -216,8 +217,38 @@ export default function Configuracoes() {
         </div>
       </div>
 
-      {/* Right col — export/import */}
+      {/* Right col — folder + export/import */}
       <div style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>🗂 Downloads</h2>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: '#8892a4' }}>
+            Pasta onde os relatórios SPX são baixados — usada para busca automática na tela de uploads.
+          </p>
+        </div>
+
+        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>Pasta configurada</label>
+            <div style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, padding: '7px 10px', fontSize: 12, fontFamily: 'monospace', color: cfg.downloadsFolder ? '#e2e8f0' : '#64748b', minHeight: 32, wordBreak: 'break-all' }}>
+              {cfg.downloadsFolder || 'Nenhuma pasta selecionada'}
+            </div>
+          </div>
+          <Btn onClick={async () => {
+            const folder = await pickFolder(cfg.downloadsFolder || undefined)
+            if (folder) { setCfg(prev => ({ ...prev, downloadsFolder: folder })); setSaved(false) }
+          }}>
+            📁 Selecionar pasta
+          </Btn>
+          {cfg.downloadsFolder && (
+            <Btn variant="outline" onClick={() => { setCfg(prev => ({ ...prev, downloadsFolder: '' })); setSaved(false) }}>
+              Limpar
+            </Btn>
+          )}
+          <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
+            O app busca o arquivo mais recente que bate com o padrão de cada relatório (ex: <code style={{ background: '#1a1d27', padding: '1px 4px', borderRadius: 3 }}>QueueList_*.csv</code>).
+          </p>
+        </div>
+
         <div>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>📦 Dados</h2>
           <p style={{ margin: '4px 0 0', fontSize: 12, color: '#8892a4' }}>

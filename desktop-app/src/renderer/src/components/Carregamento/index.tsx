@@ -1,5 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import type { Shift } from '../../lib/globalConfig'
+import { findLatestFile, FILE_PATTERNS, pickFolder } from '../../lib/fileFinder'
+import { getGlobalConfig, saveGlobalConfig } from '../../lib/globalConfig'
 import type { StoredDriver } from '../../lib/localStore'
 import { routeStore } from '../../lib/routeStore'
 import { queueStore } from '../../lib/queueStore'
@@ -224,6 +226,11 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
                 style={{ background: 'none', border: '1px dashed #2d3048', color: '#64748b', borderRadius: 5, cursor: 'pointer', fontSize: 11, padding: '2px 7px' }}>+ janela</button>
             </div>
             {queue && <Btn outline color="#a78bfa" onClick={() => setReportOpen(true)}>📊 Gerar report</Btn>}
+            <AutoQueueFind onFound={(content, name) => {
+              const res = parseQueueListCsv(content)
+              if (!res.error) { setError(null); setQueue({ entries: res.entries, fileName: name }); queueStore.save(selectedDay, selectedShift, res.entries, name) }
+              else setError(res.error)
+            }} />
             <label style={{ cursor: 'pointer' }}>
               <span style={{ display: 'inline-block', background: '#7c3aed', color: '#fff', borderRadius: 7, padding: '6px 13px', fontSize: 12, fontWeight: 600 }}>📤 Importar QueueList</span>
               <input type="file" accept=".csv" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.currentTarget.value = '' }} />
@@ -662,5 +669,30 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
         )
       })()}
     </div>
+  )
+}
+
+function AutoQueueFind({ onFound }: { onFound: (content: string, name: string) => void }) {
+  const [status, setStatus] = useState<'idle' | 'searching' | 'ok' | 'err'>('idle')
+  const [msg, setMsg] = useState('')
+  const folder = getGlobalConfig().downloadsFolder
+
+  if (!folder) return null
+
+  const handleFind = async () => {
+    setStatus('searching')
+    const res = await findLatestFile(folder, FILE_PATTERNS.queueList)
+    if ('error' in res) { setStatus('err'); setMsg(res.error) }
+    else { setStatus('ok'); setMsg(res.name); onFound(res.content, res.name); setTimeout(() => setStatus('idle'), 2500) }
+  }
+
+  return (
+    <button
+      onClick={() => void handleFind()}
+      disabled={status === 'searching'}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: status === 'ok' ? 'rgba(74,222,128,.12)' : status === 'err' ? 'rgba(248,113,113,.12)' : 'rgba(124,58,237,.15)', color: status === 'ok' ? '#4ade80' : status === 'err' ? '#f87171' : '#a78bfa', border: `1px solid ${status === 'ok' ? 'rgba(74,222,128,.3)' : status === 'err' ? 'rgba(248,113,113,.3)' : 'rgba(124,58,237,.3)'}`, borderRadius: 7, padding: '6px 13px', fontSize: 12, fontWeight: 600, cursor: status === 'searching' ? 'default' : 'pointer' }}
+    >
+      {status === 'searching' ? '🔍 Buscando…' : status === 'ok' ? `✓ ${msg}` : status === 'err' ? `✕ ${msg}` : '🔍 Buscar QueueList'}
+    </button>
   )
 }

@@ -750,18 +750,74 @@ function AutoFindButton({ pattern, onFound, color }: { pattern: string; onFound:
 function UploadsPage(props: UploadsProps) {
   const { dsState, driversMeta, callUp, forwardOrder, workPref, selectedDay, selectedShift } = props
   const [showDriverUpload, setShowDriverUpload] = useState(false)
+  const [fetchAll, setFetchAll] = useState<'idle' | 'busy' | 'done'>('idle')
+  const [fetchResults, setFetchResults] = useState<{ label: string; ok: boolean; msg: string }[]>([])
   const routesSaved = routeStore.list()
 
   const dsMeta = dsState.phase === 'done' ? { fileName: dsState.fileName } : null
   const dsProcessing = dsState.phase === 'processing' ? dsState.message : null
+  const folder = getGlobalConfig().downloadsFolder
+
+  const handleFetchAll = async () => {
+    if (!folder) return
+    setFetchAll('busy')
+    setFetchResults([])
+
+    const tasks: { label: string; pattern: string; onFound: (c: string, n: string) => void }[] = [
+      { label: 'Rotas DS', pattern: FILE_PATTERNS.ds, onFound: (c, n) => props.onDsFile(c, n) },
+      { label: 'Motoristas', pattern: FILE_PATTERNS.driver, onFound: (c, n) => {
+        const p = parseDriverCsv(c); if (!p.error) { localStore.saveDrivers(p.drivers, { total: p.drivers.length, fileName: n }); props.onDriversImported() }
+      }},
+      { label: 'Call Up', pattern: FILE_PATTERNS.callUp, onFound: (c, n) => props.onCallUpFile(c, n) },
+      { label: 'Forward Order', pattern: FILE_PATTERNS.forwardOrder, onFound: (c, n) => props.onForwardOrderFile(c, n) },
+    ]
+
+    const results: { label: string; ok: boolean; msg: string }[] = []
+    for (const t of tasks) {
+      const res = await findLatestFile(folder, t.pattern)
+      if ('error' in res) {
+        results.push({ label: t.label, ok: false, msg: res.error })
+      } else {
+        t.onFound(res.content, res.name)
+        results.push({ label: t.label, ok: true, msg: res.name })
+      }
+    }
+    setFetchResults(results)
+    setFetchAll('done')
+    setTimeout(() => setFetchAll('idle'), 4000)
+  }
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '2rem' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#e2e8f0' }}>Uploads</h2>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: '#8892a4' }}>
-          Importe os relatórios — dados salvos localmente e persistem entre sessões.
-        </p>
+      <div style={{ marginBottom: 24, display: 'flex', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1 }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#e2e8f0' }}>Uploads</h2>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#8892a4' }}>
+            Importe os relatórios — dados salvos localmente e persistem entre sessões.
+          </p>
+        </div>
+        {folder ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+            <button
+              onClick={() => void handleFetchAll()}
+              disabled={fetchAll === 'busy'}
+              style={{ background: fetchAll === 'busy' ? '#2d3048' : '#7c3aed', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 20px', fontSize: 13, fontWeight: 700, cursor: fetchAll === 'busy' ? 'default' : 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              {fetchAll === 'busy' ? '⏳ Buscando…' : '🔍 Atualizar relatórios'}
+            </button>
+            {fetchAll === 'done' && fetchResults.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {fetchResults.map(r => (
+                  <span key={r.label} title={r.msg} style={{ fontSize: 11, fontWeight: 600, color: r.ok ? '#4ade80' : '#f87171', background: r.ok ? 'rgba(74,222,128,.1)' : 'rgba(248,113,113,.1)', border: `1px solid ${r.ok ? 'rgba(74,222,128,.25)' : 'rgba(248,113,113,.25)'}`, borderRadius: 5, padding: '2px 8px' }}>
+                    {r.ok ? '✓' : '✕'} {r.label}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <p style={{ margin: 0, fontSize: 12, color: '#fbbf24' }}>⚠ Configure a pasta de downloads nas <strong>Configurações</strong> para atualização automática.</p>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 720 }}>
@@ -773,11 +829,7 @@ function UploadsPage(props: UploadsProps) {
           processing={dsProcessing}
           onClear={dsMeta ? props.onDsReset : undefined}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <AutoFindButton pattern={FILE_PATTERNS.ds} color="#3b82f6" onFound={(content, name) => props.onDsFile(content, name)} />
-            <Divider />
-            <FileUpload onFile={props.onDsFile} compact />
-          </div>
+          <FileUpload onFile={props.onDsFile} compact />
         </UploadCard>
 
         {/* Driver Registry */}
@@ -787,14 +839,7 @@ function UploadsPage(props: UploadsProps) {
           loaded={driversMeta ? `✓ ${driversMeta.total} motoristas · ${driversMeta.fileName}` : null}
           onToggle={(open) => setShowDriverUpload(open)}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <AutoFindButton pattern={FILE_PATTERNS.driver} color="#8b5cf6" onFound={(content, name) => {
-              const parsed = parseDriverCsv(content)
-              if (!parsed.error) { localStore.saveDrivers(parsed.drivers, { total: parsed.drivers.length, fileName: name }); setShowDriverUpload(false); props.onDriversImported() }
-            }} />
-            <Divider />
-            <DriverImport onImported={() => { setShowDriverUpload(false); props.onDriversImported() }} />
-          </div>
+          <DriverImport onImported={() => { setShowDriverUpload(false); props.onDriversImported() }} />
         </UploadCard>
 
         {/* Work Preference */}
@@ -822,11 +867,7 @@ function UploadsPage(props: UploadsProps) {
           loaded={callUp ? `✓ ${callUp.totalCalls.toLocaleString('pt-BR')} chamadas · ${callUp.fileName}` : null}
           onClear={callUp ? props.onClearCallUp : undefined}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <AutoFindButton pattern={FILE_PATTERNS.callUp} color="#f59e0b" onFound={(content, name) => props.onCallUpFile(content, name)} />
-            <Divider />
-            <FileUpload onFile={props.onCallUpFile} compact />
-          </div>
+          <FileUpload onFile={props.onCallUpFile} compact />
         </UploadCard>
 
         {/* Forward Order */}
@@ -836,11 +877,7 @@ function UploadsPage(props: UploadsProps) {
           loaded={forwardOrder ? `✓ ${forwardOrder.totalPackages} pacotes · ${forwardOrder.fileName}` : null}
           onClear={forwardOrder ? props.onClearForwardOrder : undefined}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <AutoFindButton pattern={FILE_PATTERNS.forwardOrder} color="#ef4444" onFound={(content, name) => props.onForwardOrderFile(content, name)} />
-            <Divider />
-            <FileUpload onFile={props.onForwardOrderFile} compact />
-          </div>
+          <FileUpload onFile={props.onForwardOrderFile} compact />
         </UploadCard>
 
         {/* Roteirização por Turno */}

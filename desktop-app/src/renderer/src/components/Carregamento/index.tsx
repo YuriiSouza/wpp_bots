@@ -690,9 +690,9 @@ function AutoQueueFind({ onFound }: { onFound: (content: string, name: string) =
     <button
       onClick={() => void handleFind()}
       disabled={status === 'searching'}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: status === 'ok' ? 'rgba(74,222,128,.12)' : status === 'err' ? 'rgba(248,113,113,.12)' : 'rgba(124,58,237,.15)', color: status === 'ok' ? '#4ade80' : status === 'err' ? '#f87171' : '#a78bfa', border: `1px solid ${status === 'ok' ? 'rgba(74,222,128,.3)' : status === 'err' ? 'rgba(248,113,113,.3)' : 'rgba(124,58,237,.3)'}`, borderRadius: 7, padding: '6px 13px', fontSize: 12, fontWeight: 600, cursor: status === 'searching' ? 'default' : 'pointer' }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: status === 'ok' ? 'rgba(74,222,128,.12)' : status === 'err' ? 'rgba(248,113,113,.12)' : '#7c3aed', color: status === 'ok' ? '#4ade80' : status === 'err' ? '#f87171' : '#fff', border: status === 'idle' ? 'none' : `1px solid ${status === 'ok' ? 'rgba(74,222,128,.3)' : 'rgba(248,113,113,.3)'}`, borderRadius: 8, padding: '9px 20px', fontSize: 13, fontWeight: 700, cursor: status === 'searching' ? 'default' : 'pointer' }}
     >
-      {status === 'searching' ? '🔍 Buscando…' : status === 'ok' ? `✓ ${msg}` : status === 'err' ? `✕ ${msg}` : '🔍 Buscar QueueList'}
+      {status === 'searching' ? '⏳ Buscando…' : status === 'ok' ? `✓ ${msg}` : status === 'err' ? `✕ ${msg}` : '🔍 Atualizar QueueList'}
     </button>
   )
 }

@@ -93,6 +93,11 @@ ipcMain.handle('find-latest-file', async (_event, { folder, pattern }: { folder:
     if (files.length === 0) return { error: 'Nenhum arquivo encontrado com o padrão "' + pattern + '"' }
 
     const filePath = path.join(resolved, files[0].name)
+    const isBinary = /\.(xlsx?|xls)$/i.test(files[0].name)
+    if (isBinary) {
+      const content = fs.readFileSync(filePath).toString('base64')
+      return { name: files[0].name, content, encoding: 'base64' }
+    }
     const content = fs.readFileSync(filePath, 'utf-8')
     return { name: files[0].name, content }
   } catch (err) {

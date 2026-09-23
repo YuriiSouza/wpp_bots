@@ -30,7 +30,7 @@ import type { CallUpAnalysis } from './lib/callUpParser'
 import type { ForwardOrderAnalysis } from './lib/forwardOrderParser'
 import type { WorkPreferenceData } from './lib/workPreferenceParser'
 import { getGlobalConfig, driverMatchesShift } from './lib/globalConfig'
-import { findLatestFile, FILE_PATTERNS } from './lib/fileFinder'
+import { findLatestFile, FILE_PATTERNS, base64ToArrayBuffer } from './lib/fileFinder'
 import { noShowQueueStore } from './lib/noShowQueueStore'
 import type { QueueDriver } from './lib/noShowQueueStore'
 import type { Shift } from './lib/globalConfig'
@@ -299,6 +299,7 @@ export default function App() {
             onCallUpFile={handleCallUpFile}
             onForwardOrderFile={handleForwardOrderFile}
             onWorkPrefFile={handleWorkPrefFile}
+            onWorkPrefArrayBuffer={(buf, name) => { const data = parseWorkPreferenceXlsx(buf, name); reportStore.saveWorkPref(data); setWorkPref(data) }}
             onWorkPrefData={handleWorkPrefData}
             onClearCallUp={() => { reportStore.clearCallUp(); setCallUp(null) }}
             onClearForwardOrder={() => { reportStore.clearForwardOrder(); setForwardOrder(null) }}
@@ -498,6 +499,7 @@ interface UploadsProps {
   onCallUpFile: (csv: string, fileName: string) => void
   onForwardOrderFile: (csv: string, fileName: string) => void
   onWorkPrefFile: (file: File) => void
+  onWorkPrefArrayBuffer: (buf: ArrayBuffer, name: string) => void
   onWorkPrefData: (data: WorkPreferenceData) => void
   onClearCallUp: () => void
   onClearForwardOrder: () => void
@@ -763,10 +765,14 @@ function UploadsPage(props: UploadsProps) {
     setFetchAll('busy')
     setFetchResults([])
 
-    const tasks: { label: string; pattern: string; onFound: (c: string, n: string) => void }[] = [
+    const tasks: { label: string; pattern: string; onFound: (c: string, n: string, enc?: string) => void }[] = [
       { label: 'Rotas DS', pattern: FILE_PATTERNS.ds, onFound: (c, n) => props.onDsFile(c, n) },
       { label: 'Motoristas', pattern: FILE_PATTERNS.driver, onFound: (c, n) => {
         const p = parseDriverCsv(c); if (!p.error) { localStore.saveDrivers(p.drivers, { total: p.drivers.length, fileName: n }); props.onDriversImported() }
+      }},
+      { label: 'Work Preference', pattern: FILE_PATTERNS.workPref, onFound: (c, n, enc) => {
+        const buf = enc === 'base64' ? base64ToArrayBuffer(c) : new TextEncoder().encode(c).buffer
+        props.onWorkPrefArrayBuffer(buf, n)
       }},
       { label: 'Call Up', pattern: FILE_PATTERNS.callUp, onFound: (c, n) => props.onCallUpFile(c, n) },
       { label: 'Forward Order', pattern: FILE_PATTERNS.forwardOrder, onFound: (c, n) => props.onForwardOrderFile(c, n) },
@@ -778,7 +784,7 @@ function UploadsPage(props: UploadsProps) {
       if ('error' in res) {
         results.push({ label: t.label, ok: false, msg: res.error })
       } else {
-        t.onFound(res.content, res.name)
+        t.onFound(res.content, res.name, res.encoding)
         results.push({ label: t.label, ok: true, msg: res.name })
       }
     }

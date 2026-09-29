@@ -33,7 +33,9 @@ import { getGlobalConfig, driverMatchesShift } from './lib/globalConfig'
 import { findLatestFile, FILE_PATTERNS, base64ToArrayBuffer } from './lib/fileFinder'
 import { noShowQueueStore } from './lib/noShowQueueStore'
 import type { QueueDriver } from './lib/noShowQueueStore'
+import { calculatePriorityScore, daysSinceLastRoute } from './lib/priorityScore'
 import type { Shift } from './lib/globalConfig'
+import { checkForUpdate, CURRENT_VERSION, getUpdateUrl, saveUpdateUrl, type UpdateInfo } from './lib/updateChecker'
 
 // ─── DS persistence ───────────────────────────────────────────────────────────
 const DS_KEY = 'spx_ds_result'
@@ -98,10 +100,17 @@ export default function App() {
   const [selectedShift, setSelectedShift] = useState<Shift>(() => loadHeader().shift ?? 'AM')
   const [spxHeaderOpen, setSpxHeaderOpen] = useState(false)
   const [spxConfigured, setSpxConfigured] = useState(() => !!localStorage.getItem('spx:credentials'))
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [updateDismissed, setUpdateDismissed] = useState(false)
+
+  useEffect(() => {
+    checkForUpdate().then(info => { if (info) setUpdateInfo(info) }).catch(() => {})
+  }, [])
 
   const handleDayChange = (d: string) => {
     setSelectedDay(d)
     try { localStorage.setItem(HEADER_KEY, JSON.stringify({ day: d, shift: selectedShift })) } catch { /* ok */ }
+    if (workPref) buildNoShowQueues(workPref, d)
   }
   const handleShiftChange = (s: Shift) => {
     setSelectedShift(s)
@@ -163,9 +172,12 @@ export default function App() {
   }, [])
 
   // ── Work Preference ───────────────────────────────────────────────────────────
-  function buildNoShowQueues(data: WorkPreferenceData) {
+  function buildNoShowQueues(data: WorkPreferenceData, forDay?: string) {
     const cfg = getGlobalConfig()
-    const today = new Date().toISOString().slice(0, 10)
+    const today = forDay ?? selectedDay
+    const dsDrivers = dsState.phase === 'done' ? dsState.result.drivers : []
+    const dsMap = new Map(dsDrivers.map(d => [d.driver_id, d]))
+    const callUpMap = new Map((callUp?.byDriver ?? []).map(d => [d.driverId, d]))
     const shifts = ['AM', 'PM1', 'PM2'] as const
     for (const shift of shifts) {
       const queue: QueueDriver[] = data.drivers
@@ -174,14 +186,20 @@ export default function App() {
           if (!sched || sched.status !== 'available') return false
           return driverMatchesShift(sched.slots, shift, cfg)
         })
-        .map(d => ({
-          driverId: d.driverId,
-          name: d.driverName || d.driverId,
-          vehicleType: d.vehicleType || null,
-          clusters: d.clusters,
-          priorityScore: 50,
-          isBlocked: false,
-        }))
+        .map(d => {
+          const ds = dsMap.get(d.driverId)
+          const cu = callUpMap.get(d.driverId)
+          const dsPercent = ds?.DS_Real != null ? ds.DS_Real * 100 : 50
+          const priorityScore = calculatePriorityScore(dsPercent, cu?.declined ?? 0, cu?.timeoutCount ?? 0)
+          return {
+            driverId: d.driverId,
+            name: d.driverName || d.driverId,
+            vehicleType: d.vehicleType || null,
+            clusters: d.clusters,
+            priorityScore,
+            isBlocked: false,
+          }
+        })
       noShowQueueStore.set(shift, queue)
     }
   }
@@ -284,6 +302,22 @@ export default function App() {
           onSpxClick={() => setSpxHeaderOpen(true)}
         />
         {spxHeaderOpen && <SpxModal onClose={() => setSpxHeaderOpen(false)} onSaved={() => { setSpxConfigured(true); setSpxHeaderOpen(false) }} onRemoved={() => { setSpxConfigured(false); setSpxHeaderOpen(false) }} />}
+        {updateInfo && !updateDismissed && (
+          <div style={{ background: '#1a2e1a', borderBottom: '1px solid #22c55e44', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+            <span style={{ fontSize: 16 }}>🆕</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#4ade80' }}>Nova versão disponível: {updateInfo.version}</span>
+              {updateInfo.notes && <span style={{ fontSize: 12, color: '#86efac', marginLeft: 10 }}>{updateInfo.notes}</span>}
+              <span style={{ fontSize: 11, color: '#64748b', marginLeft: 10 }}>· versão atual: {CURRENT_VERSION}</span>
+            </div>
+            {updateInfo.url && (
+              <button onClick={() => window.open(updateInfo.url, '_blank')} style={{ background: '#22c55e', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
+                Baixar
+              </button>
+            )}
+            <button onClick={() => setUpdateDismissed(true)} style={{ background: 'transparent', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 4px', flexShrink: 0 }}>×</button>
+          </div>
+        )}
         {section === 'uploads' && (
           <UploadsPage
             dsState={dsState}
@@ -299,7 +333,7 @@ export default function App() {
             onCallUpFile={handleCallUpFile}
             onForwardOrderFile={handleForwardOrderFile}
             onWorkPrefFile={handleWorkPrefFile}
-            onWorkPrefArrayBuffer={(buf, name) => { const data = parseWorkPreferenceXlsx(buf, name); reportStore.saveWorkPref(data); setWorkPref(data) }}
+            onWorkPrefArrayBuffer={(buf, name) => { const data = parseWorkPreferenceXlsx(buf, name); reportStore.saveWorkPref(data); buildNoShowQueues(data); setWorkPref(data) }}
             onWorkPrefData={handleWorkPrefData}
             onClearCallUp={() => { reportStore.clearCallUp(); setCallUp(null) }}
             onClearForwardOrder={() => { reportStore.clearForwardOrder(); setForwardOrder(null) }}
@@ -525,12 +559,12 @@ function RoutePasteCard({ defaultDate, defaultShift }: { defaultDate: string; de
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {/* Histórico salvo */}
       {routesSaved.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
           {routesSaved.map(s => (
-            <div key={`${s.date}:${s.shift}`} style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#0f1117', border: `1px solid ${SHIFT_COLOR_UP[s.shift]}44`, borderRadius: 6, padding: '4px 10px' }}>
+            <div key={`${s.date}:${s.shift}`} style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#0f1117', border: `1px solid ${SHIFT_COLOR_UP[s.shift]}44`, borderRadius: 5, padding: '3px 8px' }}>
               <span style={{ color: SHIFT_COLOR_UP[s.shift], fontWeight: 700, fontSize: 11 }}>{s.shift}</span>
               <span style={{ color: '#64748b', fontSize: 11 }}>·</span>
               <span style={{ color: '#8892a4', fontSize: 11 }}>{s.date}</span>
@@ -540,41 +574,30 @@ function RoutePasteCard({ defaultDate, defaultShift }: { defaultDate: string; de
           ))}
         </div>
       )}
-
-      {/* Seletor data + turno */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input type="date" value={pasteDate} onChange={e => setPasteDate(e.target.value)} style={{ width: 150 }} />
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input type="date" value={pasteDate} onChange={e => setPasteDate(e.target.value)} style={{ width: 140, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 6, padding: '4px 8px', fontSize: 12 }} />
         <div style={{ display: 'flex', gap: 4 }}>
           {SHIFTS_UPLOAD.map(s => (
-            <button key={s} onClick={() => setPasteShift(s)} style={{ border: `1px solid ${pasteShift === s ? SHIFT_COLOR_UP[s] : '#2d3048'}`, background: pasteShift === s ? `${SHIFT_COLOR_UP[s]}22` : 'transparent', color: pasteShift === s ? SHIFT_COLOR_UP[s] : '#8892a4', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+            <button key={s} onClick={() => setPasteShift(s)} style={{ border: `1px solid ${pasteShift === s ? SHIFT_COLOR_UP[s] : '#2d3048'}`, background: pasteShift === s ? `${SHIFT_COLOR_UP[s]}22` : 'transparent', color: pasteShift === s ? SHIFT_COLOR_UP[s] : '#8892a4', borderRadius: 6, padding: '4px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
               {s}
             </button>
           ))}
         </div>
       </div>
-
-      {/* Textarea */}
       <textarea
         value={text}
         onChange={e => { setText(e.target.value); setSaved(false) }}
         placeholder={'Rota\tAT / TO\tGaiola\t...\nCopie a tabela do SPX e cole aqui'}
-        rows={6}
-        style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
+        rows={4}
+        style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '8px 10px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
       />
-
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {preview.length > 0 && (
-          <span style={{ fontSize: 11, color: '#4ade80' }}>✓ {preview.length} rotas reconhecidas</span>
-        )}
+        {preview.length > 0 && <span style={{ fontSize: 11, color: '#4ade80' }}>✓ {preview.length} rotas</span>}
         {saved && <span style={{ fontSize: 11, color: '#4ade80', fontWeight: 600 }}>✓ Salvo!</span>}
-        <button
-          disabled={preview.length === 0}
-          onClick={handleLoad}
-          style={{ marginLeft: 'auto', background: preview.length > 0 ? '#7c3aed' : '#2d3048', color: preview.length > 0 ? '#fff' : '#64748b', border: 'none', borderRadius: 7, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: preview.length > 0 ? 'pointer' : 'default' }}
-        >
+        <button disabled={preview.length === 0} onClick={handleLoad} style={{ marginLeft: 'auto', background: preview.length > 0 ? '#7c3aed' : '#2d3048', color: preview.length > 0 ? '#fff' : '#64748b', border: 'none', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 600, cursor: preview.length > 0 ? 'pointer' : 'default' }}>
           Salvar {pasteShift} · {pasteDate}
         </button>
-        {text && <button onClick={() => setText('')} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#8892a4', borderRadius: 7, padding: '6px 10px', fontSize: 12, cursor: 'pointer' }}>Limpar</button>}
+        {text && <button onClick={() => setText('')} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#8892a4', borderRadius: 7, padding: '5px 8px', fontSize: 12, cursor: 'pointer' }}>Limpar</button>}
       </div>
     </div>
   )
@@ -834,18 +857,35 @@ function UploadsPage(props: UploadsProps) {
           loaded={dsMeta ? `✓ ${dsMeta.fileName}` : null}
           processing={dsProcessing}
           onClear={dsMeta ? props.onDsReset : undefined}
+          tutorial={[
+            'Conecte-se à VPN com o aplicativo Cisco.',
+            'Acesse o link do painel DataSuite: https://us.datasuite.shopee.io/dashboard/dashboard/a9aa24b0-8bd4-4329-9d76-1987ad26afc9/normal?page=1769794562824_1s2r',
+            'No filtro de data, selecione o período desejado.',
+            'No filtro de HUB, selecione apenas o seu hub.',
+            'No canto superior direito do relatório, clique no botão de download.',
+            'Renomeie o arquivo para "resultado" e selecione o tipo CSV.',
+            'Baixe na pasta configurada neste aplicativo para atualização automática.',
+          ]}
         >
-          <FileUpload onFile={props.onDsFile} compact />
+          <CompactDrop label="Clique ou arraste o resultado.csv" accept=".csv,.txt" onFile={f => { const r = new FileReader(); r.onload = e => { const csv = e.target?.result as string; if (csv) props.onDsFile(csv, f.name) }; r.readAsText(f, 'UTF-8') }} />
         </UploadCard>
 
         {/* Driver Registry */}
         <UploadCard
           icon="👥" title="Cadastro de Motoristas SPX" color="#8b5cf6"
-          description={<>Arquivo <code style={{ fontSize: 11, background: '#22263a', padding: '1px 5px', borderRadius: 3 }}>br_driver_*.csv</code> exportado do painel SPX</>}
+          description="Exportado do painel SPX — Gestão de Equipe → Perfil de Motorista"
           loaded={driversMeta ? `✓ ${driversMeta.total} motoristas · ${driversMeta.fileName}` : null}
           onToggle={(open) => setShowDriverUpload(open)}
+          tutorial={[
+            'Acesse o sistema Shopee Xpress Live.',
+            'No menu lateral esquerdo, vá em Gestão de Equipe → Perfil de Motorista.',
+            'Na parte superior, selecione a aba Motorista 3PL.',
+            'Clique em Exportar.',
+            'Acesse o menu de Downloads no canto superior esquerdo do sistema.',
+            'Baixe o relatório na pasta configurada neste aplicativo.',
+          ]}
         >
-          <DriverImport onImported={() => { setShowDriverUpload(false); props.onDriversImported() }} />
+          <CompactDrop label="Clique ou arraste o br_driver_*.csv" accept=".csv,.txt" onFile={f => { const r = new FileReader(); r.onload = e => { const csv = e.target?.result as string; if (csv) { const p = parseDriverCsv(csv); if (!p.error) { localStore.saveDrivers(p.drivers, { total: p.drivers.length, fileName: f.name }); setShowDriverUpload(false); props.onDriversImported() } } }; r.readAsText(f, 'UTF-8') }} />
         </UploadCard>
 
         {/* Work Preference */}
@@ -854,36 +894,53 @@ function UploadsPage(props: UploadsProps) {
           description="Disponibilidade dos motoristas — via XLSX ou direto do painel SPX"
           loaded={workPref ? `✓ ${workPref.drivers.length} motoristas · ${workPref.fileName}` : null}
           onClear={workPref ? props.onClearWorkPref : undefined}
+          tutorial={[
+            'Acesse o sistema Shopee Xpress Live.',
+            'No menu lateral esquerdo, vá em Gestão de Equipe → Disponibilidade de Motorista.',
+            'Clique em Exportar.',
+            'Acesse o menu de Downloads no canto superior esquerdo do sistema.',
+            'Baixe o relatório na pasta configurada neste aplicativo para atualização automática.',
+          ]}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <SpxWorkPrefFetchButton selectedDay={selectedDay} workPref={workPref} onData={props.onWorkPrefData} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ flex: 1, height: 1, background: '#2d3048' }} />
-              <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>OU VIA XLSX</span>
-              <div style={{ flex: 1, height: 1, background: '#2d3048' }} />
-            </div>
-            <XlsxDropZone label="Arraste o XLSX ou clique para selecionar" onFile={props.onWorkPrefFile} />
+            <CompactDrop label="Clique ou arraste o work_preference_result_*.xlsx" accept=".xlsx,.xls" onFile={props.onWorkPrefFile} />
           </div>
         </UploadCard>
 
         {/* Call Up */}
         <UploadCard
           icon="📞" title="Call Up (Chamadas de Motoristas)" color="#f59e0b"
-          description={<>Arquivo <code style={{ fontSize: 11, background: '#22263a', padding: '1px 5px', borderRadius: 3 }}>br_export_call_up_notification_*.csv</code></>}
+          description="Exportado do painel SPX — Entrega → Driver Call Up"
           loaded={callUp ? `✓ ${callUp.totalCalls.toLocaleString('pt-BR')} chamadas · ${callUp.fileName}` : null}
           onClear={callUp ? props.onClearCallUp : undefined}
+          tutorial={[
+            'Acesse o sistema Shopee Xpress Live.',
+            'No menu lateral esquerdo, vá em Entrega → Driver Call Up.',
+            'Clique em Exportar.',
+            'Acesse o menu de Downloads no canto superior esquerdo do sistema.',
+            'Baixe o relatório na pasta configurada neste aplicativo.',
+          ]}
         >
-          <FileUpload onFile={props.onCallUpFile} compact />
+          <CompactDrop label="Clique ou arraste o br_export_call_up_notification_*.csv" accept=".csv,.txt" onFile={f => { const r = new FileReader(); r.onload = e => { const csv = e.target?.result as string; if (csv) props.onCallUpFile(csv, f.name) }; r.readAsText(f, 'UTF-8') }} />
         </UploadCard>
 
         {/* Forward Order */}
         <UploadCard
           icon="📦" title="Pacotes em Aberto (Forward Order)" color="#ef4444"
-          description={<>Arquivo <code style={{ fontSize: 11, background: '#22263a', padding: '1px 5px', borderRadius: 3 }}>export_forward_order_*.csv</code></>}
+          description="Exportado do painel SPX — Pedidos → Rastreio de Pedidos → Exportar Pedidos Avançado"
           loaded={forwardOrder ? `✓ ${forwardOrder.totalPackages} pacotes · ${forwardOrder.fileName}` : null}
           onClear={forwardOrder ? props.onClearForwardOrder : undefined}
+          tutorial={[
+            'Acesse o sistema Shopee Xpress Live.',
+            'No menu lateral esquerdo, vá em Pedidos → Rastreio de Pedidos.',
+            'Dentro da tela, clique em Exportar e selecione Exportar Pedidos Avançado.',
+            'Nos filtros, em Log de Status selecione OnHold e Delivering.',
+            'Em Station, informe o hub onde você trabalha.',
+            'Confirme a exportação e baixe o relatório na pasta configurada neste aplicativo.',
+          ]}
         >
-          <FileUpload onFile={props.onForwardOrderFile} compact />
+          <CompactDrop label="Clique ou arraste o export_forward_order_*.csv" accept=".csv,.txt" onFile={f => { const r = new FileReader(); r.onload = e => { const csv = e.target?.result as string; if (csv) props.onForwardOrderFile(csv, f.name) }; r.readAsText(f, 'UTF-8') }} />
         </UploadCard>
 
         {/* Roteirização por Turno */}
@@ -891,6 +948,13 @@ function UploadsPage(props: UploadsProps) {
           icon="🛣" title="Roteirização por Turno" color="#22c55e"
           description="Cole a tabela de roteirização do SPX — salva separadamente por data e turno (AM / PM1 / PM2)"
           loaded={routesSaved.length > 0 ? `✓ ${routesSaved.length} turno(s) salvo(s)` : null}
+          tutorial={[
+            'Acesse a planilha de roteirização enviada diariamente para cada turno no grupo de roteirização do seu HUB.',
+            'Abra a guia Plano de Expedição.',
+            'Selecione toda a tabela (Ctrl+A ou clique e arraste) e copie (Ctrl+C).',
+            'Clique em Importar neste card, selecione o turno e a data corretos.',
+            'Cole o conteúdo no campo de texto e confirme.',
+          ]}
         >
           <RoutePasteCard defaultDate={selectedDay} defaultShift={selectedShift} />
         </UploadCard>
@@ -900,6 +964,14 @@ function UploadsPage(props: UploadsProps) {
           icon="🔗" title="BR Assignment (Motorista por AT)" color="#f97316"
           description="Importa o arquivo br_assignment_task_*.csv e vincula o motorista a cada rota salva"
           loaded={null}
+          tutorial={[
+            'Acesse o sistema Shopee Xpress Live.',
+            'No menu lateral esquerdo, vá em Entrega → Event Management.',
+            'Selecione o hub onde você trabalha.',
+            'Clique em Exportar.',
+            'Acesse o menu de Downloads no canto superior esquerdo do sistema.',
+            'Baixe o relatório na pasta configurada neste aplicativo.',
+          ]}
         >
           <BrAssignmentCard />
         </UploadCard>
@@ -908,16 +980,36 @@ function UploadsPage(props: UploadsProps) {
   )
 }
 
-function UploadCard({ icon, title, description, color, loaded, processing, onClear, onToggle, children }: {
-  icon: string; title: string; description: React.ReactNode; color: string
+function CompactDrop({ label, accept, onFile }: { label: string; accept: string; onFile: (file: File) => void }) {
+  const [dragging, setDragging] = useState(false)
+  const [done, setDone] = useState(false)
+  const ref = useRef<HTMLInputElement>(null)
+  const handle = (file: File) => { onFile(file); setDone(true); setTimeout(() => setDone(false), 2000) }
+  return (
+    <div
+      onClick={() => ref.current?.click()}
+      onDragOver={e => { e.preventDefault(); setDragging(true) }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handle(f) }}
+      style={{ border: `2px dashed ${dragging ? '#3b82f6' : done ? '#22c55e' : '#2d3048'}`, borderRadius: 8, padding: '14px 20px', textAlign: 'center', cursor: 'pointer', color: done ? '#4ade80' : '#8892a4', fontSize: 12, background: dragging ? 'rgba(59,130,246,.05)' : 'transparent', transition: 'all .15s' }}
+    >
+      {done ? '✅ Arquivo carregado' : `📂 ${label}`}
+      <input ref={ref} type="file" accept={accept} style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) handle(f); e.currentTarget.value = '' }} />
+    </div>
+  )
+}
+
+function UploadCard({ icon, title, description, color, loaded, processing, onClear, onToggle, tutorial, children }: {
+  icon: string; title: string; description: string; color: string
   loaded: string | null; processing?: string | null; onClear?: () => void; onToggle?: (open: boolean) => void
+  tutorial?: string[]
   children: React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  const [tutOpen, setTutOpen] = useState(false)
   const wasOpenRef = useRef(false)
   const prevLoaded = useRef<string | null>(loaded)
 
-  // Auto-close whenever loaded changes while the card was open
   useEffect(() => {
     if (wasOpenRef.current && loaded !== prevLoaded.current) {
       setOpen(false)
@@ -929,40 +1021,60 @@ function UploadCard({ icon, title, description, color, loaded, processing, onCle
 
   const toggle = (v: boolean) => {
     wasOpenRef.current = v
-    if (v) prevLoaded.current = `__opening_${Date.now()}__` // force mismatch on next import
+    if (v) prevLoaded.current = `__opening_${Date.now()}__`
     setOpen(v)
     onToggle?.(v)
   }
 
   return (
-    <div style={{ background: '#1a1d27', border: '1px solid #2d3048', borderRadius: 12, overflow: 'hidden' }}>
-      <div style={{ padding: '14px 18px', borderBottom: open ? '1px solid #2d3048' : 'none' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 26 }}>{icon}</span>
+    <div style={{ background: '#1a1d27', border: `1px solid ${loaded && !open ? color + '44' : '#2d3048'}`, borderRadius: 12, overflow: 'hidden', transition: 'border-color 0.2s' }}>
+      <div style={{ padding: '14px 18px', borderBottom: open || tutOpen ? '1px solid #2d3048' : 'none' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, height: 48 }}>
+          <span style={{ fontSize: 22, flexShrink: 0, width: 32, textAlign: 'center' }}>{icon}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <p style={{ margin: 0, fontWeight: 600, color: '#e2e8f0', fontSize: 14 }}>{title}</p>
-            <p style={{ margin: '1px 0 0', fontSize: 11, color: '#8892a4' }}>{description}</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <p style={{ margin: 0, fontWeight: 600, color: '#e2e8f0', fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</p>
+              {loaded && !open && !tutOpen && (
+                <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, color: color, background: `${color}18`, border: `1px solid ${color}33`, borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>✓ atualizado</span>
+              )}
+            </div>
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{description}</p>
           </div>
-          <div style={{ display: 'flex', gap: 7, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+            {tutorial && (
+              <button onClick={() => { setTutOpen(v => !v); if (open) toggle(false) }}
+                style={{ background: 'transparent', color: tutOpen ? '#fbbf24' : '#64748b', border: `1px solid ${tutOpen ? 'rgba(251,191,36,.4)' : '#2d3048'}`, borderRadius: 6, padding: '4px 9px', cursor: 'pointer', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                {tutOpen ? '✕ Tutorial' : '? Tutorial'}
+              </button>
+            )}
             {onClear && !open && (
-              <button onClick={onClear} style={{ background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 11 }}>
+              <button onClick={onClear} style={{ background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,.3)', borderRadius: 6, padding: '4px 9px', cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap' }}>
                 Remover
               </button>
             )}
             <button
-              onClick={() => toggle(!open)}
+              onClick={() => { toggle(!open); if (tutOpen) setTutOpen(false) }}
               disabled={!!processing}
-              style={{ background: open ? 'transparent' : color, color: open ? '#8892a4' : '#fff', border: open ? '1px solid #2d3048' : 'none', borderRadius: 6, padding: '5px 14px', cursor: processing ? 'default' : 'pointer', fontSize: 12, opacity: processing ? .5 : 1, minWidth: 80, textAlign: 'center' }}>
+              style={{ background: open ? 'transparent' : color, color: open ? '#8892a4' : '#fff', border: open ? '1px solid #2d3048' : 'none', borderRadius: 6, padding: '5px 14px', cursor: processing ? 'default' : 'pointer', fontSize: 12, fontWeight: 600, opacity: processing ? .5 : 1, minWidth: 78, textAlign: 'center', whiteSpace: 'nowrap' }}>
               {processing ?? (open ? 'Cancelar' : loaded ? 'Atualizar' : 'Importar')}
             </button>
           </div>
         </div>
-        {loaded && !open && (
-          <div style={{ marginTop: 8, padding: '6px 10px', background: `${color}0f`, border: `1px solid ${color}22`, borderRadius: 7, fontSize: 12, color: color }}>
-            {loaded}
-          </div>
-        )}
       </div>
+
+      {/* Tutorial panel */}
+      {tutOpen && tutorial && (
+        <div style={{ padding: '14px 18px', background: '#13151f', borderBottom: '1px solid #2d3048' }}>
+          <p style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 700, color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Como atualizar</p>
+          <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 7 }}>
+            {tutorial.map((step, i) => (
+              <li key={i} style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.5 }}>{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {/* Import panel */}
       {open && <div style={{ padding: '14px 18px' }}>{children}</div>}
     </div>
   )

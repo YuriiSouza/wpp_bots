@@ -165,7 +165,13 @@ function getBestCandidate(route: LocalRoute, drivers: LocalDriver[], usedIds: Se
     const pb = vehiclePriority(b.vehicleType, route.requiredVehicleType)
     return pa !== pb ? pa - pb : b.priorityScore - a.priorityScore
   }
-  const base = drivers.filter(d => !usedIds.has(d.driverId) && !(rv !== 'MOTO' && normalizeVehicle(d.vehicleType) === 'MOTO'))
+  const base = drivers.filter(d => {
+    if (usedIds.has(d.driverId)) return false
+    const dv = normalizeVehicle(d.vehicleType)
+    if (rv !== 'MOTO' && dv === 'MOTO') return false   // moto só aceita rota de moto
+    if (rv === 'MOTO' && dv === 'FIORINO') return false // fiorino não aceita rota de moto
+    return true
+  })
   // Tenta com cluster exato primeiro; se não achar, usa todos os disponíveis
   const withCluster = base.filter(d => d.clusters.some(c => normCluster(c) === normCluster(route.cluster)))
   return withCluster.sort(sorter)[0] ?? null
@@ -1368,14 +1374,6 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     removeFromQueue(assignedIds)
     setFioResults(results)
     setFioAssigning(false)
-    // Snapshot pós-atribuição: rotas já atribuídas + as que acabaram de ser atribuídas
-    const updatedRoutes = routes.map(r => {
-      const driver = fiorino.assignments.get(r.atId)
-      return driver ? { ...r, status: 'ATRIBUIDA' as const } : r
-    })
-    setReportSnapshot(buildReportSnapshot())
-    setReportCopied(false)
-    setReportModal(true)
   }
 
   // Sub-abas internas do "First Convocation"

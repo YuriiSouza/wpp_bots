@@ -85,12 +85,19 @@ ipcMain.handle('find-latest-file', async (_event, { folder, pattern }: { folder:
     if (!fs.existsSync(resolved)) return { error: 'Pasta não encontrada: ' + resolved }
 
     const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i')
-    const files = fs.readdirSync(resolved)
+    const allFiles = fs.readdirSync(resolved).filter(f => {
+      try { return fs.statSync(path.join(resolved, f)).isFile() } catch { return false }
+    })
+    console.log('[find-latest-file] pattern:', pattern, 'regex:', regex.toString(), 'files in folder:', allFiles.slice(0, 20))
+    const files = allFiles
       .filter(f => regex.test(f))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(resolved, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime)
 
-    if (files.length === 0) return { error: 'Nenhum arquivo encontrado com o padrão "' + pattern + '"' }
+    if (files.length === 0) {
+      const similar = allFiles.filter(f => f.toLowerCase().includes(pattern.split('*')[0].toLowerCase())).slice(0, 5)
+      return { error: `Nenhum arquivo encontrado com o padrão "${pattern}"${similar.length ? '. Parecidos: ' + similar.join(', ') : ''}` }
+    }
 
     const filePath = path.join(resolved, files[0].name)
     const isBinary = /\.(xlsx?|xls)$/i.test(files[0].name)
@@ -103,6 +110,29 @@ ipcMain.handle('find-latest-file', async (_event, { folder, pattern }: { folder:
   } catch (err) {
     return { error: String(err) }
   }
+})
+
+// IPC: fetch simples GET (para verificar atualizações)
+ipcMain.handle('fetch-url', async (_event, url: string) => {
+  return new Promise<string>((resolve, reject) => {
+    const parsed = new URL(url)
+    const mod = parsed.protocol === 'https:' ? https : require('http')
+    const req = mod.get(url, { headers: { 'User-Agent': 'SPX-Analytics/1.0' } }, (res: import('http').IncomingMessage) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        mod.get(res.headers.location, { headers: { 'User-Agent': 'SPX-Analytics/1.0' } }, (res2: import('http').IncomingMessage) => {
+          const chunks: Buffer[] = []
+          res2.on('data', (c: Buffer) => chunks.push(c))
+          res2.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+        }).on('error', reject)
+        return
+      }
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    })
+    req.on('error', reject)
+    req.end()
+  })
 })
 
 app.whenReady().then(() => {

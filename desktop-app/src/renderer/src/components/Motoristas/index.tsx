@@ -4,7 +4,71 @@ import DriverImport from './DriverImport'
 import DriverStats from './DriverStats'
 import DriverList from './DriverList'
 
-type Tab = 'stats' | 'list'
+type Tab = 'stats' | 'list' | 'phones'
+
+function PhoneLookup({ drivers }: { drivers: StoredDriver[] }) {
+  const [input, setInput] = useState('')
+  const [copied, setCopied] = useState<string | null>(null)
+
+  const ids = input.split(/[\n,;\s]+/).map(s => s.trim()).filter(Boolean)
+  const results = ids.map(id => {
+    const d = drivers.find(d => d.id === id)
+    return { id, name: d?.name ?? null, phone: d?.phoneNumber?.replace(/\D/g, '') ?? null }
+  })
+  const found = results.filter(r => r.phone)
+
+  const copy = (text: string, key: string) => {
+    navigator.clipboard.writeText(text)
+    setCopied(key)
+    setTimeout(() => setCopied(null), 1500)
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 600 }}>
+      <textarea
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        placeholder={'Cole os IDs aqui (um por linha ou separados por vírgula)\n\nEx:\n12345678\n87654321'}
+        rows={5}
+        style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', padding: '10px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
+      />
+
+      {ids.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 2 }}>
+            <span style={{ fontSize: 12, color: '#8892a4' }}>{found.length} de {ids.length} encontrados</span>
+            {found.length > 0 && (
+              <button
+                onClick={() => copy(found.map(r => r.phone).join('\n'), 'all')}
+                style={{ background: copied === 'all' ? '#22c55e22' : '#22263a', color: copied === 'all' ? '#4ade80' : '#e2e8f0', border: `1px solid ${copied === 'all' ? '#22c55e44' : '#2d3048'}`, borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+              >
+                {copied === 'all' ? '✓ Copiado' : '📋 Copiar todos os números'}
+              </button>
+            )}
+          </div>
+
+          {results.map(r => (
+            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: '#1a1d27', border: `1px solid ${r.phone ? '#2d3048' : '#3f1515'}`, borderRadius: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: 12, fontFamily: 'monospace', color: '#64748b' }}>{r.id}</span>
+                {r.name && <span style={{ fontSize: 12, color: '#e2e8f0', marginLeft: 8 }}>{r.name}</span>}
+                {!r.phone && <span style={{ fontSize: 11, color: '#f87171', marginLeft: 8 }}>não encontrado</span>}
+              </div>
+              {r.phone && (
+                <button
+                  onClick={() => copy(r.phone!, r.id)}
+                  style={{ flexShrink: 0, background: copied === r.id ? '#22c55e22' : 'transparent', color: copied === r.id ? '#4ade80' : '#3b82f6', border: `1px solid ${copied === r.id ? '#22c55e44' : '#1e40af44'}`, borderRadius: 6, padding: '3px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'monospace' }}
+                >
+                  {copied === r.id ? '✓' : r.phone}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface DriversAppProps {
   onImported?: () => void
@@ -77,6 +141,7 @@ export default function DriversApp({ onImported }: DriversAppProps = {}) {
           {([
             { key: 'stats', label: 'Estatísticas' },
             { key: 'list', label: `Lista (${drivers.length})` },
+            { key: 'phones', label: '📞 Buscar telefones' },
           ] as { key: Tab; label: string }[]).map(t => (
             <button
               key={t.key}
@@ -100,9 +165,10 @@ export default function DriversApp({ onImported }: DriversAppProps = {}) {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: tab === 'stats' ? 'hidden' : 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, overflow: tab === 'stats' ? 'hidden' : 'auto', padding: tab === 'phones' ? '20px' : '16px 20px', display: 'flex', flexDirection: 'column' }}>
         {tab === 'stats' && <DriverStats drivers={drivers} />}
         {tab === 'list' && <DriverList drivers={drivers} />}
+        {tab === 'phones' && <PhoneLookup drivers={drivers} />}
       </div>
     </div>
   )

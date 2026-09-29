@@ -489,15 +489,31 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
   }, [loadMore])
 
   const filteredDrivers = useMemo(() => {
+    // rebuild per-driver stats from filteredRoutes so shiftFilter + dateRange apply
+    const driverMap = new Map<string, { driverId: string; driverName: string; accepted: number; declined: number; total: number; totalFirstCalls: number; declineReasons: Record<string, number> }>()
+    for (const r of filteredRoutes) {
+      let d = driverMap.get(r.driverId)
+      if (!d) { d = { driverId: r.driverId, driverName: r.driverName, accepted: 0, declined: 0, total: 0, totalFirstCalls: 1, declineReasons: {} }; driverMap.set(r.driverId, d) }
+      d.total++
+      d.totalFirstCalls = d.total
+      if (r.status === 'Accepted') d.accepted++
+      else if (r.status === 'Declined') {
+        d.declined++
+        if (r.declineReason) d.declineReasons[r.declineReason] = (d.declineReasons[r.declineReason] ?? 0) + 1
+      }
+    }
     const q = driverSearch.toLowerCase()
-    return fc.byDriver.filter(d => {
-      if (q && !d.driverName.toLowerCase().includes(q) && !d.driverId.includes(q)) return false
-      if (driverRateFilter === 'high' && d.acceptanceRate < 70) return false
-      if (driverRateFilter === 'mid' && (d.acceptanceRate < 40 || d.acceptanceRate >= 70)) return false
-      if (driverRateFilter === 'low' && d.acceptanceRate >= 40) return false
-      return true
-    })
-  }, [fc.byDriver, driverSearch, driverRateFilter])
+    return [...driverMap.values()]
+      .map(d => ({ ...d, acceptanceRate: d.total > 0 ? Math.round((d.accepted / d.total) * 100) : 0 }))
+      .filter(d => {
+        if (q && !d.driverName.toLowerCase().includes(q) && !d.driverId.includes(q)) return false
+        if (driverRateFilter === 'high' && d.acceptanceRate < 70) return false
+        if (driverRateFilter === 'mid' && (d.acceptanceRate < 40 || d.acceptanceRate >= 70)) return false
+        if (driverRateFilter === 'low' && d.acceptanceRate >= 40) return false
+        return true
+      })
+      .sort((a, b) => a.acceptanceRate - b.acceptanceRate)
+  }, [filteredRoutes, driverSearch, driverRateFilter])
 
   const [copiedPhones, setCopiedPhones] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)

@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { getGlobalConfig, saveGlobalConfig, DEFAULT_CONFIG, type GlobalConfig, type Shift } from '../../lib/globalConfig'
 import { pickFolder } from '../../lib/fileFinder'
+import { getUpdateUrl, saveUpdateUrl, CURRENT_VERSION } from '../../lib/updateChecker'
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
 const SHIFT_LABEL: Record<Shift, string> = { AM: 'AM (manhã)', PM1: 'PM1 (tarde)', PM2: 'PM2 (noite)' }
@@ -77,6 +78,8 @@ export default function Configuracoes() {
   const [saved, setSaved] = useState(false)
   const [importStatus, setImportStatus] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [updateUrl, setUpdateUrlState] = useState(() => getUpdateUrl())
+  const [updateUrlSaved, setUpdateUrlSaved] = useState(false)
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -246,6 +249,30 @@ export default function Configuracoes() {
           )}
           <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
             O app busca o arquivo mais recente que bate com o padrão de cada relatório (ex: <code style={{ background: '#1a1d27', padding: '1px 4px', borderRadius: 3 }}>QueueList_*.csv</code>).
+          </p>
+        </div>
+
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>🆕 Atualizações</h2>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: '#8892a4' }}>
+            Cole a URL pública do arquivo <code style={{ background: '#1a1d27', padding: '1px 4px', borderRadius: 3 }}>version.json</code> no Google Drive para verificar atualizações automaticamente.
+          </p>
+        </div>
+
+        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>URL do version.json</label>
+          <input
+            value={updateUrl}
+            onChange={e => { setUpdateUrlState(e.target.value); setUpdateUrlSaved(false) }}
+            placeholder="https://drive.google.com/uc?export=download&id=..."
+            style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', padding: '7px 10px', width: '100%', boxSizing: 'border-box', outline: 'none' }}
+          />
+          <Btn onClick={() => { saveUpdateUrl(updateUrl); setUpdateUrlSaved(true); setTimeout(() => setUpdateUrlSaved(false), 2000) }}>
+            {updateUrlSaved ? '✓ Salvo!' : 'Salvar URL'}
+          </Btn>
+          <p style={{ margin: 0, fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
+            Versão atual: <strong style={{ color: '#e2e8f0' }}>{CURRENT_VERSION}</strong><br />
+            O arquivo deve ter o formato: <code style={{ background: '#1a1d27', padding: '1px 4px', borderRadius: 3 }}>{`{"version":"1.1.0","notes":"...","url":"..."}`}</code>
           </p>
         </div>
 

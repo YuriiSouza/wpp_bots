@@ -134,7 +134,7 @@ function makeServiceAccountJWT(sa: ServiceAccountKey): string {
   const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
   const payload = b64url(JSON.stringify({
     iss: sa.client_email,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly',
     aud: sa.token_uri ?? 'https://oauth2.googleapis.com/token',
     exp: now + 3600,
     iat: now,
@@ -253,28 +253,41 @@ ipcMain.handle('sheets-request', async (_event, { url, method, body, serviceAcco
   return JSON.parse(raw)
 })
 
-// IPC: fetch simples GET (para verificar atualizações)
-ipcMain.handle('fetch-url', async (_event, url: string) => {
-  return new Promise<string>((resolve, reject) => {
-    const parsed = new URL(url)
-    const mod = parsed.protocol === 'https:' ? https : require('http')
-    const req = mod.get(url, { headers: { 'User-Agent': 'SPX-Analytics/1.0' } }, (res: import('http').IncomingMessage) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        mod.get(res.headers.location, { headers: { 'User-Agent': 'SPX-Analytics/1.0' } }, (res2: import('http').IncomingMessage) => {
-          const chunks: Buffer[] = []
-          res2.on('data', (c: Buffer) => chunks.push(c))
-          res2.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-        }).on('error', reject)
-        return
-      }
-      const chunks: Buffer[] = []
-      res.on('data', (c: Buffer) => chunks.push(c))
-      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    })
-    req.on('error', reject)
-    req.end()
-  })
+// IPC: procura na pasta de releases do Drive o instalador com a maior versão no nome
+const RELEASES_FOLDER_ID = '1ixkdH_rPgY8yIl4RshWkJtuvV9xlbfRW'
+
+function parseVersion(v: string): number[] {
+  return v.split('.').map(Number)
+}
+
+function compareVersions(a: string, b: string): number {
+  const x = parseVersion(a), y = parseVersion(b)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+ipcMain.handle('check-update', async (_event, { serviceAccountKeyJson }: { serviceAccountKeyJson: string }) => {
+  const current = app.getVersion()
+  const token = await getAccessToken(JSON.parse(serviceAccountKeyJson) as ServiceAccountKey)
+  const q = encodeURIComponent(`'${RELEASES_FOLDER_ID}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`)
+  const raw = await httpsGet(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`, token)
+  const data = JSON.parse(raw) as { files?: { id: string; name: string }[]; error?: { message?: string } }
+  if (data.error) throw new Error(data.error.message ?? 'Erro ao listar pasta de versões')
+  let latest: { version: string; name: string; url: string } | null = null
+  for (const f of data.files ?? []) {
+    const m = f.name.match(/(\d+\.\d+\.\d+)/)
+    if (!m) continue
+    if (!latest || compareVersions(m[1], latest.version) > 0) {
+      latest = { version: m[1], name: f.name, url: `https://drive.google.com/file/d/${f.id}/view` }
+    }
+  }
+  return { current, latest: latest && compareVersions(latest.version, current) > 0 ? latest : null }
 })
+
+ipcMain.handle('app-version', () => app.getVersion())
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.spx.analytics')

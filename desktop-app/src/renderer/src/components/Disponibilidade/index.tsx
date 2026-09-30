@@ -570,7 +570,7 @@ export default function Disponibilidade({ data, registry, dsDrivers, callUp, for
           rodizio,
           ultimaViagem,
           ds: dsReal,
-          progressaoDs: ds?.trend ?? null,
+          progressaoDs: ds?.Status ?? null,
           clusters: d.clusters,
           novato: d.isNewDriver,
           numeroRotas: ds?.route_count ?? 0,

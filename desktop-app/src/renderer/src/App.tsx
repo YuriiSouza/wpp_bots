@@ -35,7 +35,7 @@ import { noShowQueueStore } from './lib/noShowQueueStore'
 import type { QueueDriver } from './lib/noShowQueueStore'
 import { calculatePriorityScore, daysSinceLastRoute } from './lib/priorityScore'
 import type { Shift } from './lib/globalConfig'
-import { checkForUpdate, CURRENT_VERSION, getUpdateUrl, saveUpdateUrl, type UpdateInfo } from './lib/updateChecker'
+import { checkForUpdate, type UpdateInfo } from './lib/updateChecker'
 
 // ─── DS persistence ───────────────────────────────────────────────────────────
 const DS_KEY = 'spx_ds_result'
@@ -307,10 +307,10 @@ export default function App() {
             <span style={{ fontSize: 16 }}>🆕</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: '#4ade80' }}>Nova versão disponível: {updateInfo.version}</span>
-              {updateInfo.notes && <span style={{ fontSize: 12, color: '#86efac', marginLeft: 10 }}>{updateInfo.notes}</span>}
-              <span style={{ fontSize: 11, color: '#64748b', marginLeft: 10 }}>· versão atual: {CURRENT_VERSION}</span>
+              <span style={{ fontSize: 12, color: '#86efac', marginLeft: 10 }}>{updateInfo.name}</span>
+              <span style={{ fontSize: 11, color: '#64748b', marginLeft: 10 }}>· versão atual: {updateInfo.current}</span>
             </div>
-            {updateInfo.url && (
+            {(
               <button onClick={() => window.open(updateInfo.url, '_blank')} style={{ background: '#22c55e', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
                 Baixar
               </button>

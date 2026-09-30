@@ -1,36 +1,27 @@
-export const CURRENT_VERSION = '1.0.0'
-
-const UPDATE_URL = 'https://drive.google.com/uc?export=download&id=1GPuzg9PX68NEwwejOIaX4bxWriRDzTOe'
+import { getSheetsConfig } from './sheetsSync'
 
 export interface UpdateInfo {
   version: string
-  notes?: string
-  url?: string
+  name: string
+  url: string
+  current: string
 }
 
-function parseVersion(v: string): number[] {
-  return v.replace(/[^0-9.]/g, '').split('.').map(Number)
-}
-
-function isNewer(remote: string, current: string): boolean {
-  const r = parseVersion(remote)
-  const c = parseVersion(current)
-  for (let i = 0; i < Math.max(r.length, c.length); i++) {
-    const rv = r[i] ?? 0, cv = c[i] ?? 0
-    if (rv > cv) return true
-    if (rv < cv) return false
-  }
-  return false
-}
-
+// Lists the releases folder on Drive (same service account as the spreadsheet) and returns the newest installer if it beats the running version.
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   try {
-    const url = UPDATE_URL
-    const raw = await window.electron.ipcRenderer.invoke('fetch-url', url)
-    const data = JSON.parse(raw) as UpdateInfo
-    if (!data.version) return null
-    return isNewer(data.version, CURRENT_VERSION) ? data : null
+    const { serviceAccountKeyJson } = getSheetsConfig()
+    if (!serviceAccountKeyJson) return null
+    const res = await window.electron.ipcRenderer.invoke('check-update', { serviceAccountKeyJson }) as {
+      current: string
+      latest: { version: string; name: string; url: string } | null
+    }
+    return res.latest ? { ...res.latest, current: res.current } : null
   } catch {
     return null
   }
+}
+
+export function getAppVersion(): Promise<string> {
+  return window.electron.ipcRenderer.invoke('app-version')
 }

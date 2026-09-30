@@ -1,7 +1,7 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { getGlobalConfig, saveGlobalConfig, DEFAULT_CONFIG, type GlobalConfig, type Shift } from '../../lib/globalConfig'
 import { pickFolder } from '../../lib/fileFinder'
-import { CURRENT_VERSION } from '../../lib/updateChecker'
+import { getAppVersion } from '../../lib/updateChecker'
 import { getSheetsConfig, saveSheetsConfig, pushToSheets, pullFromSheets, testSheetsConnection, getServiceAccountEmail, type SheetsConfig } from '../../lib/sheetsSync'
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
@@ -79,6 +79,9 @@ export default function Configuracoes() {
   const [saved, setSaved] = useState(false)
   const [importStatus, setImportStatus] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [appVersion, setAppVersion] = useState('')
+  useEffect(() => { getAppVersion().then(setAppVersion).catch(() => {}) }, [])
+
   // ── Sheets state ──
   const [sheets, setSheets] = useState<SheetsConfig>(() => getSheetsConfig())
   const [sheetsSaved, setSheetsSaved] = useState(false)
@@ -410,7 +413,7 @@ export default function Configuracoes() {
         </div>
 
         <p style={{ margin: 0, fontSize: 11, color: '#475569', textAlign: 'center' }}>
-          SPX Analytics · v{CURRENT_VERSION}
+          SPX Analytics · v{appVersion}
         </p>
       </div>
     </div>

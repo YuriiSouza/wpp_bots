@@ -79,7 +79,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
     return () => window.removeEventListener('focus', onFocus)
   }, [])
 
-  const hasValidWindows = windows.some(w => w.startLetter && w.startTime)
+  const hasValidWindows = windows.some(w => w.startCage && w.startTime)
 
   const phoneMap = useMemo(() => {
     const m = new Map<string, string>()
@@ -222,7 +222,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
                   )}
                 </div>
               ))}
-              <button onClick={() => saveWindows([...windows, { startLetter: 'A', startTime: '' }])}
+              <button onClick={() => saveWindows([...windows, { startCage: 'A', startTime: '' }])}
                 style={{ background: 'none', border: '1px dashed #2d3048', color: '#64748b', borderRadius: 5, cursor: 'pointer', fontSize: 11, padding: '2px 7px' }}>+ janela</button>
             </div>
             {queue && <Btn outline color="#a78bfa" onClick={() => setReportOpen(true)}>📊 Gerar report</Btn>}

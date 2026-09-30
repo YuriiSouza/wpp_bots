@@ -1,6 +1,7 @@
 const CONFIG_KEY = 'spx:sheets-config'
 const EXTRA_KEYS = ['spx_ds_result']
 const SPX_PREFIX = 'spx:'
+const LOCAL_ONLY = new Set([CONFIG_KEY, 'spx:header', 'spx:credentials'])
 
 export interface SheetsConfig {
   spreadsheetId: string
@@ -9,19 +10,7 @@ export interface SheetsConfig {
 
 const DEFAULT_SPREADSHEET_ID = '1LPsSbE5Jmgxrbe6ZKjq0ObBdDTOq7t5a3zLyqRBo0Y8'
 
-const DEFAULT_KEY_JSON = JSON.stringify({
-  type: 'service_account',
-  project_id: 'shopee-convocation-control',
-  private_key_id: 'REMOVED',
-  private_key: 'REMOVED',
-  client_email: 'sheets-convocation@shopee-convocation-control.iam.gserviceaccount.com',
-  client_id: '110967511887028605112',
-  auth_uri: 'https://accounts.google.com/o/oauth2/auth',
-  token_uri: 'https://oauth2.googleapis.com/token',
-  auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-  client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/sheets-convocation%40shopee-convocation-control.iam.gserviceaccount.com',
-  universe_domain: 'googleapis.com',
-})
+const DEFAULT_KEY_JSON = __SERVICE_ACCOUNT_KEY__
 
 export function getSheetsConfig(): SheetsConfig {
   try {
@@ -65,17 +54,39 @@ async function sheetsRequest(opts: {
 
 // ─── Push all spx:* localStorage to Sheets ───────────────────────────────────
 
-export async function pushToSheets(): Promise<{ written: number }> {
-  const cfg = getSheetsConfig()
-  const rows: string[][] = [['key', 'value', 'exportedAt']]
-  const now = new Date().toISOString()
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)!
-    if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) {
-      rows.push([key, localStorage.getItem(key)!, now])
+export const CHUNK = 45000 // limite do Sheets é 50k caracteres por célula
+
+export function buildRows(entries: [string, string][], now: string): string[][] {
+  const rows: string[][] = [['key', 'part', 'value', 'exportedAt']]
+  for (const [key, value] of entries) {
+    for (let i = 0, part = 0; i < Math.max(value.length, 1); i += CHUNK, part++) {
+      rows.push([key, String(part), value.slice(i, i + CHUNK), now])
     }
   }
-  // Clear existing data then write
+  return rows
+}
+
+export function parseRows(rows: string[][]): Map<string, string> {
+  const parts = new Map<string, string[]>()
+  for (let i = 1; i < rows.length; i++) {
+    const [key, part, value] = rows[i]
+    if (!key) continue
+    const arr = parts.get(key) ?? []
+    arr[Number(part) || 0] = value ?? ''
+    parts.set(key, arr)
+  }
+  return new Map([...parts].map(([k, arr]) => [k, arr.join('')]))
+}
+
+export async function pushToSheets(): Promise<{ written: number }> {
+  const cfg = getSheetsConfig()
+  const entries: [string, string][] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)!
+    if (LOCAL_ONLY.has(key)) continue
+    if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) entries.push([key, localStorage.getItem(key)!])
+  }
+  const rows = buildRows(entries, new Date().toISOString())
   await sheetsRequest({
     spreadsheetId: cfg.spreadsheetId,
     serviceAccountKeyJson: cfg.serviceAccountKeyJson,
@@ -89,7 +100,7 @@ export async function pushToSheets(): Promise<{ written: number }> {
     path: '/values/app-data?valueInputOption=RAW',
     body: { values: rows },
   })
-  return { written: rows.length - 1 }
+  return { written: entries.length }
 }
 
 // ─── Pull from Sheets into localStorage ──────────────────────────────────────
@@ -102,12 +113,10 @@ export async function pullFromSheets(): Promise<{ restored: number }> {
     method: 'GET',
     path: '/values/app-data',
   }) as { values?: string[][] }
-  const rows = result?.values ?? []
+  const data = parseRows(result?.values ?? [])
   let count = 0
-  // skip header row (index 0)
-  for (let i = 1; i < rows.length; i++) {
-    const [key, value] = rows[i]
-    if (!key || !value) continue
+  for (const [key, value] of data) {
+    if (LOCAL_ONLY.has(key)) continue
     if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) {
       localStorage.setItem(key, value)
       count++

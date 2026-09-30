@@ -1,20 +1,11 @@
 export const CURRENT_VERSION = '1.0.0'
 
-const UPDATE_URL_KEY = 'spx:update-url'
-const DEFAULT_URL = '' // preenchido nas configurações
+const UPDATE_URL = 'https://drive.google.com/uc?export=download&id=1GPuzg9PX68NEwwejOIaX4bxWriRDzTOe'
 
 export interface UpdateInfo {
   version: string
   notes?: string
   url?: string
-}
-
-export function getUpdateUrl(): string {
-  try { return localStorage.getItem(UPDATE_URL_KEY) ?? DEFAULT_URL } catch { return DEFAULT_URL }
-}
-
-export function saveUpdateUrl(url: string) {
-  localStorage.setItem(UPDATE_URL_KEY, url)
 }
 
 function parseVersion(v: string): number[] {
@@ -33,9 +24,8 @@ function isNewer(remote: string, current: string): boolean {
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  const url = getUpdateUrl()
-  if (!url) return null
   try {
+    const url = UPDATE_URL
     const raw = await window.electron.ipcRenderer.invoke('fetch-url', url)
     const data = JSON.parse(raw) as UpdateInfo
     if (!data.version) return null

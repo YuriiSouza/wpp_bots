@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { getGlobalConfig, saveGlobalConfig, DEFAULT_CONFIG, type GlobalConfig, type Shift } from '../../lib/globalConfig'
 import { pickFolder } from '../../lib/fileFinder'
 import { getUpdateUrl, saveUpdateUrl, CURRENT_VERSION } from '../../lib/updateChecker'
+import { getSheetsConfig, saveSheetsConfig, pushToSheets, pullFromSheets, testSheetsConnection, getServiceAccountEmail, type SheetsConfig } from '../../lib/sheetsSync'
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
 const SHIFT_LABEL: Record<Shift, string> = { AM: 'AM (manhã)', PM1: 'PM1 (tarde)', PM2: 'PM2 (noite)' }
@@ -80,6 +81,13 @@ export default function Configuracoes() {
   const fileRef = useRef<HTMLInputElement>(null)
   const [updateUrl, setUpdateUrlState] = useState(() => getUpdateUrl())
   const [updateUrlSaved, setUpdateUrlSaved] = useState(false)
+
+  // ── Sheets state ──
+  const [sheets, setSheets] = useState<SheetsConfig>(() => getSheetsConfig())
+  const [sheetsSaved, setSheetsSaved] = useState(false)
+  const [sheetsTest, setSheetsTest] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [sheetsOp, setSheetsOp] = useState<{ loading: boolean; msg: string | null }>({ loading: false, msg: null })
+  const [sheetsTutOpen, setSheetsTutOpen] = useState(false)
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -273,6 +281,123 @@ export default function Configuracoes() {
           <p style={{ margin: 0, fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
             Versão atual: <strong style={{ color: '#e2e8f0' }}>{CURRENT_VERSION}</strong><br />
             O arquivo deve ter o formato: <code style={{ background: '#1a1d27', padding: '1px 4px', borderRadius: 3 }}>{`{"version":"1.1.0","notes":"...","url":"..."}`}</code>
+          </p>
+        </div>
+
+        {/* Sheets tutorial modal */}
+        {sheetsTutOpen && (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.75)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setSheetsTutOpen(false)}>
+            <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 12, padding: '24px 28px', width: '100%', maxWidth: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column', gap: 16, overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>🔗 Como configurar o Google Sheets</span>
+                <button onClick={() => setSheetsTutOpen(false)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: 18, cursor: 'pointer' }}>×</button>
+              </div>
+              {[
+                { n: '1', title: 'Crie ou abra uma planilha', body: 'Acesse sheets.google.com e crie uma planilha nova. O app vai criar automaticamente uma aba chamada "app-data" na primeira sincronização.' },
+                { n: '2', title: 'Compartilhe com a conta de serviço', body: <>Clique em <strong style={{ color: '#e2e8f0' }}>Compartilhar</strong> na planilha e adicione o e-mail abaixo com permissão de <strong style={{ color: '#e2e8f0' }}>Editor</strong>:<br /><code style={{ background: '#0f1117', padding: '4px 8px', borderRadius: 4, fontSize: 11, display: 'block', marginTop: 6, wordBreak: 'break-all', color: '#60a5fa' }}>{getServiceAccountEmail(sheets.serviceAccountKeyJson) || 'sheets-convocation@shopee-convocation-control.iam.gserviceaccount.com'}</code></> },
+                { n: '3', title: 'Cole o link da planilha', body: 'Copie o link da planilha no navegador e cole no campo "URL ou ID da planilha" abaixo.' },
+                { n: '4', title: 'Teste a conexão', body: 'Clique em "Testar conexão" para confirmar que o app consegue acessar a planilha.' },
+                { n: '5', title: 'Sincronize os dados', body: 'Use "Enviar para Sheets" para salvar os dados locais na nuvem, ou "Buscar do Sheets" para carregar os dados de outro computador.' },
+              ].map(step => (
+                <div key={step.n} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                  <div style={{ width: 26, height: 26, borderRadius: '50%', background: '#7c3aed', color: '#fff', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{step.n}</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>{step.title}</span>
+                    <span style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.6 }}>{step.body}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>🔗 Google Sheets</h2>
+          <button onClick={() => setSheetsTutOpen(true)} style={{ background: 'none', border: '1px solid #2d3048', borderRadius: 5, color: '#64748b', fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}>? como configurar</button>
+        </div>
+        <p style={{ margin: '0 0 0', fontSize: 12, color: '#8892a4' }}>
+          Sincronize os dados do app com uma planilha compartilhada — todos com acesso ao app veem os mesmos dados.
+        </p>
+
+        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>URL ou ID da planilha</label>
+          <input
+            value={sheets.spreadsheetId}
+            onChange={e => { setSheets(s => ({ ...s, spreadsheetId: e.target.value })); setSheetsSaved(false); setSheetsTest(null) }}
+            placeholder="https://docs.google.com/spreadsheets/d/..."
+            style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', padding: '7px 10px', width: '100%', boxSizing: 'border-box', outline: 'none' }}
+          />
+
+          <label style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', marginTop: 4 }}>Chave da conta de serviço (JSON)</label>
+          <textarea
+            value={sheets.serviceAccountKeyJson}
+            onChange={e => { setSheets(s => ({ ...s, serviceAccountKeyJson: e.target.value })); setSheetsSaved(false); setSheetsTest(null) }}
+            rows={4}
+            placeholder='{"type":"service_account","client_email":"...","private_key":"..."}'
+            style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '8px 10px', resize: 'vertical', width: '100%', boxSizing: 'border-box', outline: 'none' }}
+          />
+          {getServiceAccountEmail(sheets.serviceAccountKeyJson) && (
+            <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
+              Conta: <span style={{ color: '#60a5fa' }}>{getServiceAccountEmail(sheets.serviceAccountKeyJson)}</span>
+            </p>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Btn onClick={() => { saveSheetsConfig(sheets); setSheetsSaved(true); setTimeout(() => setSheetsSaved(false), 2000) }}>
+              {sheetsSaved ? '✓ Salvo!' : 'Salvar'}
+            </Btn>
+            <Btn variant="outline" onClick={async () => {
+              setSheetsTest(null)
+              const r = await testSheetsConnection(sheets)
+              setSheetsTest(r.ok ? { ok: true, msg: `Conectado: "${r.title}"` } : { ok: false, msg: r.error ?? 'Erro' })
+            }}>Testar conexão</Btn>
+          </div>
+
+          {sheetsTest && (
+            <div style={{ background: sheetsTest.ok ? 'rgba(74,222,128,.08)' : 'rgba(248,113,113,.08)', border: `1px solid ${sheetsTest.ok ? 'rgba(74,222,128,.3)' : 'rgba(248,113,113,.3)'}`, borderRadius: 6, padding: '7px 12px', fontSize: 12, color: sheetsTest.ok ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+              {sheetsTest.ok ? '✓ ' : '✕ '}{sheetsTest.msg}
+            </div>
+          )}
+
+          <div style={{ height: 1, background: '#2d3048' }} />
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn disabled={sheetsOp.loading} onClick={async () => {
+              setSheetsOp({ loading: true, msg: null })
+              try {
+                saveSheetsConfig(sheets)
+                const { written } = await pushToSheets()
+                setSheetsOp({ loading: false, msg: `✓ ${written} itens enviados para a planilha.` })
+              } catch (err) {
+                setSheetsOp({ loading: false, msg: `✕ ${err instanceof Error ? err.message : String(err)}` })
+              }
+            }}>
+              {sheetsOp.loading ? '…' : '⬆ Enviar para Sheets'}
+            </Btn>
+            <Btn variant="outline" disabled={sheetsOp.loading} onClick={async () => {
+              setSheetsOp({ loading: true, msg: null })
+              try {
+                saveSheetsConfig(sheets)
+                const { restored } = await pullFromSheets()
+                setSheetsOp({ loading: false, msg: `✓ ${restored} itens restaurados. Recarregando…` })
+                setTimeout(() => window.location.reload(), 1500)
+              } catch (err) {
+                setSheetsOp({ loading: false, msg: `✕ ${err instanceof Error ? err.message : String(err)}` })
+              }
+            }}>
+              {sheetsOp.loading ? '…' : '⬇ Buscar do Sheets'}
+            </Btn>
+          </div>
+
+          {sheetsOp.msg && (
+            <div style={{ background: sheetsOp.msg.startsWith('✓') ? 'rgba(74,222,128,.08)' : 'rgba(248,113,113,.08)', border: `1px solid ${sheetsOp.msg.startsWith('✓') ? 'rgba(74,222,128,.3)' : 'rgba(248,113,113,.3)'}`, borderRadius: 6, padding: '7px 12px', fontSize: 12, color: sheetsOp.msg.startsWith('✓') ? '#4ade80' : '#f87171', fontWeight: 600 }}>
+              {sheetsOp.msg}
+            </div>
+          )}
+
+          <p style={{ margin: 0, fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
+            A planilha precisa ter uma aba chamada <code style={{ background: '#1a1d27', padding: '1px 4px', borderRadius: 3 }}>app-data</code>.
+            Crie essa aba manualmente antes de sincronizar, ou o app tentará criá-la automaticamente.
           </p>
         </div>
 

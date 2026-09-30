@@ -2,7 +2,8 @@
 const fs = require('fs')
 const path = require('path')
 
-const KEY_FILE = path.join(__dirname, 'service-account.local.json')
+// On EAS Build the gitignored file isn't uploaded; the secret file env var SERVICE_ACCOUNT_JSON points to it instead.
+const KEY_FILE = process.env.SERVICE_ACCOUNT_JSON ?? path.join(__dirname, 'service-account.local.json')
 
 module.exports = ({ config }) => ({
   ...config,

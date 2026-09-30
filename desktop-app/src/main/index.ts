@@ -278,6 +278,8 @@ ipcMain.handle('check-update', async (_event, { serviceAccountKeyJson }: { servi
   if (data.error) throw new Error(data.error.message ?? 'Erro ao listar pasta de versões')
   let latest: { version: string; name: string; url: string } | null = null
   for (const f of data.files ?? []) {
+    // Only desktop installers count here; Android APKs share the folder.
+    if (!/\.(exe|dmg)$/i.test(f.name)) continue
     const m = f.name.match(/(\d+\.\d+\.\d+)/)
     if (!m) continue
     if (!latest || compareVersions(m[1], latest.version) > 0) {

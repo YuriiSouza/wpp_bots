@@ -32,7 +32,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "mobile:build": "node scripts/set-version.js && node scripts/check-key.js && npx expo prebuild -p android",
+    "build:android": "npm run mobile:build && open -a 'Android Studio' android"
   },
   "private": true
 }

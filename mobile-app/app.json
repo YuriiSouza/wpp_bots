@@ -18,7 +18,8 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.spx.analytics"
+      "package": "com.spx.analytics",
+      "versionCode": 10000
     },
     "web": {
       "favicon": "./assets/favicon.png"

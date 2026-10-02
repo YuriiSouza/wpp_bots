@@ -1,1 +1,12 @@
 backend/credentials/credenciais.json
+
+# Credenciais nunca entram no repositório
+service-account*.json
+credenciais.json
+credentials.json
+*.jks
+*.keystore
+*.pem
+*.p12
+.env.local
+.env.*.local

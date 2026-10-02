@@ -70,6 +70,8 @@ export default function Atribuicao() {
 
   const q = routeSearch.toLowerCase()
   const filteredRoutes = ns.allRoutes.filter(r => !q || r.atId.toLowerCase().includes(q) || r.cluster.toLowerCase().includes(q))
+  const phoneById = new Map(ns.registry.map(d => [d.id, d.phoneNumber?.replace(/\D/g, '') ?? '']))
+  const assignedPhones = [...new Set(filteredRoutes.filter(r => r.status === 'ATRIBUIDA' && r.assignedDriverId).map(r => phoneById.get(r.assignedDriverId!) ?? '').filter(p => p.length >= 8))]
   const dq = driverSearch.toLowerCase()
   const matchDriver = (d: LocalDriver) => !dq || d.driverId.includes(dq) || d.name.toLowerCase().includes(dq)
   const filteredDrivers = ns.queueDrivers.filter(matchDriver)
@@ -78,7 +80,7 @@ export default function Atribuicao() {
 
   const menuItems: { icon: string; label: string; color?: string; onPress: () => void }[] = [
     { icon: '📋', label: 'Nova colagem', onPress: () => setShowPaste(true) },
-    { icon: '＋', label: 'Rota avulsa', color: C.green, onPress: () => setAddOpen(true) },
+    { icon: '＋', label: 'Reatribuir rota (AT)', color: C.green, onPress: () => setAddOpen(true) },
     { icon: '📥', label: 'Atribuir lote', color: C.blue, onPress: () => setBatchOpen(true) },
     { icon: '⬇', label: 'Copiar relação', onPress: async () => { const t = ns.relationText(); if (t) { await copy(t); notify('Relação copiada') } } },
     { icon: '📱', label: `Copiar telefones (${ns.phonesForAssignments().length})`, color: C.blue, onPress: async () => { const p = ns.phonesForAssignments(); if (p.length) { await copy(p.join('\n')); notify('Telefones copiados') } } },
@@ -131,7 +133,9 @@ export default function Atribuicao() {
       {tab === 'routes' && (
         <Row>
           <Input value={routeSearch} onChangeText={setRouteSearch} placeholder="🔍 AT ID ou cluster" style={{ flex: 1 }} />
+          <Btn small variant="success" onPress={() => setAddOpen(true)}>＋ AT</Btn>
           <Btn small variant="outline" onPress={async () => { const ats = filteredRoutes.map(r => r.atId); if (ats.length) { await copy(ats.join('\n')); notify('ATs copiadas') } }}>{`📋 ATs (${filteredRoutes.length})`}</Btn>
+          <Btn small variant="outline" disabled={assignedPhones.length === 0} onPress={async () => { await copy(assignedPhones.join('\n')); notify('Telefones dos atribuídos copiados') }}>{`📱 Atribuídos (${assignedPhones.length})`}</Btn>
         </Row>
       )}
       {tab === 'drivers' && (
@@ -154,7 +158,10 @@ export default function Atribuicao() {
           <T size={12} color={C.sub}>{route.isInterior ? '📍 ' : ''}{route.cluster}{route.gaiola ? ` · Gaiola ${route.gaiola}` : ''}</T>
           <Row style={{ justifyContent: 'space-between' }}>
             <T bold>{route.assignedDriverName || '—'}</T>
-            <Btn small variant="ghost" onPress={() => ns.handleReturnRoute(route)}>↩ Devolver</Btn>
+            <Row gap={10}>
+              <Btn small variant="ghost" onPress={() => ns.handleReturnRoute(route)}>↩ Devolver</Btn>
+              <Pressable hitSlop={8} onPress={() => ns.setIgnoredAtIds(s => new Set([...s, route.atId]))}><T color={C.dim}>✕</T></Pressable>
+            </Row>
           </Row>
         </Card>
       )
@@ -485,9 +492,10 @@ export default function Atribuicao() {
         open={addOpen}
         onClose={() => setAddOpen(false)}
         routes={ns.routes}
+        visibleAtIds={new Set(ns.noShowRoutes.map(r => r.atId))}
         ignoredAtIds={ns.ignoredAtIds}
         onRestore={ats => ns.setIgnoredAtIds(s => { const n = new Set(s); ats.forEach(a => n.delete(a)); return n })}
-        onAdd={add => ns.setRoutes([...ns.routes, ...add])}
+        onForce={ns.forceRoutes}
       />
       {reportSnap && <ReportSheet open onClose={() => setReportSnap(null)} snap={reportSnap} day={ns.selectedDay} shift={ns.selectedShift} />}
     </View>

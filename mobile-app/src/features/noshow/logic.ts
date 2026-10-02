@@ -137,6 +137,14 @@ export function vehiclePriority(driverV: string | null, routeV: string | null) {
   if (d === 'VAN') return 0; if (d === 'FIORINO') return 1; return 2
 }
 
+// Regra de veículo: moto só pega rota de moto; fiorino não pega rota de moto.
+export function vehicleAllowed(driverV: string | null | undefined, routeV: string | null | undefined) {
+  const dv = normalizeVehicle(driverV); const rv = normalizeVehicle(routeV)
+  if (rv !== 'MOTO' && dv === 'MOTO') return false
+  if (rv === 'MOTO' && dv === 'FIORINO') return false
+  return true
+}
+
 export function getDsMeta(ds: number | null) {
   if (ds === null) return { label: '—', color: '#64748b', bg: 'rgba(100,116,139,.1)' }
   const pct = Math.round(ds * 100)
@@ -147,20 +155,13 @@ export function getDsMeta(ds: number | null) {
 }
 
 export function getBestCandidate(route: LocalRoute, drivers: LocalDriver[], usedIds: Set<string>) {
-  const rv = normalizeVehicle(route.requiredVehicleType)
   const sorter = (a: LocalDriver, b: LocalDriver) => {
     if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
     const pa = vehiclePriority(a.vehicleType, route.requiredVehicleType)
     const pb = vehiclePriority(b.vehicleType, route.requiredVehicleType)
     return pa !== pb ? pa - pb : b.priorityScore - a.priorityScore
   }
-  const base = drivers.filter(d => {
-    if (usedIds.has(d.driverId)) return false
-    const dv = normalizeVehicle(d.vehicleType)
-    if (rv !== 'MOTO' && dv === 'MOTO') return false   // moto só aceita rota de moto
-    if (rv === 'MOTO' && dv === 'FIORINO') return false // fiorino não aceita rota de moto
-    return true
-  })
+  const base = drivers.filter(d => !usedIds.has(d.driverId) && vehicleAllowed(d.vehicleType, route.requiredVehicleType))
   // Tenta com cluster exato primeiro; se não achar, usa todos os disponíveis
   const withCluster = base.filter(d => d.clusters.some(c => normCluster(c) === normCluster(route.cluster)))
   return withCluster.sort(sorter)[0] ?? null

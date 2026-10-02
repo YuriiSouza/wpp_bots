@@ -15,6 +15,10 @@ export type FioResult = { atId: string; driverId: string; spxOk?: boolean; spxMs
 export interface BatchAssignRow { atId: string; driverId: string; status: 'ok' | 'fail' | 'no-driver'; driverName?: string; foundDriver?: boolean; spxMsg?: string }
 export type ThreePlMap = Map<string, { agency: string; region: string; shift: Shift }>
 
+function readForced(day: string, shift: Shift) {
+  try { return new Set(JSON.parse(localStorage.getItem(`spx:noshow-forced:${day}:${shift}`) ?? '[]') as string[]) } catch { return new Set<string>() }
+}
+
 function readIgnored(day: string, shift: Shift) {
   try { return new Set(JSON.parse(localStorage.getItem(`spx:noshow-ignored:${day}:${shift}`) ?? '[]') as string[]) } catch { return new Set<string>() }
 }
@@ -28,6 +32,7 @@ export function useNoShow() {
   const routes = useMemo(() => routeStore.get(selectedDay, selectedShift) ?? [], [selectedDay, selectedShift, version])
   const overrides = useMemo(() => new Map((routeStore.getOverrides(selectedDay, selectedShift) ?? []) as [string, LocalDriver][]), [selectedDay, selectedShift, version])
   const ignoredAtIds = useMemo(() => readIgnored(selectedDay, selectedShift), [selectedDay, selectedShift, version])
+  const forcedAtIds = useMemo(() => readForced(selectedDay, selectedShift), [selectedDay, selectedShift, version])
   const queue = useMemo(() => noShowQueueStore.get(selectedShift), [selectedShift, version])
   const manualBlocks = useMemo(() => getManualBlocks(), [version])
   const spxConfigured = useMemo(() => !!getSpxCreds(), [version])
@@ -117,9 +122,9 @@ export function useNoShow() {
   }, [declinedAtIds, routes])
 
   const noShowRoutes = useMemo(() => {
-    const base = (!callUp || declinedAtIds.size === 0) ? routes.filter(r => r.status === 'DISPONIVEL') : routes.filter(r => declinedAtIds.has(r.atId))
+    const base = (!callUp || declinedAtIds.size === 0) ? routes.filter(r => r.status === 'DISPONIVEL') : routes.filter(r => declinedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
     return base.filter(r => !ignoredAtIds.has(r.atId))
-  }, [routes, callUp, declinedAtIds, ignoredAtIds])
+  }, [routes, callUp, declinedAtIds, ignoredAtIds, forcedAtIds])
 
   const orderedDrivers = useMemo(() => [...availableDrivers].sort((a, b) => {
     if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
@@ -345,6 +350,16 @@ export function useNoShow() {
     if (date === selectedDay && shift === selectedShift) setOverrides(new Map())
   }
 
+  // Pasted ATs go (back) into reassignment even when not declined in Call Up; the original driver stays on the route so they aren't suggested again.
+  const forceRoutes = (toAdd: LocalRoute[], forceAtIds: string[]) => {
+    const force = new Set(forceAtIds)
+    setRoutes([
+      ...routes.map(r => (force.has(r.atId) ? { ...r, status: 'DISPONIVEL' as const } : r)),
+      ...toAdd.map(r => ({ ...r, status: 'DISPONIVEL' as const })),
+    ])
+    localStorage.setItem(`spx:noshow-forced:${selectedDay}:${selectedShift}`, JSON.stringify([...new Set([...forcedAtIds, ...forceAtIds, ...toAdd.map(r => r.atId)])]))
+  }
+
   const clearRoutes = () => { setRoutes([]); setOverrides(new Map()); setAssignResults(null) }
 
   const stats = {
@@ -367,7 +382,7 @@ export function useNoShow() {
     handleBatchAssign, selectDriver, forceSelectDriver, handleConfirmAssign, handleRetryFailed, handleReturnRoute,
     assignResults, setAssignResults, isAssigning, isRetrying,
     addManualBlock, removeManualBlock, addBulkBlocks,
-    driverCountForRoute, phonesForAssignments, relationText, reportSnapshot, loadPastedRoutes, clearRoutes, stats,
+    driverCountForRoute, phonesForAssignments, relationText, reportSnapshot, loadPastedRoutes, clearRoutes, forceRoutes, stats,
   }
 }
 

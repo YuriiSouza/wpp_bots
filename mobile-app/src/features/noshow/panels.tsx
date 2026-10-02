@@ -6,7 +6,7 @@ import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '@/lib/
 import { getGlobalConfig, saveGlobalConfig, type Shift } from '@/lib/globalConfig'
 import { routeStore } from '@/lib/routeStore'
 import type { WorkPreferenceData } from '@/lib/workPreferenceParser'
-import { normCluster, parseCurl, saveSpxCreds, SPX_CREDS_KEY, type LocalDriver } from './logic'
+import { normCluster, parseCurl, saveSpxCreds, SPX_CREDS_KEY, vehicleAllowed, vehiclePriority, type LocalDriver } from './logic'
 import type { BatchAssignRow, ThreePlMap } from './useNoShow'
 
 // ─── Colar rotas ─────────────────────────────────────────────────────────────
@@ -40,13 +40,13 @@ export function RoutePaste({ defaultDate, defaultShift, onLoad, onCancel }: {
 }
 
 // ─── Rota avulsa ─────────────────────────────────────────────────────────────
-export function AddRouteSheet({ open, onClose, routes, ignoredAtIds, onRestore, onAdd }: {
-  open: boolean; onClose: () => void; routes: LocalRoute[]; ignoredAtIds: Set<string>
-  onRestore: (atIds: string[]) => void; onAdd: (r: LocalRoute[]) => void
+export function AddRouteSheet({ open, onClose, routes, visibleAtIds, ignoredAtIds, onRestore, onForce }: {
+  open: boolean; onClose: () => void; routes: LocalRoute[]; visibleAtIds: Set<string>; ignoredAtIds: Set<string>
+  onRestore: (atIds: string[]) => void; onForce: (toAdd: LocalRoute[], forceAtIds: string[]) => void
 }) {
   const [text, setText] = useState('')
   const raw = text.trim()
-  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean)
+  const lines = [...new Set(raw.split(/[\s,;]+/).map(l => l.trim().toUpperCase()).filter(Boolean))]
   const isAtIdMode = lines.length > 0 && lines.every(l => /^AT\w+$/i.test(l))
   let parsed: LocalRoute[] = []
   const notFound: string[] = []
@@ -59,22 +59,25 @@ export function AddRouteSheet({ open, onClose, routes, ignoredAtIds, onRestore, 
     }
   } else if (raw) parsed = parseRoutesTsv(raw)
   const toRestore = parsed.filter(r => ignoredAtIds.has(r.atId))
-  const dupes = parsed.filter(r => routes.some(e => e.atId === r.atId) && !ignoredAtIds.has(r.atId))
+  const existing = parsed.filter(r => routes.some(e => e.atId === r.atId) && !ignoredAtIds.has(r.atId))
+  const toForce = existing.filter(r => !visibleAtIds.has(r.atId) || routes.find(e => e.atId === r.atId)!.status === 'ATRIBUIDA')
+  const dupes = existing.filter(r => !toForce.includes(r))
   const toAdd = parsed.filter(r => !routes.some(e => e.atId === r.atId))
-  const canConfirm = toAdd.length > 0 || toRestore.length > 0
+  const canConfirm = toAdd.length > 0 || toRestore.length > 0 || toForce.length > 0
   return (
-    <Sheet open={open} onClose={onClose} title="＋ Rota avulsa">
-      <T size={12} color={C.muted}>Cole o código AT (ex: AT202609099HRB7) ou a linha inteira da tabela do SPX.</T>
-      <Input multiline mono value={text} onChangeText={setText} placeholder="AT202609099HRB7" />
+    <Sheet open={open} onClose={onClose} title="＋ Reatribuir rota (AT)">
+      <T size={12} color={C.muted}>Cole um ou vários códigos AT (ex: AT202609099HRB7), um por linha ou separados por vírgula/espaço. Cada rota volta para a reatribuição mesmo que não esteja recusada no Call Up. Também aceita a linha inteira da tabela do SPX.</T>
+      <Input multiline mono value={text} onChangeText={setText} placeholder={'AT202609099HRB7\nAT202609099HRB8'} style={{ minHeight: 140 }} />
       {toAdd.length > 0 && <T size={11} color={C.green}>✓ {toAdd.length} nova(s): {toAdd.map(r => `${r.atId} (${r.cluster})`).join(' · ')}</T>}
       {toRestore.length > 0 && <T size={11} color={C.blue}>↩ {toRestore.length} oculta(s) será(ão) restaurada(s)</T>}
-      {dupes.length > 0 && <T size={11} color={C.yellow}>{dupes.length} já existe(m) e será(ão) ignorada(s)</T>}
+      {toForce.length > 0 && <T size={11} color="#a78bfa">↺ {toForce.length} volta(m) para a reatribuição: {toForce.map(r => r.atId).join(' · ')}</T>}
+      {dupes.length > 0 && <T size={11} color={C.yellow}>{dupes.length} já está(ão) na lista de reatribuição</T>}
       {notFound.length > 0 && <T size={11} color={C.red}>⚠ Não encontrada(s): {notFound.join(', ')}</T>}
       <Btn disabled={!canConfirm} onPress={() => {
         if (toRestore.length) onRestore(toRestore.map(r => r.atId))
-        if (toAdd.length) onAdd(toAdd.map(r => ({ ...r, status: 'DISPONIVEL' as const })))
+        if (toAdd.length || toForce.length) onForce(toAdd, toForce.map(r => r.atId))
         setText(''); onClose()
-      }}>{toRestore.length > 0 && toAdd.length === 0 ? `↩ Restaurar (${toRestore.length})` : `Adicionar ${canConfirm ? toAdd.length + toRestore.length : ''}`}</Btn>
+      }}>{toRestore.length > 0 && toAdd.length === 0 && toForce.length === 0 ? `↩ Restaurar (${toRestore.length})` : `Adicionar ${canConfirm ? toAdd.length + toRestore.length + toForce.length : ''}`}</Btn>
     </Sheet>
   )
 }
@@ -199,7 +202,7 @@ export function ReportSheet({ open, onClose, snap, day, shift }: { open: boolean
 }
 
 // ─── Novatos ────────────────────────────────────────────────────────────────
-interface NovatoSuggestion { driverId: string; name: string; clusters: string[]; suggestedRoute: LocalRoute | null; availableToday: boolean; resolvable: boolean }
+interface NovatoSuggestion { driverId: string; name: string; clusters: string[]; vehicleType: string | null; suggestedRoute: LocalRoute | null; availableToday: boolean; resolvable: boolean }
 interface NovatoResult { driverId: string; name: string; status: 'ok' | 'no-route' | 'not-found'; atId?: string; cluster?: string; availableToday?: boolean }
 
 export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
@@ -230,9 +233,12 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       const r = resolve(driverId)
       const clusters = r?.driver.clusters ?? []
       const hasAll = clusters.some(c => c.toUpperCase() === 'ALL')
-      const best = disponivel.find(rt => !used.has(rt.id) && (hasAll || clusters.some(c => normCluster(c) === normCluster(rt.cluster)))) ?? null
+      const vehicle = r?.driver.vehicleType ?? null
+      const best = disponivel
+        .filter(rt => !used.has(rt.id) && vehicleAllowed(vehicle, rt.requiredVehicleType) && (hasAll || clusters.some(c => normCluster(c) === normCluster(rt.cluster))))
+        .sort((a, b) => vehiclePriority(vehicle, a.requiredVehicleType) - vehiclePriority(vehicle, b.requiredVehicleType))[0] ?? null
       if (best) used.add(best.id)
-      return { driverId, name: r?.driver.name ?? driverId, clusters, suggestedRoute: best, availableToday: r?.availableToday ?? false, resolvable: r != null }
+      return { driverId, name: r?.driver.name ?? driverId, clusters, vehicleType: vehicle, suggestedRoute: best, availableToday: r?.availableToday ?? false, resolvable: r != null }
     }))
     setOverride({})
   }
@@ -298,11 +304,11 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
         return (
           <Card key={s.driverId} style={{ opacity: s.resolvable ? 1 : 0.5 }}>
             <Row><T bold>{s.name}</T>{s.resolvable && !s.availableToday && <Chip label="via WP" color={C.blue} />}</Row>
-            <T size={10} mono color={C.dim}>{s.driverId}</T>
+            <T size={10} mono color={C.dim}>{s.driverId}{s.vehicleType ? ` · ${s.vehicleType}` : ''}</T>
             {!s.resolvable && <T size={11} color={C.red}>ID não encontrado (disp./WP)</T>}
             <T size={11} color={C.dim}>{s.clusters.length ? s.clusters.join(', ') : 'sem dados WP'}</T>
             <Row>
-              <T size={12} color={route ? C.text : C.red}>{route ? `${route.atId} · ${route.cluster}` : '— sem rota —'}</T>
+              <T size={12} color={route ? C.text : C.red}>{route ? `${route.atId} · ${route.cluster}${route.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}` : '— sem rota —'}</T>
               {s.resolvable && <Btn small variant="outline" onPress={() => setPickFor(s.driverId)}>Trocar rota</Btn>}
             </Row>
           </Card>
@@ -310,10 +316,10 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       })}
       <Btn disabled={suggestions.every(s => !routeOf(s) || !s.resolvable)} onPress={confirm}>Confirmar atribuições</Btn>
       <Sheet open={!!picking} onClose={() => setPickFor(null)} title={`Rota para ${picking?.name ?? ''}`}>
-        {disponivel.map(r => (
+        {disponivel.filter(r => vehicleAllowed(picking?.vehicleType, r.requiredVehicleType)).map(r => (
           <Card key={r.id} onPress={() => { setOverride(o => ({ ...o, [pickFor!]: r.id })); setPickFor(null) }}>
             <T mono bold size={12}>{r.atId}</T>
-            <T size={11} color={C.sub}>{r.cluster}</T>
+            <T size={11} color={C.sub}>{r.cluster}{r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}</T>
           </Card>
         ))}
       </Sheet>

@@ -148,6 +148,14 @@ function vehiclePriority(driverV: string | null, routeV: string | null) {
   if (d === 'VAN') return 0; if (d === 'FIORINO') return 1; return 2
 }
 
+// Regra de veículo: moto só pega rota de moto; fiorino não pega rota de moto.
+function vehicleAllowed(driverV: string | null | undefined, routeV: string | null | undefined) {
+  const dv = normalizeVehicle(driverV); const rv = normalizeVehicle(routeV)
+  if (rv !== 'MOTO' && dv === 'MOTO') return false
+  if (rv === 'MOTO' && dv === 'FIORINO') return false
+  return true
+}
+
 function getDsMeta(ds: number | null) {
   if (ds === null) return { label: '—', color: '#64748b', bg: 'rgba(100,116,139,.1)' }
   const pct = Math.round(ds * 100)
@@ -158,20 +166,13 @@ function getDsMeta(ds: number | null) {
 }
 
 function getBestCandidate(route: LocalRoute, drivers: LocalDriver[], usedIds: Set<string>) {
-  const rv = normalizeVehicle(route.requiredVehicleType)
   const sorter = (a: LocalDriver, b: LocalDriver) => {
     if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
     const pa = vehiclePriority(a.vehicleType, route.requiredVehicleType)
     const pb = vehiclePriority(b.vehicleType, route.requiredVehicleType)
     return pa !== pb ? pa - pb : b.priorityScore - a.priorityScore
   }
-  const base = drivers.filter(d => {
-    if (usedIds.has(d.driverId)) return false
-    const dv = normalizeVehicle(d.vehicleType)
-    if (rv !== 'MOTO' && dv === 'MOTO') return false   // moto só aceita rota de moto
-    if (rv === 'MOTO' && dv === 'FIORINO') return false // fiorino não aceita rota de moto
-    return true
-  })
+  const base = drivers.filter(d => !usedIds.has(d.driverId) && vehicleAllowed(d.vehicleType, route.requiredVehicleType))
   // Tenta com cluster exato primeiro; se não achar, usa todos os disponíveis
   const withCluster = base.filter(d => d.clusters.some(c => normCluster(c) === normCluster(route.cluster)))
   return withCluster.sort(sorter)[0] ?? null
@@ -357,7 +358,7 @@ function HeaderMenu({ spxConfigured, onSpx, onPaste, onAddRoute, onBatch, onCopy
       {open && (
         <div style={{ position: 'absolute', right: 0, top: '110%', background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '4px', zIndex: 100, minWidth: 210, boxShadow: '0 8px 24px rgba(0,0,0,.5)' }}>
           {item('📋', 'Nova colagem', onPaste)}
-          {item('＋', 'Rota avulsa', onAddRoute, '#4ade80')}
+          {item('＋', 'Reatribuir rota (AT)', onAddRoute, '#4ade80')}
           {item('📥', 'Atribuir lote', onBatch, '#60a5fa')}
           <div style={{ height: 1, background: '#2d3048', margin: '4px 8px' }} />
           {item('⬇', 'Copiar relação', onCopyRelation)}
@@ -468,6 +469,7 @@ interface NovatoSuggestion {
   driverId: string
   name: string
   clusters: string[]
+  vehicleType: string | null
   suggestedRoute: LocalRoute | null
   suggestedRouteCluster: string
   availableToday: boolean   // está na disponibilidade do dia
@@ -543,17 +545,20 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
 
       // Encontrar melhor rota disponível: prioriza cluster compatível, não usada ainda
       const hasAll = clusters.some(c => c.toUpperCase() === 'ALL')
+      const vehicle = resolved?.driver.vehicleType ?? null
       const compatible = disponivel.filter(r => {
         if (usedRouteIds.has(r.id)) return false
+        if (!vehicleAllowed(vehicle, r.requiredVehicleType)) return false
         if (hasAll) return true
         return clusters.some(c => normCluster(c) === normCluster(r.cluster))
-      })
+      }).sort((a, b) => vehiclePriority(vehicle, a.requiredVehicleType) - vehiclePriority(vehicle, b.requiredVehicleType))
 
       const best = compatible[0] ?? null
       if (best) usedRouteIds.add(best.id)
 
       return {
         driverId, name, clusters,
+        vehicleType: vehicle,
         suggestedRoute: best,
         suggestedRouteCluster: best?.cluster ?? '',
         availableToday: resolved?.availableToday ?? false,
@@ -680,7 +685,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                         <td style={{ padding: '7px 10px' }}>
                           <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{s.name}</span>
                           {s.resolvable && !s.availableToday && <span style={{ marginLeft: 6, fontSize: 9, background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 3, padding: '1px 5px' }}>via WP</span>}
-                          <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{s.driverId}</span>
+                          <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{s.driverId}{s.vehicleType ? ` · ${s.vehicleType}` : ''}</span>
                           {!s.resolvable && <span style={{ fontSize: 9, color: '#f87171' }}>ID não encontrado (disp./WP)</span>}
                         </td>
                         <td style={{ padding: '7px 10px', fontSize: 11, color: '#64748b' }}>
@@ -693,10 +698,10 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                             style={{ background: '#0f1117', border: `1px solid ${route ? '#2d3048' : 'rgba(239,68,68,.4)'}`, color: route ? '#e2e8f0' : '#f87171', borderRadius: 5, padding: '3px 6px', fontSize: 11, outline: 'none', maxWidth: 130 }}
                           >
                             {!route && <option value="">— sem rota —</option>}
-                            {disponivel.map(r => <option key={r.id} value={r.id}>{r.atId}</option>)}
+                            {disponivel.filter(r => vehicleAllowed(s.vehicleType, r.requiredVehicleType)).map(r => <option key={r.id} value={r.id}>{r.atId}{r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}</option>)}
                           </select>
                         </td>
-                        <td style={{ padding: '7px 10px', color: '#94a3b8', fontSize: 11 }}>{route?.cluster ?? '—'}</td>
+                        <td style={{ padding: '7px 10px', color: '#94a3b8', fontSize: 11 }}>{route?.cluster ?? '—'}{route?.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}</td>
                       </tr>
                     )
                   })}
@@ -1030,6 +1035,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     setOverridesState(raw ? new Map(raw as [string, LocalDriver][]) : new Map())
     const key = `spx:noshow-ignored:${selectedDay}:${selectedShift}`
     try { setIgnoredAtIdsState(new Set(JSON.parse(localStorage.getItem(key) ?? '[]') as string[])) } catch { setIgnoredAtIdsState(new Set()) }
+    setForcedAtIdsState(readForced(`spx:noshow-forced:${selectedDay}:${selectedShift}`))
   }, [selectedDay, selectedShift])
 
   const setRoutes = (r: LocalRoute[]) => {
@@ -1058,6 +1064,15 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       try { localStorage.setItem(ignoredKey, JSON.stringify([...next])) } catch {}
       return next
     })
+  }
+  // ATs colados manualmente: entram na reatribuição mesmo sem recusa no Call Up
+  const forcedKey = `spx:noshow-forced:${selectedDay}:${selectedShift}`
+  const readForced = (key: string) => { try { return new Set(JSON.parse(localStorage.getItem(key) ?? '[]') as string[]) } catch { return new Set<string>() } }
+  const [forcedAtIds, setForcedAtIdsState] = useState<Set<string>>(() => readForced(forcedKey))
+  const addForcedAtIds = (atIds: string[]) => {
+    const next = new Set([...forcedAtIds, ...atIds])
+    setForcedAtIdsState(next)
+    try { localStorage.setItem(forcedKey, JSON.stringify([...next])) } catch {}
   }
   const [assignModal, setAssignModal] = useState<LocalRoute | null>(null)
   const [showPaste, setShowPaste] = useState(false)
@@ -1109,6 +1124,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const [isRetrying, setIsRetrying] = useState(false)
   const [copiedPhones, setCopiedPhones] = useState(false)
   const [copiedAts, setCopiedAts] = useState(false)
+  const [copiedAssignedPhones, setCopiedAssignedPhones] = useState(false)
 
   // Fila do turno lida do noShowQueueStore — recarrega quando turno muda
   const [queue, setQueue] = useState<QueueDriver[]>(() => noShowQueueStore.get(selectedShift))
@@ -1232,9 +1248,9 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const noShowRoutes = useMemo(() => {
     const base = (!callUp || declinedAtIds.size === 0)
       ? routes.filter(r => r.status === 'DISPONIVEL')
-      : routes.filter(r => declinedAtIds.has(r.atId))
+      : routes.filter(r => declinedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
     return base.filter(r => !ignoredAtIds.has(r.atId))
-  }, [routes, callUp, declinedAtIds, ignoredAtIds])
+  }, [routes, callUp, declinedAtIds, ignoredAtIds, forcedAtIds])
 
   // Drivers ordenados: bloqueados por último, depois já atribuídos nesta sessão (FIFO — quem foi primeiro fica por último), depois por score
   const orderedDrivers = useMemo(() => {
@@ -1773,6 +1789,11 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
             </Btn>
           )}
           {activeTab === 'routes' && (
+            <Btn variant="outline" onClick={() => { setAddRouteText(''); setAddRouteModal(true) }} style={{ fontSize: 11, color: '#4ade80', borderColor: 'rgba(74,222,128,.3)' }}>
+              ＋ Reatribuir AT
+            </Btn>
+          )}
+          {activeTab === 'routes' && (
             <Btn variant="outline" onClick={() => {
               const ats = filteredRoutes.map(r => r.atId).filter(Boolean)
               if (ats.length === 0) return
@@ -1783,6 +1804,25 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
               {copiedAts ? '✓ ATs copiadas!' : `📋 Copiar ATs (${filteredRoutes.length})`}
             </Btn>
           )}
+          {activeTab === 'routes' && (() => {
+            // Telefones dos motoristas com rota já atribuída na lista (respeita a busca)
+            const registryMap = new Map(registry.map(d => [d.id, d]))
+            const phones = [...new Set(
+              filteredRoutes
+                .filter(r => r.status === 'ATRIBUIDA' && r.assignedDriverId)
+                .map(r => registryMap.get(r.assignedDriverId!)?.phoneNumber?.replace(/\D/g, '') ?? '')
+                .filter(p => p.length >= 8)
+            )]
+            return (
+              <Btn variant="outline" disabled={phones.length === 0} onClick={() => {
+                navigator.clipboard.writeText(phones.join('\n'))
+                setCopiedAssignedPhones(true)
+                setTimeout(() => setCopiedAssignedPhones(false), 2000)
+              }} style={{ fontSize: 11, color: '#4ade80', borderColor: 'rgba(74,222,128,.3)' }}>
+                {copiedAssignedPhones ? '✓ Telefones copiados!' : `📱 Tel. atribuídos (${phones.length})`}
+              </Btn>
+            )
+          })()}
         </div>
         )}
 
@@ -1819,6 +1859,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <Chip label="Atribuída" color="#4ade80" bg="rgba(34,197,94,.1)" small />
                           <Btn variant="ghost" onClick={() => handleReturnRoute(route)} style={{ fontSize: 11 }}>↩ Devolver</Btn>
+                          <Btn variant="ghost" onClick={() => setIgnoredAtIds(s => new Set([...s, route.atId]))} style={{ fontSize: 10, color: '#64748b', padding: '2px 6px' }}>✕</Btn>
                         </div>
                       </td>
                     </tr>
@@ -2493,16 +2534,16 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     </Modal>
 
     {/* Add single route modal */}
-    <Modal open={addRouteModal} onClose={() => setAddRouteModal(false)} title="＋ Adicionar rota avulsa" maxWidth={500}>
+    <Modal open={addRouteModal} onClose={() => setAddRouteModal(false)} title="＋ Adicionar rota à reatribuição" maxWidth={500}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <p style={{ margin: 0, fontSize: 12, color: '#8892a4' }}>
-          Cole o código AT (ex: <code style={{ color: '#a78bfa' }}>AT202609099HRB7</code>) para buscar nos dados carregados, ou cole a linha inteira da tabela SPX.
+          Cole um ou vários códigos AT (ex: <code style={{ color: '#a78bfa' }}>AT202609099HRB7</code>) — um por linha ou separados por vírgula/espaço. Cada rota volta para a reatribuição mesmo que não esteja recusada no Call Up. Também aceita a linha inteira da tabela SPX.
         </p>
         <textarea
           value={addRouteText}
           onChange={e => setAddRouteText(e.target.value)}
-          placeholder={'AT202609099HRB7\n\nou cole a linha do SPX:\nRota\tAT / TO\tGaiola\tCluster\t...'}
-          rows={4}
+          placeholder={'AT202609099HRB7\nAT202609099HRB8\nAT202609099HRB9\n\nou cole a linha do SPX:\nRota\tAT / TO\tGaiola\tCluster\t...'}
+          rows={8}
           autoFocus
           style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px 12px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
         />
@@ -2511,8 +2552,9 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
           if (!raw) return null
 
           // Detect AT ID lookup mode: each non-empty line is a bare AT code (no tabs)
-          const lines = raw.split('\n').map(l => l.trim()).filter(Boolean)
-          const isAtIdMode = lines.every(l => /^AT\w+$/i.test(l) && !l.includes('\t'))
+          // Lista de ATs: um por linha ou separados por vírgula, ponto e vírgula, espaço ou tab (sem duplicados)
+          const lines = [...new Set(raw.split(/[\s,;]+/).map(l => l.trim().toUpperCase()).filter(Boolean))]
+          const isAtIdMode = lines.every(l => /^AT\w+$/i.test(l))
 
           let parsed: LocalRoute[] = []
           let notFound: string[] = []
@@ -2534,11 +2576,14 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
           // Rotas ignoradas via ✕ que estão de volta no campo
           const toRestore = parsed.filter(r => ignoredAtIds.has(r.atId))
-          // Verdadeiras duplicatas (existem no routeStore, mas não foram ignoradas)
-          const dupes = parsed.filter(r => routes.some(e => e.atId === r.atId) && !ignoredAtIds.has(r.atId))
+          // Já existem no turno: voltam para a reatribuição se estiverem fora da lista ou já atribuídas
+          const visibleAtIds = new Set(noShowRoutes.map(r => r.atId))
+          const existing = parsed.filter(r => routes.some(e => e.atId === r.atId) && !ignoredAtIds.has(r.atId))
+          const toForce = existing.filter(r => { const cur = routes.find(e => e.atId === r.atId)!; return !visibleAtIds.has(r.atId) || cur.status === 'ATRIBUIDA' })
+          const dupes = existing.filter(r => !toForce.includes(r))
           const toAdd = parsed.filter(r => !routes.some(e => e.atId === r.atId))
 
-          const canConfirm = toAdd.length > 0 || toRestore.length > 0
+          const canConfirm = toAdd.length > 0 || toRestore.length > 0 || toForce.length > 0
 
           return (
             <>
@@ -2556,9 +2601,15 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                       {toRestore.map(r => ` · ${r.atId}`).join('')}
                     </p>
                   )}
+                  {toForce.length > 0 && (
+                    <p style={{ margin: 0, fontSize: 11, color: '#a78bfa' }}>
+                      ↺ {toForce.length} volta{toForce.length !== 1 ? 'm' : ''} para a reatribuição
+                      {toForce.map(r => ` · ${r.atId}`).join('')}
+                    </p>
+                  )}
                   {dupes.length > 0 && (
                     <p style={{ margin: 0, fontSize: 11, color: '#fbbf24' }}>
-                      {dupes.length} já existe{dupes.length !== 1 ? 'm' : ''} e será{dupes.length !== 1 ? 'ão' : ''} ignorada{dupes.length !== 1 ? 's' : ''}
+                      {dupes.length} já está{dupes.length !== 1 ? 'ão' : ''} na lista de reatribuição
                     </p>
                   )}
                   {notFound.length > 0 && (
@@ -2576,14 +2627,20 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                     if (toRestore.length > 0) {
                       setIgnoredAtIds(s => { const n = new Set(s); toRestore.forEach(r => n.delete(r.atId)); return n })
                     }
-                    if (toAdd.length > 0) {
-                      setRoutes([...routes, ...toAdd.map(r => ({ ...r, status: 'DISPONIVEL' as const }))])
+                    if (toAdd.length > 0 || toForce.length > 0) {
+                      // Rota forçada volta a DISPONIVEL; mantém o motorista original para ele não ser sugerido de novo
+                      const forceSet = new Set(toForce.map(r => r.atId))
+                      setRoutes([
+                        ...routes.map(r => forceSet.has(r.atId) ? { ...r, status: 'DISPONIVEL' as const } : r),
+                        ...toAdd.map(r => ({ ...r, status: 'DISPONIVEL' as const })),
+                      ])
+                      addForcedAtIds([...toAdd, ...toForce].map(r => r.atId))
                     }
                     setAddRouteModal(false)
                     setAddRouteText('')
                   }}
                 >
-                  {toRestore.length > 0 && toAdd.length === 0 ? `↩ Restaurar (${toRestore.length})` : `Adicionar ${canConfirm ? toAdd.length + toRestore.length : ''}`}
+                  {toRestore.length > 0 && toAdd.length === 0 && toForce.length === 0 ? `↩ Restaurar (${toRestore.length})` : `Adicionar ${canConfirm ? toAdd.length + toRestore.length + toForce.length : ''}`}
                 </Btn>
               </div>
             </>

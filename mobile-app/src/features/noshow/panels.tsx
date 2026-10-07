@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { coversCluster, splitClusters } from '@/lib/clusterMatch'
 import { View } from 'react-native'
 import { Btn, C, Card, Chip, Input, Row, Segmented, SHIFTS, SHIFT_COLOR, Sheet, T, copy } from '@/components/ui'
 import { parseRoutesTsv, type LocalRoute } from '@/lib/noshowRouteParser'
@@ -6,7 +7,7 @@ import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '@/lib/
 import { getGlobalConfig, saveGlobalConfig, type Shift } from '@/lib/globalConfig'
 import { routeStore } from '@/lib/routeStore'
 import type { WorkPreferenceData } from '@/lib/workPreferenceParser'
-import { normCluster, parseCurl, saveSpxCreds, SPX_CREDS_KEY, vehicleAllowed, vehiclePriority, type LocalDriver } from './logic'
+import { parseCurl, saveSpxCreds, SPX_CREDS_KEY, vehicleAllowed, vehiclePriority, type LocalDriver } from './logic'
 import type { BatchAssignRow, ThreePlMap } from './useNoShow'
 
 // ─── Colar rotas ─────────────────────────────────────────────────────────────
@@ -235,7 +236,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       const hasAll = clusters.some(c => c.toUpperCase() === 'ALL')
       const vehicle = r?.driver.vehicleType ?? null
       const best = disponivel
-        .filter(rt => !used.has(rt.id) && vehicleAllowed(vehicle, rt.requiredVehicleType) && (hasAll || clusters.some(c => normCluster(c) === normCluster(rt.cluster))))
+        .filter(rt => !used.has(rt.id) && vehicleAllowed(vehicle, rt.requiredVehicleType) && (hasAll || coversCluster(clusters, rt.cluster)))
         .sort((a, b) => vehiclePriority(vehicle, a.requiredVehicleType) - vehiclePriority(vehicle, b.requiredVehicleType))[0] ?? null
       if (best) used.add(best.id)
       return { driverId, name: r?.driver.name ?? driverId, clusters, vehicleType: vehicle, suggestedRoute: best, availableToday: r?.availableToday ?? false, resolvable: r != null }
@@ -345,7 +346,7 @@ export function ThreePlPanel({ routes, shift, agencies, excludedRouteIds, assign
     const rows: { region: string; route: LocalRoute }[] = []
     const shortfalls: { region: string; requested: number; assigned: number }[] = []
     for (const d of parsed.demands.filter(x => x.shift === shift).sort((a, b) => Number(a.anyRegion) - Number(b.anyRegion))) {
-      const take = availableRoutes.filter(r => !used.has(r.id) && (d.anyRegion || normRegion(r.cluster) === normRegion(d.region))).slice(0, d.quantity)
+      const take = availableRoutes.filter(r => !used.has(r.id) && (d.anyRegion || splitClusters(r.cluster).some(c => normRegion(c) === normRegion(d.region)))).slice(0, d.quantity)
       take.forEach(r => { used.add(r.id); rows.push({ region: d.anyRegion ? `${r.cluster} (ALL)` : d.region, route: r }) })
       if (take.length < d.quantity) shortfalls.push({ region: d.region, requested: d.quantity, assigned: take.length })
     }

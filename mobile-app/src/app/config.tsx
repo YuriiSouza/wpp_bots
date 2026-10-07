@@ -22,6 +22,9 @@ function Section({ title, children, right }: { title: string; children: React.Re
 export default function Config() {
   const sync = useSync()
   const [sheets, setSheets] = useState(() => getSheetsConfig())
+  // A chave em uso nunca é exibida; o campo só serve para colar uma chave nova.
+  const [savedKey] = useState(() => getSheetsConfig().serviceAccountKeyJson)
+  const [newKey, setNewKey] = useState('')
   const [sheetsMsg, setSheetsMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [testing, setTesting] = useState(false)
   const [tutOpen, setTutOpen] = useState(false)
@@ -30,7 +33,6 @@ export default function Config() {
   const [cfg, setCfg] = useState<GlobalConfig>(() => getGlobalConfig())
   const [saved, setSaved] = useState(false)
   const email = getServiceAccountEmail(sheets.serviceAccountKeyJson)
-
   const saveSheets = async () => {
     saveSheetsConfig(sheets)
     setTesting(true)
@@ -57,7 +59,7 @@ export default function Config() {
         <Input mono value={sheets.spreadsheetId} onChangeText={v => { setSheets(s => ({ ...s, spreadsheetId: v })); setSheetsMsg(null) }} placeholder="https://docs.google.com/spreadsheets/d/..." />
         {sheets.spreadsheetId !== DEFAULT_SPREADSHEET_ID && <Btn small variant="ghost" onPress={() => setSheets(s => ({ ...s, spreadsheetId: DEFAULT_SPREADSHEET_ID }))}>Usar planilha padrão</Btn>}
         <T size={11} bold color={C.muted}>CHAVE DA CONTA DE SERVIÇO (JSON)</T>
-        <Input multiline mono value={sheets.serviceAccountKeyJson} onChangeText={v => { setSheets(s => ({ ...s, serviceAccountKeyJson: v })); setSheetsMsg(null) }} placeholder='{"type":"service_account","client_email":"...","private_key":"..."}' style={{ minHeight: 110, fontSize: 10 }} />
+        <Input multiline mono value={newKey} onChangeText={v => { setNewKey(v); setSheets(s => ({ ...s, serviceAccountKeyJson: v.trim() ? v : savedKey })); setSheetsMsg(null) }} placeholder={savedKey ? 'Chave já configurada. Cole aqui só para trocar por outra.' : '{"type":"service_account","client_email":"...","private_key":"..."}'} style={{ minHeight: 70, fontSize: 10 }} />
         {email ? <T size={11} color={C.dim}>Conta: <T size={11} color={C.blue}>{email}</T></T> : null}
         <Btn loading={testing} disabled={!sheets.serviceAccountKeyJson.trim()} onPress={() => void saveSheets()}>Salvar e testar conexão</Btn>
         {sheetsMsg && <T size={12} bold color={sheetsMsg.ok ? C.green : C.red}>{sheetsMsg.ok ? '✓ ' : '✕ '}{sheetsMsg.text}</T>}
@@ -92,7 +94,7 @@ export default function Config() {
       </Section>
 
       <Section title="Pesos do score de prioridade">
-        <T size={11} color={C.muted}>(DS% × dsW + (100−recusas×10) × declW + (100−noshow×10) × nsW) / soma dos pesos</T>
+        <T size={11} color={C.muted}>(DS% × dsW + (100 − taxa de recusa%) × declW + (100 − noshow×10) × nsW) / soma dos pesos</T>
         <Row>
           {([['dsWeight', 'DS'], ['declineWeight', 'Recusas'], ['noShowWeight', 'NoShow']] as const).map(([k, l]) => (
             <View key={k} style={{ flex: 1, gap: 4 }}>

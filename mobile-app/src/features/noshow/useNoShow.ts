@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { coversCluster } from '@/lib/clusterMatch'
 import type { LocalRoute } from '@/lib/noshowRouteParser'
+import { firstCallDay, isAcceptedInCallUp } from '@/lib/callUpParser'
 import type { Shift } from '@/lib/globalConfig'
 import { routeStore, migrateOldRoutes } from '@/lib/routeStore'
 import { noShowQueueStore } from '@/lib/noShowQueueStore'
-import { calculatePriorityScore, daysSinceLastRoute } from '@/lib/priorityScore'
+import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from '@/lib/priorityScore'
 import { useAppData } from '@/lib/appData'
 import {
-  computeEffective, getManualBlocks, getSpxCreds, normCluster, normalizeVehicle, saveManualBlocks, spxReassign,
+  computeEffective, getManualBlocks, getSpxCreds, normalizeVehicle, saveManualBlocks, spxReassign,
   type LocalDriver, type ManualBlock,
 } from './logic'
 
@@ -60,6 +62,7 @@ export function useNoShow() {
     const autoBlockMap = new Map<string, number>((forwardOrder?.allDrivers ?? []).filter(d => d.totalPackages > 5).map(d => [d.driverId, d.totalPackages]))
     const callUpDriverMap = new Map((callUp?.byDriver ?? []).map(d => [d.driverId, d]))
     const workPrefClusters = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d.clusters]))
+    const workPrefNoShow = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d.noShowTime ?? 0]))
     const pendingMap = new Map((forwardOrder?.allDrivers ?? []).map(x => [x.driverId, x.totalPackages]))
 
     return queue.map(q => {
@@ -85,7 +88,7 @@ export function useNoShow() {
         pendingPackages: pendingMap.get(q.driverId) ?? 0,
         dsReal,
         dsStatus: ds?.Status ?? null,
-        priorityScore: calculatePriorityScore(dsReal !== null ? dsReal * 100 : 50, cu?.declined ?? 0, cu?.timeoutCount ?? 0),
+        priorityScore: calculatePriorityScore(dsReal !== null ? dsReal * 100 : 50, declineRatePercent(cu), workPrefNoShow.get(q.driverId) ?? 0),
         daysSinceRoute: daysSinceLastRoute(cu?.lastAcceptedDate ?? null),
       }
     }).sort((a, b) => (a.isBlocked !== b.isBlocked ? (a.isBlocked ? 1 : -1) : b.priorityScore - a.priorityScore))
@@ -93,9 +96,21 @@ export function useNoShow() {
 
   const declinedAtIds = useMemo(() => {
     const s = new Set<string>()
-    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (fc.status !== 'Accepted' && fc.shift === selectedShift) s.add(fc.atId)
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (!isAcceptedInCallUp(fc) && fc.shift === selectedShift && firstCallDay(fc) === selectedDay) s.add(fc.atId)
     return s
-  }, [callUp, selectedShift])
+  }, [callUp, selectedShift, selectedDay])
+
+  const acceptedAtIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (isAcceptedInCallUp(fc)) s.add(fc.atId)
+    return s
+  }, [callUp])
+
+  const pendingAtIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if ((fc.finalStatus ?? fc.status) === 'Pending') s.add(fc.atId)
+    return s
+  }, [callUp])
 
   const alreadyRoutedIds = useMemo(() => {
     const ids = new Set<string>()
@@ -122,9 +137,10 @@ export function useNoShow() {
   }, [declinedAtIds, routes])
 
   const noShowRoutes = useMemo(() => {
-    const base = (!callUp || declinedAtIds.size === 0) ? routes.filter(r => r.status === 'DISPONIVEL') : routes.filter(r => declinedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
+    // Com Call Up: entra tudo o que não está aceito (recusada, cancelada ou ainda sem resposta). Sem Call Up: só as disponíveis.
+    const base = !callUp ? routes.filter(r => r.status === 'DISPONIVEL') : routes.filter(r => !acceptedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
     return base.filter(r => !ignoredAtIds.has(r.atId))
-  }, [routes, callUp, declinedAtIds, ignoredAtIds, forcedAtIds])
+  }, [routes, callUp, acceptedAtIds, ignoredAtIds, forcedAtIds])
 
   const orderedDrivers = useMemo(() => [...availableDrivers].sort((a, b) => {
     if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
@@ -160,9 +176,9 @@ export function useNoShow() {
     const build = (targets: LocalRoute[], pool: LocalDriver[]) => {
       const result = new Map<string, LocalDriver>()
       const used = new Set<string>()
-      const cnt = (r: LocalRoute) => pool.filter(d => d.clusters.some(c => normCluster(c) === normCluster(r.cluster))).length
+      const cnt = (r: LocalRoute) => pool.filter(d => coversCluster(d.clusters, r.cluster)).length
       for (const route of [...targets].sort((a, b) => cnt(a) - cnt(b))) {
-        const cand = pool.find(d => !used.has(d.driverId) && d.clusters.some(c => normCluster(c) === normCluster(route.cluster)))
+        const cand = pool.find(d => !used.has(d.driverId) && coversCluster(d.clusters, route.cluster))
         if (cand) { result.set(route.atId, cand); used.add(cand.driverId) }
       }
       return result
@@ -325,7 +341,7 @@ export function useNoShow() {
 
   const driverCountForRoute = (route: LocalRoute) => {
     const rv = normalizeVehicle(route.requiredVehicleType)
-    return availableDrivers.filter(d => d.clusters.some(c => normCluster(c) === normCluster(route.cluster)) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')).length
+    return availableDrivers.filter(d => coversCluster(d.clusters, route.cluster) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')).length
   }
 
   const phonesForAssignments = () => {
@@ -375,7 +391,7 @@ export function useNoShow() {
   return {
     selectedDay, selectedShift, registry, workPref, callUp,
     routes, setRoutes, overrides, ignoredAtIds, setIgnoredAtIds, queue,
-    availableDrivers, declinedAtIds, alreadyRoutedIds, dobraIds, noShowRoutes, allRoutes, queueDrivers, alreadyRoutedDrivers,
+    availableDrivers, declinedAtIds, pendingAtIds, alreadyRoutedIds, dobraIds, noShowRoutes, allRoutes, queueDrivers, alreadyRoutedDrivers,
     effectiveAssignments, sessionAssignedOrder, spxConfigured, setSpxConfigured,
     fioMode, setFioMode, fiorino, fioAssigning, fioResults, handleFioAssign,
     threePlAssignments, setThreePlAssignments, agencies, excludedRouteIds, applyOverrideAssignments,

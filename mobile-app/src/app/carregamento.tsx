@@ -29,6 +29,7 @@ export default function Carregamento() {
   const windows = useMemo(() => readWindows(shift), [shift, version])
   const [winOpen, setWinOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
+  const [search, setSearch] = useState('')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [nowMin, setNowMin] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes() })
 
@@ -84,6 +85,9 @@ export default function Carregamento() {
   const waiting = notArrived.filter(n => n.status === 'waiting')
   const unknownLetter = notArrived.filter(n => n.status === 'unknown-letter')
   const total = rows.length + notArrived.length
+  const q = search.trim().toLowerCase()
+  const shownRows = !q ? rows : rows.filter(({ e }) => e.driverName.toLowerCase().includes(q) || e.driverId.includes(q) || e.atId.toLowerCase().includes(q))
+  const shownNotArrived = !q ? notArrived : notArrived.filter(n => n.name.toLowerCase().includes(q) || n.driverId.includes(q) || n.atId.toLowerCase().includes(q))
   const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0)
   const punctual = onTime.length + outOfWindow.length > 0 ? Math.round((onTime.length / (onTime.length + outOfWindow.length)) * 100) : 0
 
@@ -238,10 +242,11 @@ export default function Carregamento() {
             </Row>
             {registry.length === 0 && <T size={11} color={C.yellow}>⚠ Sem cadastro de motoristas: telefones indisponíveis.</T>}
 
-            <T bold>Não chegaram ({notArrived.length}) — <T bold color={C.red}>{overdue.length} atrasados</T> · <T bold color={C.yellow}>{waiting.length} aguardando</T></T>
+            <Input value={search} onChangeText={setSearch} placeholder="🔍 Motorista, ID ou AT" />
+            <T bold>Não chegaram ({q ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <T bold color={C.red}>{overdue.length} atrasados</T> · <T bold color={C.yellow}>{waiting.length} aguardando</T></T>
             {expected.size === 0 ? <T size={12} color={C.dim}>Nenhuma rota atribuída neste turno — sem base para comparar.</T>
               : notArrived.length === 0 ? <T size={12} color={C.green}>✅ Todos com rota atribuída já estão na fila.</T>
-              : notArrived.map(n => (
+              : shownNotArrived.map(n => (
                 <Card key={n.driverId} style={n.status === 'overdue' ? { borderColor: 'rgba(239,68,68,.35)' } : undefined}>
                   <Row style={{ justifyContent: 'space-between' }}>
                     <T bold style={{ flex: 1 }}>{n.name || n.driverId}</T>
@@ -252,8 +257,8 @@ export default function Carregamento() {
                 </Card>
               ))}
 
-            <T bold>Na fila ({rows.length})</T>
-            {rows.map(({ e, w }) => (
+            <T bold>Na fila ({q ? `${shownRows.length} de ${rows.length}` : rows.length})</T>
+            {shownRows.map(({ e, w }) => (
               <Card key={e.driverId + e.atId} style={w.status === 'out-of-window' ? { borderColor: 'rgba(251,146,60,.35)' } : undefined}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <T bold style={{ flex: 1 }}>{e.driverName}</T>

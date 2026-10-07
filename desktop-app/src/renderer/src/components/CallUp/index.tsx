@@ -1,4 +1,5 @@
 import { useMemo, useState, useRef, useCallback, useEffect, Component } from 'react'
+import { coversCluster } from '../../lib/clusterMatch'
 import type { ReactNode } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import type { CallUpAnalysis, FirstCallAnalysis } from '../../lib/callUpParser'
@@ -239,7 +240,7 @@ function CallUpReportModal({ open, onClose, routes, dateFrom, dateTo, shiftFilte
     const dc = workPrefClusters.get(r.driverId)
     if (!dc) return false
     if (dc.some(c => c.toUpperCase() === 'ALL')) return false
-    return dc.some(c => c.toLowerCase() === r.cluster.toLowerCase())
+    return coversCluster(dc, r.cluster)
   })
 
   const periodLabel = dateFrom && dateTo ? `${dateFrom.split('-').reverse().join('/')} – ${dateTo.split('-').reverse().join('/')}`
@@ -348,7 +349,7 @@ function CallUpReportModal({ open, onClose, routes, dateFrom, dateTo, shiftFilte
                   {declinedRegion.map((r, i) => {
                     const dc = workPrefClusters.get(r.driverId)
                     const hasAll = dc?.some(c => c.toUpperCase() === 'ALL')
-                    const hasCluster = hasAll || dc?.some(c => c.toLowerCase() === r.cluster.toLowerCase())
+                    const hasCluster = hasAll || coversCluster(dc, r.cluster)
                     const statusLabel = !dc ? 'Sem dados WP' : hasAll ? '✓ ALL' : hasCluster ? '✓ tem disponibilidade' : '✗ fora mesmo'
                     const statusColor = !dc ? '#64748b' : hasCluster ? '#4ade80' : '#f87171'
                     return (
@@ -386,7 +387,7 @@ function CallUpReportModal({ open, onClose, routes, dateFrom, dateTo, shiftFilte
 function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAnalysis; driverMeta?: Map<string, DriverMeta>; workPref?: WorkPreferenceData | null; registry?: StoredDriver[] }) {
   const fc: FirstCallAnalysis = data.firstCallAnalysis ?? { totalRoutes: 0, accepted: 0, declined: 0, acceptanceRate: 0, declineReasonSummary: {}, routes: [], byDriver: [], byDate: [] }
   const [routeSearch, setRouteSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'Accepted' | 'Declined'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'Accepted' | 'Declined' | 'Pending'>('all')
   const [declineReasonFilter, setDeclineReasonFilter] = useState<string>('all')
   const [driverView, setDriverView] = useState(false)
   const [driverSearch, setDriverSearch] = useState('')
@@ -414,7 +415,7 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
     const byDate = new Map<string, { total: number; accepted: number; declined: number }>()
     for (const r of fc.routes) {
       if (r.shift !== shiftFilter) continue
-      if (r.status === 'Cancelled') continue
+      if (r.status === 'Cancelled' || r.status === 'Pending') continue
       const date = r.triggerTime ? r.triggerTime.slice(0, 10).replace(/\//g, '-') : null
       if (!date) continue
       if (dateFrom && date < dateFrom) continue
@@ -438,7 +439,7 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
 
   // KPIs dos 4 cards — dinâmicos com o período (data) e o turno selecionados
   const kpi = useMemo(() => {
-    let accepted = 0, declined = 0
+    let accepted = 0, declined = 0, pending = 0
     for (const r of fc.routes) {
       if (shiftFilter !== 'all' && r.shift !== shiftFilter) continue
       if (dateFrom || dateTo) {
@@ -449,9 +450,11 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
       }
       if (r.status === 'Accepted') accepted++
       else if (r.status === 'Declined') declined++
+      else if (r.status === 'Pending') pending++
     }
+    // A taxa considera só chamadas respondidas; as pendentes ficam à parte.
     const total = accepted + declined
-    return { total, accepted, declined, rate: total > 0 ? Math.round((accepted / total) * 1000) / 10 : 0 }
+    return { total, accepted, declined, pending, rate: total > 0 ? Math.round((accepted / total) * 1000) / 10 : 0 }
   }, [fc.routes, shiftFilter, dateFrom, dateTo])
 
   const workPrefClusters = useMemo(() => {
@@ -558,9 +561,10 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {[
-            { label: 'ATs analisadas', value: kpi.total, color: '#60a5fa' },
+            { label: 'ATs respondidas', value: kpi.total, color: '#60a5fa' },
             { label: '1ª chamada aceita', value: kpi.accepted, color: '#4ade80' },
             { label: '1ª chamada recusada', value: kpi.declined, color: '#f87171' },
+            ...(kpi.pending > 0 ? [{ label: 'Aguardando resposta', value: kpi.pending, color: '#fbbf24' }] : []),
             { label: 'Taxa de aceite (1ª chamada)', value: `${kpi.rate}%`, color: rateColor(kpi.rate) },
           ].map(c => (
             <div key={c.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '14px 18px', minWidth: 160 }}>
@@ -651,7 +655,7 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
               value={routeSearch} onChange={e => setRouteSearch(e.target.value)}
               style={{ width: 260, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 6, padding: '5px 10px', fontSize: 12, outline: 'none' }} />
             <div style={{ display: 'flex', background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, overflow: 'hidden' }}>
-              {([['all', 'Todas'], ['Accepted', 'Aceitas'], ['Declined', 'Recusadas']] as const).map(([v, l]) => (
+              {([['all', 'Todas'], ['Accepted', 'Aceitas'], ['Declined', 'Recusadas'], ['Pending', 'Pendentes']] as const).map(([v, l]) => (
                 <button key={v} onClick={() => setStatusFilter(v)}
                   style={{ padding: '5px 12px', fontSize: 12, border: 'none', background: statusFilter === v ? (v === 'Declined' ? 'rgba(239,68,68,.2)' : v === 'Accepted' ? 'rgba(34,197,94,.2)' : '#2d3048') : 'transparent', color: statusFilter === v ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
                   {l}
@@ -732,11 +736,11 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
                   <td style={{ padding: '7px 12px', color: '#64748b', whiteSpace: 'nowrap' }}>{r.triggerTime.slice(0, 16).replace('/', '-').replace('/', '-')}</td>
                   <td style={{ padding: '7px 12px' }}>
                     <span style={{
-                      background: r.status === 'Accepted' ? 'rgba(34,197,94,.1)' : r.status === 'Declined' ? 'rgba(239,68,68,.1)' : 'rgba(100,116,139,.1)',
-                      color: r.status === 'Accepted' ? '#4ade80' : r.status === 'Declined' ? '#f87171' : '#94a3b8',
+                      background: r.status === 'Accepted' ? 'rgba(34,197,94,.1)' : r.status === 'Declined' ? 'rgba(239,68,68,.1)' : r.status === 'Pending' ? 'rgba(245,158,11,.1)' : 'rgba(100,116,139,.1)',
+                      color: r.status === 'Accepted' ? '#4ade80' : r.status === 'Declined' ? '#f87171' : r.status === 'Pending' ? '#fbbf24' : '#94a3b8',
                       borderRadius: 5, padding: '2px 7px', fontSize: 11, fontWeight: 600
                     }}>
-                      {r.status === 'Accepted' ? 'Aceita' : r.status === 'Declined' ? 'Recusada' : 'Cancelada'}
+                      {r.status === 'Accepted' ? 'Aceita' : r.status === 'Declined' ? 'Recusada' : r.status === 'Pending' ? 'Pendente' : 'Cancelada'}
                     </span>
                   </td>
                   <td style={{ padding: '7px 12px', fontSize: 11 }}>
@@ -753,7 +757,7 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
                               )
                             }
                             const hasAll = driverClusters.some(c => c.toUpperCase() === 'ALL')
-                            const isActuallyOutside = !hasAll && !driverClusters.some(c => c.toLowerCase() === r.cluster.toLowerCase())
+                            const isActuallyOutside = !hasAll && !coversCluster(driverClusters, r.cluster)
                             return (
                               <span>
                                 <span style={{ color: '#f87171' }}>{r.declineReason}</span>

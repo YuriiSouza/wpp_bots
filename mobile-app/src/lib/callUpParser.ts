@@ -8,6 +8,8 @@ export interface DriverCallUpStats {
   accepted: number
   declined: number
   cancelled: number
+  /** Chamadas enviadas e ainda sem resposta. Ficam fora das taxas de aceite e de recusa. */
+  pending?: number
   acceptanceRate: number
   declineReasons: Record<string, number>
   timeoutCount: number
@@ -40,12 +42,22 @@ export interface FirstCallRoute {
   atId: string
   driverId: string
   driverName: string
-  status: 'Accepted' | 'Declined' | 'Cancelled'
+  status: 'Accepted' | 'Declined' | 'Cancelled' | 'Pending'
   declineReason: string | null
   triggerTime: string
   cluster: string
   shift: Shift | null
+  /** Dia do turno da chamada (YYYY-MM-DD). Ausente em relatórios importados antes deste campo existir. */
+  date?: string
+  /** Status da chamada mais recente dessa AT (a 1ª pode ter sido recusada e uma seguinte aceita, ou o contrário). */
+  finalStatus?: 'Accepted' | 'Declined' | 'Cancelled' | 'Pending'
 }
+
+/** Dia a que a 1ª chamada se refere: o do turno, ou o do disparo quando o relatório é antigo. */
+export const firstCallDay = (r: FirstCallRoute) => r.date ?? r.triggerTime.slice(0, 10).replace(/\//g, '-')
+
+/** A rota está aceita no Call Up? Vale a chamada mais recente; em relatório antigo, a primeira. */
+export const isAcceptedInCallUp = (r: FirstCallRoute) => (r.finalStatus ?? r.status) === 'Accepted'
 
 export interface FirstCallDriverStats {
   driverId: string
@@ -71,6 +83,8 @@ export interface FirstCallAnalysis {
   declined: number             // first call declined/timed out
   acceptanceRate: number
   declineReasonSummary: Record<string, number>
+  /** ATs cuja 1ª chamada ainda está sem resposta (fora da taxa de aceite). */
+  pending?: number
   routes: FirstCallRoute[]     // one entry per AT, sorted by triggerTime
   byDriver: FirstCallDriverStats[]
   byDate: FirstCallDateStats[]
@@ -83,6 +97,8 @@ export interface CallUpAnalysis {
   accepted: number
   declined: number
   cancelled: number
+  /** Chamadas ainda sem resposta (fora da taxa de aceite). */
+  pending?: number
   overallAcceptanceRate: number
   byDriver: DriverCallUpStats[]
   byDate: CallUpDayStats[]
@@ -155,7 +171,7 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
   const clusterMap = new Map<string, { total: number; accepted: number; declined: number; reasons: Record<string, number> }>()
   const reasonSummary: Record<string, number> = {}
 
-  let totalAccepted = 0, totalDeclined = 0, totalCancelled = 0
+  let totalAccepted = 0, totalDeclined = 0, totalCancelled = 0, totalPending = 0
   const driversByDateMap = new Map<string, Set<string>>()
   const acceptedByDateShiftMap = new Map<string, Set<string>>()
 
@@ -188,6 +204,7 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
     if (status === 'Accepted') totalAccepted++
     else if (status === 'Declined') totalDeclined++
     else if (status === 'Cancelled') totalCancelled++
+    else if (status === 'Pending') totalPending++
 
     // Response time
     const triggerTime = parseDateTime(row['Trigger Time'])
@@ -230,6 +247,7 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
         if (reason) d.declineReasons[reason] = (d.declineReasons[reason] ?? 0) + 1
         if (reason === 'Timeout') d.timeoutCount++
       } else if (status === 'Cancelled') d.cancelled++
+      else if (status === 'Pending') d.pending = (d.pending ?? 0) + 1
 
       if (cluster && !d.clusters.includes(cluster)) d.clusters.push(cluster)
 
@@ -240,8 +258,8 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
       }
     }
 
-    // Per date
-    if (date) {
+    // Per date (chamada pendente não entra: ainda não tem resultado)
+    if (date && status !== 'Pending') {
       if (!dateMap.has(date)) dateMap.set(date, { total: 0, accepted: 0, declined: 0 })
       const dd = dateMap.get(date)!
       dd.total++
@@ -250,7 +268,7 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
     }
 
     // Per cluster
-    if (cluster) {
+    if (cluster && status !== 'Pending') {
       if (!clusterMap.has(cluster)) clusterMap.set(cluster, { total: 0, accepted: 0, declined: 0, reasons: {} })
       const cc = clusterMap.get(cluster)!
       cc.total++
@@ -269,12 +287,12 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
 
   // Compute acceptance rates
   for (const d of driverMap.values()) {
-    const denominator = d.total - d.cancelled
+    const denominator = d.total - d.cancelled - (d.pending ?? 0)
     d.acceptanceRate = denominator > 0 ? Math.round((d.accepted / denominator) * 1000) / 10 : 0
   }
 
   const totalCalls = rows.length
-  const effectiveCalls = totalCalls - totalCancelled
+  const effectiveCalls = totalCalls - totalCancelled - totalPending
   const overallAcceptanceRate = effectiveCalls > 0
     ? Math.round((totalAccepted / effectiveCalls) * 1000) / 10
     : 0
@@ -315,11 +333,14 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
   // ── First call analysis ─────────────────────────────────────────────────────
   // Group all rows by AT ID, pick earliest Trigger Time as the "first call"
   const atMap = new Map<string, { row: RawCallUp; triggerMs: number }>()
+  const latestByAt = new Map<string, { status: string; triggerMs: number }>()
   for (const row of rows) {
     const atId = (row['AT ID'] || '').trim()
     if (!atId) continue
     const t = parseDateTime(row['Trigger Time'])
     if (!t) continue
+    const last = latestByAt.get(atId)
+    if (!last || t.getTime() >= last.triggerMs) latestByAt.set(atId, { status: (row.Status || '').trim(), triggerMs: t.getTime() })
     const existing = atMap.get(atId)
     if (!existing || t.getTime() < existing.triggerMs) {
       atMap.set(atId, { row, triggerMs: t.getTime() })
@@ -329,19 +350,20 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
   const firstDriverMap = new Map<string, FirstCallDriverStats>()
   const firstDateMap = new Map<string, { total: number; accepted: number; declined: number }>()
   const firstReasonSummary: Record<string, number> = {}
-  let fcAccepted = 0, fcDeclined = 0
+  let fcAccepted = 0, fcDeclined = 0, fcPending = 0
 
   const fcRoutes: FirstCallRoute[] = [...atMap.values()]
     .sort((a, b) => a.triggerMs - b.triggerMs)
     .map(({ row }) => {
       const driverId = extractDriverId(row.Driver || '')
       const driverName = extractDriverName(row.Driver || '')
-      const status = (row.Status || '').trim() as 'Accepted' | 'Declined' | 'Cancelled'
+      const status = (row.Status || '').trim() as FirstCallRoute['status']
       const reason = (row['Decline Reason'] || '').trim() || null
       const atId = (row['AT ID'] || '').trim()
       const cluster = (row.Clusters || '').trim()
 
-      const effective = status !== 'Cancelled'
+      if (status === 'Pending') fcPending++
+      const effective = status !== 'Cancelled' && status !== 'Pending'
       const fcDate = row['Trigger Time'] ? row['Trigger Time'].slice(0, 10).replace(/\//g, '-') : null
       if (effective) {
         if (status === 'Accepted') fcAccepted++
@@ -372,7 +394,9 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
       }
 
       const shift = slotToShift((row['Call-up Time Slot'] || '').trim(), config)
-      return { atId, driverId, driverName, status, declineReason: reason, triggerTime: row['Trigger Time'], cluster, shift }
+      const date = parseSlotDate((row['Call-up Time Slot'] || '').trim()) || undefined
+      const finalStatus = (latestByAt.get(atId)?.status ?? status) as FirstCallRoute['finalStatus']
+      return { atId, driverId, driverName, status, declineReason: reason, triggerTime: row['Trigger Time'], cluster, shift, date, finalStatus }
     })
 
   for (const fd of firstDriverMap.values()) {
@@ -396,6 +420,7 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
     declined: fcDeclined,
     acceptanceRate: fcTotal > 0 ? Math.round((fcAccepted / fcTotal) * 1000) / 10 : 0,
     declineReasonSummary: firstReasonSummary,
+    pending: fcPending,
     routes: fcRoutes,
     byDriver: [...firstDriverMap.values()].sort((a, b) => b.totalFirstCalls - a.totalFirstCalls),
     byDate: fcByDate,
@@ -408,6 +433,7 @@ export function parseCallUpCsv(csvText: string, fileName: string, config: Global
     accepted: totalAccepted,
     declined: totalDeclined,
     cancelled: totalCancelled,
+    pending: totalPending,
     overallAcceptanceRate,
     byDriver,
     byDate,

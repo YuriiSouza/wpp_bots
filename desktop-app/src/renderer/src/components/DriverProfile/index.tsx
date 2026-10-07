@@ -120,7 +120,7 @@ export default function DriverProfile({ profiles, today }: Props) {
                     <td style={{ padding: '8px 10px' }}>
                       {p.dsReal !== null ? (
                         <>
-                          <p style={{ margin: 0, fontWeight: 700, color: p.dsReal >= 0.9 ? '#22c55e' : p.dsReal >= 0.75 ? '#f59e0b' : '#ef4444' }}>
+                          <p style={{ margin: 0, fontWeight: 700, color: p.dsReal >= 0.95 ? '#22c55e' : '#ef4444' }}>
                             {(p.dsReal * 100).toFixed(1)}%
                           </p>
                           <p style={{ margin: 0, fontSize: 10, color: p.dsStatus === 'Melhorando' ? '#22c55e' : p.dsStatus === 'Piorando' ? '#ef4444' : '#64748b' }}>

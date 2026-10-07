@@ -5,7 +5,7 @@ import { reportStore } from './reportStore'
 import { buildDriverProfiles } from './crossAnalysis'
 import { getGlobalConfig, driverMatchesShift, type Shift } from './globalConfig'
 import { noShowQueueStore, type QueueDriver } from './noShowQueueStore'
-import { calculatePriorityScore } from './priorityScore'
+import { calculatePriorityScore, declineRatePercent } from './priorityScore'
 import type { AnalysisResult, DriverResult } from './types'
 import type { CallUpAnalysis } from './callUpParser'
 import type { ForwardOrderAnalysis } from './forwardOrderParser'
@@ -95,7 +95,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
             name: d.driverName || d.driverId,
             vehicleType: d.vehicleType || null,
             clusters: d.clusters,
-            priorityScore: calculatePriorityScore(dsPercent, cu?.declined ?? 0, cu?.timeoutCount ?? 0),
+            priorityScore: calculatePriorityScore(dsPercent, declineRatePercent(cu), d.noShowTime ?? 0),
             isBlocked: false,
           }
         })

@@ -5,7 +5,7 @@ import { Btn, C, Card, Chip, Input, NeedsData, Row, Screen, Segmented, Sheet, T,
 import { HBar, Legend, StackBar } from '@/components/HBar'
 import { useAppData } from '@/lib/appData'
 import { calcRodizio, driverMatchesShift, getGlobalConfig, type Shift } from '@/lib/globalConfig'
-import { calculatePriorityScore, daysSinceLastRoute } from '@/lib/priorityScore'
+import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from '@/lib/priorityScore'
 
 type DriverStatus = 'DISPONÍVEL' | 'DOBRA' | 'INDISPONÍVEL' | 'BLOQUEADO' | 'URGENTE'
 type Rodizio = 'BAIXA' | 'MÉDIA' | 'ALTA'
@@ -32,7 +32,7 @@ function manualBlockIds(): Set<string> {
   try { return new Set((JSON.parse(localStorage.getItem('spx:noshow-manual-blocks') ?? '[]') as { driverId: string }[]).map(b => b.driverId)) } catch { return new Set() }
 }
 
-const dsColor = (v: number | null) => { if (v === null) return C.dim; const p = Math.round(v * 100); return p < 30 ? '#f87171' : p < 70 ? '#fbbf24' : p < 90 ? '#a3e635' : '#4ade80' }
+const dsColor = (v: number | null) => (v === null ? C.dim : v * 100 < 95 ? '#f87171' : '#4ade80')
 const fmtDay = (raw: string | null) => { if (!raw) return '—'; const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}/${m[2]}/${m[1]}` : raw.slice(0, 10) }
 const waLink = (phone: string) => { const d = phone.replace(/\D/g, ''); return `https://wa.me/${d.startsWith('55') ? d : `55${d}`}` }
 
@@ -58,10 +58,8 @@ function Dashboard({ drivers }: { drivers: EnrichedDriver[] }) {
   const withDs = drivers.filter(d => d.ds !== null)
   const dsAvg = withDs.length ? withDs.reduce((s, d) => s + d.ds! * 100, 0) / withDs.length : null
   const dsRanges = [
-    { label: 'Excelente ≥90%', value: count(d => d.ds !== null && d.ds * 100 >= 90), color: '#4ade80' },
-    { label: 'Bom 70–89%', value: count(d => d.ds !== null && d.ds * 100 >= 70 && d.ds * 100 < 90), color: '#a3e635' },
-    { label: 'Médio 30–69%', value: count(d => d.ds !== null && d.ds * 100 >= 30 && d.ds * 100 < 70), color: '#fbbf24' },
-    { label: 'Baixo <30%', value: count(d => d.ds !== null && d.ds * 100 < 30), color: '#f87171' },
+    { label: 'Dentro da meta ≥95%', value: count(d => d.ds !== null && d.ds * 100 >= 95), color: '#4ade80' },
+    { label: 'Abaixo de 95%', value: count(d => d.ds !== null && d.ds * 100 < 95), color: '#f87171' },
     { label: 'Sem DS', value: count(d => d.ds === null), color: '#4b5563' },
   ]
   const scoreAvg = total ? drivers.reduce((s, d) => s + d.priorityScore, 0) / total : 0
@@ -105,7 +103,7 @@ function Dashboard({ drivers }: { drivers: EnrichedDriver[] }) {
       <Panel title="Rodízio">{stack(rod)}</Panel>
       <Panel title="Tipo de veículo">{stack(veh)}</Panel>
       <Panel title="DS Score">
-        {dsAvg !== null ? <T size={22} bold color={dsAvg >= 90 ? '#4ade80' : dsAvg >= 70 ? '#a3e635' : dsAvg >= 30 ? '#fbbf24' : '#f87171'}>{dsAvg.toFixed(0)}% <T size={11} color={C.dim}>média DS</T></T> : <T size={12} color={C.faint}>Sem dados DS</T>}
+        {dsAvg !== null ? <T size={22} bold color={dsAvg >= 95 ? '#4ade80' : '#f87171'}>{dsAvg.toFixed(0)}% <T size={11} color={C.dim}>média DS</T></T> : <T size={12} color={C.faint}>Sem dados DS</T>}
         {bars(dsRanges)}
       </Panel>
       <Panel title="Score de prioridade">
@@ -186,7 +184,7 @@ export default function Disponibilidade() {
           declineRate: cu && cu.total > 0 ? Math.round((cu.declined / cu.total) * 100) : 0,
           isBlocked,
           slots: d.schedule[day]?.slots ?? [],
-          priorityScore: calculatePriorityScore(dsReal !== null ? dsReal * 100 : 50, cu?.declined ?? 0, cu?.timeoutCount ?? 0, cfg.scoreWeights),
+          priorityScore: calculatePriorityScore(dsReal !== null ? dsReal * 100 : 50, declineRatePercent(cu), d.noShowTime ?? 0, cfg.scoreWeights),
           daysSinceRoute: daysSinceLastRoute(ultimaViagem),
         }
       })
@@ -297,7 +295,7 @@ export default function Disponibilidade() {
                   {d.tipoVeiculo ? <Chip label={d.tipoVeiculo} /> : null}
                   <Chip label={sm.label} color={sm.color} />
                   <Chip label={`Rodízio ${d.rodizio}`} color={ROD_COLOR[d.rodizio]} />
-                  <Chip label={`DS ${d.ds === null ? '—' : `${Math.round(d.ds * 100)}%`}`} color={dsColor(d.ds)} />
+                  <Chip label={`DS ${d.ds === null ? '—' : `${(d.ds * 100).toFixed(1)}%`}`} color={dsColor(d.ds)} />
                   {d.progressaoDs ? <Chip label={d.progressaoDs} color={d.progressaoDs === 'Melhorando' ? '#4ade80' : d.progressaoDs === 'Piorando' ? '#f87171' : C.dim} /> : null}
                 </Row>
                 <T size={11} color={C.sub}>

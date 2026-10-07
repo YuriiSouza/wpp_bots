@@ -1,5 +1,6 @@
 // Lógica copiada de desktop-app/src/renderer/src/components/NoShowReversion/index.tsx — mantenha as duas em sincronia.
 import type { LocalRoute } from '@/lib/noshowRouteParser'
+import { coversCluster } from '@/lib/clusterMatch'
 
 // ─── manual blocklist ─────────────────────────────────────────────────────────
 
@@ -147,11 +148,10 @@ export function vehicleAllowed(driverV: string | null | undefined, routeV: strin
 
 export function getDsMeta(ds: number | null) {
   if (ds === null) return { label: '—', color: '#64748b', bg: 'rgba(100,116,139,.1)' }
-  const pct = Math.round(ds * 100)
-  if (pct < 30) return { label: `${pct}%`, color: '#f87171', bg: 'rgba(239,68,68,.12)' }
-  if (pct < 70) return { label: `${pct}%`, color: '#fbbf24', bg: 'rgba(245,158,11,.12)' }
-  if (pct < 90) return { label: `${pct}%`, color: '#a3e635', bg: 'rgba(163,230,53,.1)' }
-  return { label: `${pct}%`, color: '#4ade80', bg: 'rgba(34,197,94,.1)' }
+  // Regra única do app: DS abaixo de 95% é vermelho.
+  const label = `${(ds * 100).toFixed(1)}%`
+  if (ds * 100 < 95) return { label, color: '#f87171', bg: 'rgba(239,68,68,.12)' }
+  return { label, color: '#4ade80', bg: 'rgba(34,197,94,.1)' }
 }
 
 export function getBestCandidate(route: LocalRoute, drivers: LocalDriver[], usedIds: Set<string>) {
@@ -163,8 +163,20 @@ export function getBestCandidate(route: LocalRoute, drivers: LocalDriver[], used
   }
   const base = drivers.filter(d => !usedIds.has(d.driverId) && vehicleAllowed(d.vehicleType, route.requiredVehicleType))
   // Tenta com cluster exato primeiro; se não achar, usa todos os disponíveis
-  const withCluster = base.filter(d => d.clusters.some(c => normCluster(c) === normCluster(route.cluster)))
+  // Em junção de clusters, prefere quem atende todos; senão, quem atende pelo menos um.
+  const full = base.filter(d => coversCluster(d.clusters, route.cluster, 'all'))
+  const withCluster = full.length ? full : base.filter(d => coversCluster(d.clusters, route.cluster))
   return withCluster.sort(sorter)[0] ?? null
+}
+
+// Quantos motoristas não bloqueados atendem cada cluster, calculado em uma passada.
+export function countByCluster(drivers: LocalDriver[]) {
+  const m = new Map<string, number>()
+  for (const d of drivers) {
+    if (d.isBlocked) continue
+    for (const c of new Set(d.clusters.map(normCluster))) m.set(c, (m.get(c) ?? 0) + 1)
+  }
+  return m
 }
 
 export function computeEffective(routes: LocalRoute[], drivers: LocalDriver[], overrides: Map<string, LocalDriver>) {
@@ -173,13 +185,12 @@ export function computeEffective(routes: LocalRoute[], drivers: LocalDriver[], o
   for (const [rid, d] of overrides) { map.set(rid, d); usedIds.add(d.driverId) }
 
   const disponivel = routes.filter(r => r.status === 'DISPONIVEL')
-  const sorted = [...disponivel].sort((a, b) => {
-    const count = (r: LocalRoute) => {
-      const rv = normalizeVehicle(r.requiredVehicleType)
-      return drivers.filter(d => d.clusters.some(c => normCluster(c) === normCluster(r.cluster)) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')).length
-    }
-    return count(a) - count(b)
-  })
+  // Conta os candidatos de cada rota uma vez só (e não a cada comparação da ordenação).
+  const candidates = new Map(disponivel.map(r => {
+    const rv = normalizeVehicle(r.requiredVehicleType)
+    return [r.id, drivers.filter(d => coversCluster(d.clusters, r.cluster) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')).length] as const
+  }))
+  const sorted = [...disponivel].sort((a, b) => candidates.get(a.id)! - candidates.get(b.id)!)
 
   for (const route of sorted) {
     if (map.has(route.id)) continue

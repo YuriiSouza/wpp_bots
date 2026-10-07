@@ -1,3 +1,4 @@
+import { splitClusters } from './clusterMatch'
 export interface LocalRoute {
   id: string
   atId: string
@@ -122,7 +123,7 @@ export function parseRoutesTsv(text: string): LocalRoute[] {
       cluster,
       requiredVehicleType: scheduledVehicle,
       cidade,
-      isInterior: INTERIOR_CLUSTERS.has(cluster),
+      isInterior: splitClusters(cluster).some(c => INTERIOR_CLUSTERS.has(c)),
       ciclo,
       paradas,
       spr,

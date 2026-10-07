@@ -6,7 +6,7 @@ import type { CallUpAnalysis } from '../../lib/callUpParser'
 import type { ForwardOrderAnalysis } from '../../lib/forwardOrderParser'
 import type { Shift } from '../../lib/globalConfig'
 import { getGlobalConfig, driverMatchesShift, calcRodizio } from '../../lib/globalConfig'
-import { calculatePriorityScore, daysSinceLastRoute } from '../../lib/priorityScore'
+import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from '../../lib/priorityScore'
 
 // ─── manual blocklist (shared key) ───────────────────────────────────────────
 const MANUAL_BLOCKS_KEY = 'spx:noshow-manual-blocks'
@@ -313,16 +313,12 @@ function DashboardView({ drivers }: { drivers: EnrichedDriver[] }) {
 
   const dsRanges = useMemo(() => {
     const sem  = drivers.filter(d => d.ds === null).length
-    const low  = drivers.filter(d => d.ds !== null && d.ds * 100 < 30).length
-    const mid  = drivers.filter(d => d.ds !== null && d.ds * 100 >= 30 && d.ds * 100 < 70).length
-    const good = drivers.filter(d => d.ds !== null && d.ds * 100 >= 70 && d.ds * 100 < 90).length
-    const exc  = drivers.filter(d => d.ds !== null && d.ds * 100 >= 90).length
+    const low  = drivers.filter(d => d.ds !== null && d.ds * 100 < 95).length
+    const ok   = drivers.filter(d => d.ds !== null && d.ds * 100 >= 95).length
     return [
-      { label: 'Excelente ≥90%', value: exc,  color: '#4ade80' },
-      { label: 'Bom 70–89%',     value: good, color: '#a3e635' },
-      { label: 'Médio 30–69%',   value: mid,  color: '#fbbf24' },
-      { label: 'Baixo <30%',     value: low,  color: '#f87171' },
-      { label: 'Sem DS',         value: sem,  color: '#4b5563' },
+      { label: 'Dentro da meta ≥95%', value: ok,  color: '#4ade80' },
+      { label: 'Abaixo de 95%',       value: low, color: '#f87171' },
+      { label: 'Sem DS',              value: sem, color: '#4b5563' },
     ]
   }, [drivers])
 
@@ -440,7 +436,7 @@ function DashboardView({ drivers }: { drivers: EnrichedDriver[] }) {
       <Section title="DS Score">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           {dsAvg !== null
-            ? <Gauge value={dsAvg} color={dsAvg >= 90 ? '#4ade80' : dsAvg >= 70 ? '#a3e635' : dsAvg >= 30 ? '#fbbf24' : '#f87171'} label="média DS" />
+            ? <Gauge value={dsAvg} color={dsAvg >= 95 ? '#4ade80' : '#f87171'} label="média DS" />
             : <span style={{ fontSize: 12, color: '#4b5563' }}>Sem dados DS</span>}
           <HBarChart items={dsRanges} maxVal={total} />
         </div>
@@ -557,8 +553,9 @@ export default function Disponibilidade({ data, registry, dsDrivers, callUp, for
         const dsReal = ds?.DS_Real ?? null
         const dsPercent = dsReal !== null ? dsReal * 100 : 50
         const declineCount = cu?.declined ?? 0
-        const noShowCount = cu?.timeoutCount ?? 0
-        const priorityScore = calculatePriorityScore(dsPercent, declineCount, noShowCount, cfg.scoreWeights)
+        // No-show vem do campo "No Show Time" do relatório de disponibilidade
+        const noShowCount = d.noShowTime ?? 0
+        const priorityScore = calculatePriorityScore(dsPercent, declineRatePercent(cu), noShowCount, cfg.scoreWeights)
         const daysSinceRoute = daysSinceLastRoute(ultimaViagem)
 
         return {
@@ -666,14 +663,10 @@ export default function Disponibilidade({ data, registry, dsDrivers, callUp, for
     setTimeout(() => setCopiedFiltered(false), 2000)
   }
 
-  const formatDs = (v: number | null) => v === null ? '—' : `${Math.round(v * 100)}%`
+  const formatDs = (v: number | null) => v === null ? '—' : `${(v * 100).toFixed(1)}%`
   const dsColor = (v: number | null) => {
     if (v === null) return '#64748b'
-    const p = Math.round(v * 100)
-    if (p < 30) return '#f87171'
-    if (p < 70) return '#fbbf24'
-    if (p < 90) return '#a3e635'
-    return '#4ade80'
+    return v * 100 < 95 ? '#f87171' : '#4ade80'
   }
 
   const fmtDate = (raw: string | null) => {

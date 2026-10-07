@@ -1,10 +1,11 @@
 import { useState } from 'react'
+import { coversCluster } from '@/lib/clusterMatch'
 import { Alert, FlatList, Pressable, ScrollView, View } from 'react-native'
 import DayShiftBar from '@/components/DayShiftBar'
 import { Btn, C, Card, Chip, Empty, Input, Row, Screen, Segmented, SHIFT_COLOR, Sheet, T, copy } from '@/components/ui'
 import type { LocalRoute } from '@/lib/noshowRouteParser'
 import { useNoShow } from '@/features/noshow/useNoShow'
-import { getDsMeta, INTERIOR_CLUSTERS, normCluster, normalizeVehicle, vehiclePriority, type LocalDriver } from '@/features/noshow/logic'
+import { countByCluster, getDsMeta, INTERIOR_CLUSTERS, normCluster, normalizeVehicle, vehiclePriority, type LocalDriver } from '@/features/noshow/logic'
 import { AddRouteSheet, BatchSheet, NovatosPanel, ReportSheet, RoutePaste, SpxCredsSheet, ThreePlPanel } from '@/features/noshow/panels'
 
 type Tab = 'routes' | 'drivers' | 'fc'
@@ -76,7 +77,9 @@ export default function Atribuicao() {
   const matchDriver = (d: LocalDriver) => !dq || d.driverId.includes(dq) || d.name.toLowerCase().includes(dq)
   const filteredDrivers = ns.queueDrivers.filter(matchDriver)
   const filteredRouted = ns.alreadyRoutedDrivers.filter(matchDriver)
-  const clusterCount = (c: string) => ns.queueDrivers.filter(d => !d.isBlocked && d.clusters.some(dc => normCluster(dc) === normCluster(c))).length
+  const queueCounts = countByCluster(ns.queueDrivers)
+  const availableCounts = countByCluster(ns.availableDrivers)
+  const clusterCount = (c: string) => queueCounts.get(normCluster(c)) ?? 0
 
   const menuItems: { icon: string; label: string; color?: string; onPress: () => void }[] = [
     { icon: '📋', label: 'Nova colagem', onPress: () => setShowPaste(true) },
@@ -117,9 +120,15 @@ export default function Atribuicao() {
           </View>
         ))}
       </ScrollView>
-      <Btn loading={ns.isAssigning} disabled={ns.effectiveAssignments.size === 0} onPress={() => void ns.handleConfirmAssign()}>
+      {tab === 'fc' && fcSection === 'fiorino' ? (
+        <Btn loading={ns.fioAssigning} disabled={ns.fiorino.assignments.size === 0} style={{ backgroundColor: '#d97706', borderColor: '#d97706' }} onPress={() => void ns.handleFioAssign()}>
+          {`🚐 Atribuir Fiorino (${ns.fiorino.assignments.size})`}
+        </Btn>
+      ) : (
+  <Btn loading={ns.isAssigning} disabled={ns.effectiveAssignments.size === 0} onPress={() => void ns.handleConfirmAssign()}>
         {ns.isAssigning ? 'Atribuindo...' : `✦ Atribuir (${ns.effectiveAssignments.size})${ns.spxConfigured ? ' no SPX' : ''}`}
       </Btn>
+      )}
       <Segmented<Tab>
         value={tab}
         onChange={setTab}
@@ -130,9 +139,9 @@ export default function Atribuicao() {
         ]}
         colors={{ fc: C.yellow }}
       />
+      {tab === 'routes' && <Input value={routeSearch} onChangeText={setRouteSearch} placeholder="🔍 AT ID ou cluster" />}
       {tab === 'routes' && (
         <Row>
-          <Input value={routeSearch} onChangeText={setRouteSearch} placeholder="🔍 AT ID ou cluster" style={{ flex: 1 }} />
           <Btn small variant="success" onPress={() => setAddOpen(true)}>＋ AT</Btn>
           <Btn small variant="outline" onPress={async () => { const ats = filteredRoutes.map(r => r.atId); if (ats.length) { await copy(ats.join('\n')); notify('ATs copiadas') } }}>{`📋 ATs (${filteredRoutes.length})`}</Btn>
           <Btn small variant="outline" disabled={assignedPhones.length === 0} onPress={async () => { await copy(assignedPhones.join('\n')); notify('Telefones dos atribuídos copiados') }}>{`📱 Atribuídos (${assignedPhones.length})`}</Btn>
@@ -153,7 +162,7 @@ export default function Atribuicao() {
         <Card style={{ backgroundColor: 'rgba(34,197,94,.04)' }}>
           <Row style={{ justifyContent: 'space-between' }}>
             <T mono bold size={12}>{index + 1}. {route.atId}</T>
-            <Chip label="Atribuída" color={C.green} />
+            <Row gap={4}>{ns.callUp && !ns.declinedAtIds.has(route.atId) && <Chip label="⏳ Sem aceite" color={C.yellow} />}<Chip label="Atribuída" color={C.green} /></Row>
           </Row>
           <T size={12} color={C.sub}>{route.isInterior ? '📍 ' : ''}{route.cluster}{route.gaiola ? ` · Gaiola ${route.gaiola}` : ''}</T>
           <Row style={{ justifyContent: 'space-between' }}>
@@ -181,6 +190,7 @@ export default function Atribuicao() {
         </Row>
         <Row gap={6}>
           <T size={12} color={C.sub}>{route.isInterior ? '📍 ' : ''}{route.cluster}</T>
+          {ns.pendingAtIds.has(route.atId) && <Chip label="⏳ Pendente" color={C.yellow} />}
           {route.isInterior && <Chip label="Interior" color={C.yellow} />}
           {route.requiredVehicleType ? <Chip label={route.requiredVehicleType} /> : null}
           {route.gaiola ? <T size={11} color={C.dim}>Gaiola {route.gaiola}</T> : null}
@@ -268,9 +278,6 @@ export default function Atribuicao() {
               </View>
             ))}
           </ScrollView>
-          <Btn loading={ns.fioAssigning} disabled={ns.fiorino.assignments.size === 0} style={{ backgroundColor: '#d97706', borderColor: '#d97706' }} onPress={() => void ns.handleFioAssign()}>
-            {`🚐 Atribuir Fiorino (${ns.fiorino.assignments.size})`}
-          </Btn>
           {ns.fioResults && (
             <Card>
               <T bold size={12}>Resultado Fiorino</T>
@@ -332,7 +339,7 @@ export default function Atribuicao() {
     if (!assignRoute) return []
     const rv = normalizeVehicle(assignRoute.requiredVehicleType)
     const base = ns.availableDrivers.filter(d => !ns.alreadyRoutedIds.has(d.driverId) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO'))
-    const withCluster = base.filter(d => d.clusters.some(c => normCluster(c) === normCluster(assignRoute.cluster)))
+    const withCluster = base.filter(d => coversCluster(d.clusters, assignRoute.cluster))
     return (withCluster.length > 0 ? withCluster : base).sort((a, b) => {
       if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
       const pa = vehiclePriority(a.vehicleType, assignRoute.requiredVehicleType)
@@ -407,7 +414,7 @@ export default function Atribuicao() {
         {candidates.map(d => {
           const ds = getDsMeta(d.dsReal)
           const sel = current?.driverId === d.driverId
-          const cc = (c: string) => ns.availableDrivers.filter(x => !x.isBlocked && x.clusters.some(dc => normCluster(dc) === normCluster(c))).length
+          const cc = (c: string) => availableCounts.get(normCluster(c)) ?? 0
           return (
             <Card key={d.driverId} style={{ borderColor: sel ? C.accent : d.isBlocked ? 'rgba(239,68,68,.3)' : C.border }}>
               <Row>

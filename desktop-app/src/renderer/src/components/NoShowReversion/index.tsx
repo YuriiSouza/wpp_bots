@@ -1,16 +1,18 @@
 import { useMemo, useState, useEffect, useCallback } from 'react'
+import { coversCluster, splitClusters } from '../../lib/clusterMatch'
 import type { StoredDriver } from '../../lib/localStore'
 import type { DriverResult } from '../../lib/types'
 import type { ForwardOrderAnalysis } from '../../lib/forwardOrderParser'
 import type { CallUpAnalysis } from '../../lib/callUpParser'
 import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
 import { parseRoutesTsv, type LocalRoute } from '../../lib/noshowRouteParser'
+import { firstCallDay, isAcceptedInCallUp } from '../../lib/callUpParser'
 import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '../../lib/threePlParser'
 import type { Shift } from '../../lib/globalConfig'
 import { getGlobalConfig, saveGlobalConfig } from '../../lib/globalConfig'
 import { routeStore, migrateOldRoutes } from '../../lib/routeStore'
 import { noShowQueueStore, type QueueDriver } from '../../lib/noShowQueueStore'
-import { calculatePriorityScore, daysSinceLastRoute } from '../../lib/priorityScore'
+import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from '../../lib/priorityScore'
 
 // ─── manual blocklist ─────────────────────────────────────────────────────────
 
@@ -158,11 +160,10 @@ function vehicleAllowed(driverV: string | null | undefined, routeV: string | nul
 
 function getDsMeta(ds: number | null) {
   if (ds === null) return { label: '—', color: '#64748b', bg: 'rgba(100,116,139,.1)' }
-  const pct = Math.round(ds * 100)
-  if (pct < 30) return { label: `${pct}%`, color: '#f87171', bg: 'rgba(239,68,68,.12)' }
-  if (pct < 70) return { label: `${pct}%`, color: '#fbbf24', bg: 'rgba(245,158,11,.12)' }
-  if (pct < 90) return { label: `${pct}%`, color: '#a3e635', bg: 'rgba(163,230,53,.1)' }
-  return { label: `${pct}%`, color: '#4ade80', bg: 'rgba(34,197,94,.1)' }
+  // Regra única do app: DS abaixo de 95% é vermelho.
+  const label = `${(ds * 100).toFixed(1)}%`
+  if (ds * 100 < 95) return { label, color: '#f87171', bg: 'rgba(239,68,68,.12)' }
+  return { label, color: '#4ade80', bg: 'rgba(34,197,94,.1)' }
 }
 
 function getBestCandidate(route: LocalRoute, drivers: LocalDriver[], usedIds: Set<string>) {
@@ -174,8 +175,20 @@ function getBestCandidate(route: LocalRoute, drivers: LocalDriver[], usedIds: Se
   }
   const base = drivers.filter(d => !usedIds.has(d.driverId) && vehicleAllowed(d.vehicleType, route.requiredVehicleType))
   // Tenta com cluster exato primeiro; se não achar, usa todos os disponíveis
-  const withCluster = base.filter(d => d.clusters.some(c => normCluster(c) === normCluster(route.cluster)))
+  // Em junção de clusters, prefere quem atende todos; senão, quem atende pelo menos um.
+  const full = base.filter(d => coversCluster(d.clusters, route.cluster, 'all'))
+  const withCluster = full.length ? full : base.filter(d => coversCluster(d.clusters, route.cluster))
   return withCluster.sort(sorter)[0] ?? null
+}
+
+// Quantos motoristas não bloqueados atendem cada cluster, calculado em uma passada.
+function countByCluster(drivers: LocalDriver[]) {
+  const m = new Map<string, number>()
+  for (const d of drivers) {
+    if (d.isBlocked) continue
+    for (const c of new Set(d.clusters.map(normCluster))) m.set(c, (m.get(c) ?? 0) + 1)
+  }
+  return m
 }
 
 function computeEffective(routes: LocalRoute[], drivers: LocalDriver[], overrides: Map<string, LocalDriver>) {
@@ -184,13 +197,12 @@ function computeEffective(routes: LocalRoute[], drivers: LocalDriver[], override
   for (const [rid, d] of overrides) { map.set(rid, d); usedIds.add(d.driverId) }
 
   const disponivel = routes.filter(r => r.status === 'DISPONIVEL')
-  const sorted = [...disponivel].sort((a, b) => {
-    const count = (r: LocalRoute) => {
-      const rv = normalizeVehicle(r.requiredVehicleType)
-      return drivers.filter(d => d.clusters.some(c => normCluster(c) === normCluster(r.cluster)) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')).length
-    }
-    return count(a) - count(b)
-  })
+  // Conta os candidatos de cada rota uma vez só (e não a cada comparação da ordenação).
+  const candidates = new Map(disponivel.map(r => {
+    const rv = normalizeVehicle(r.requiredVehicleType)
+    return [r.id, drivers.filter(d => coversCluster(d.clusters, r.cluster) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')).length] as const
+  }))
+  const sorted = [...disponivel].sort((a, b) => candidates.get(a.id)! - candidates.get(b.id)!)
 
   for (const route of sorted) {
     if (map.has(route.id)) continue
@@ -550,7 +562,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
         if (usedRouteIds.has(r.id)) return false
         if (!vehicleAllowed(vehicle, r.requiredVehicleType)) return false
         if (hasAll) return true
-        return clusters.some(c => normCluster(c) === normCluster(r.cluster))
+        return coversCluster(clusters, r.cluster)
       }).sort((a, b) => vehiclePriority(vehicle, a.requiredVehicleType) - vehiclePriority(vehicle, b.requiredVehicleType))
 
       const best = compatible[0] ?? null
@@ -757,7 +769,7 @@ function ThreePlPanel({ routes, selectedShift, agencies, excludedRouteIds, assig
       .filter(d => d.shift === selectedShift)
       .sort((a, b) => Number(a.anyRegion) - Number(b.anyRegion))
     for (const d of demands) {
-      const pool = availableRoutes.filter(r => !used.has(r.id) && (d.anyRegion || normRegion(r.cluster) === normRegion(d.region)))
+      const pool = availableRoutes.filter(r => !used.has(r.id) && (d.anyRegion || splitClusters(r.cluster).some(c => normRegion(c) === normRegion(d.region))))
       const take = pool.slice(0, d.quantity)
       take.forEach(r => { used.add(r.id); rows.push({ region: d.anyRegion ? `${r.cluster} (ALL)` : d.region, route: r }) })
       if (take.length < d.quantity) shortfalls.push({ region: d.region, requested: d.quantity, assigned: take.length })
@@ -1149,6 +1161,8 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     const callUpDriverMap = new Map((callUp?.byDriver ?? []).map(d => [d.driverId, d]))
     // WorkPreference é a fonte autoritária de clusters: reflete onde o motorista declarou disponibilidade
     const workPrefClusters = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d.clusters]))
+    // No-show vem do campo "No Show Time" do relatório de disponibilidade
+    const workPrefNoShow = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d.noShowTime ?? 0]))
 
     return queue.map(q => {
       const reg = registryMap.get(q.driverId)
@@ -1169,9 +1183,8 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         : isRegistryBlocked ? 'SPX Blocklist' : null
 
       const dsPercent = dsReal !== null ? dsReal * 100 : 50
-      const declineCount = cu?.declined ?? 0
-      const noShowCount = cu?.timeoutCount ?? 0
-      const priorityScore = calculatePriorityScore(dsPercent, declineCount, noShowCount)
+      const noShowCount = workPrefNoShow.get(q.driverId) ?? 0
+      const priorityScore = calculatePriorityScore(dsPercent, declineRatePercent(cu), noShowCount)
       const lastAccepted = cu?.lastAcceptedDate ?? null
       const days = daysSinceLastRoute(lastAccepted)
 
@@ -1194,7 +1207,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
       return b.priorityScore - a.priorityScore
     })
-  }, [queue, registry, dsDrivers, forwardOrder, manualBlocks, callUp])
+  }, [queue, registry, dsDrivers, forwardOrder, manualBlocks, callUp, workPref])
 
   // Rotas do turno atual que foram recusadas no Call Up
   const declinedAtIds = useMemo(() => {
@@ -1202,12 +1215,25 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     const declined = new Set<string>()
     for (const fc of callUp.firstCallAnalysis.routes) {
       // 'Pending' (sem resposta) também é no-show
-      if (fc.status !== 'Accepted' && fc.shift === selectedShift) {
+      if (!isAcceptedInCallUp(fc) && fc.shift === selectedShift && firstCallDay(fc) === selectedDay) {
         declined.add(fc.atId)
       }
     }
     return declined
-  }, [callUp, selectedShift])
+  }, [callUp, selectedShift, selectedDay])
+
+  const acceptedAtIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (isAcceptedInCallUp(fc)) s.add(fc.atId)
+    return s
+  }, [callUp])
+
+  // ATs cuja chamada mais recente ainda está sem resposta
+  const pendingAtIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if ((fc.finalStatus ?? fc.status) === 'Pending') s.add(fc.atId)
+    return s
+  }, [callUp])
 
   // Motoristas bloqueados: têm rota no MESMO turno (vem do routeStore do turno atual)
   const alreadyRoutedIds = useMemo(() => {
@@ -1246,11 +1272,12 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   // Rotas a mostrar: apenas as que foram recusadas no Call Up (se callUp disponível), senão todas DISPONIVEL
   // ignoredAtIds é local (não persiste) — remove da view sem apagar do routeStore
   const noShowRoutes = useMemo(() => {
-    const base = (!callUp || declinedAtIds.size === 0)
+    // Com Call Up: entra tudo o que não está aceito (recusada, cancelada ou ainda sem resposta). Sem Call Up: só as disponíveis.
+    const base = !callUp
       ? routes.filter(r => r.status === 'DISPONIVEL')
-      : routes.filter(r => declinedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
+      : routes.filter(r => !acceptedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
     return base.filter(r => !ignoredAtIds.has(r.atId))
-  }, [routes, callUp, declinedAtIds, ignoredAtIds, forcedAtIds])
+  }, [routes, callUp, acceptedAtIds, ignoredAtIds, forcedAtIds])
 
   // Drivers ordenados: bloqueados por último, depois já atribuídos nesta sessão (FIFO — quem foi primeiro fica por último), depois por score
   const orderedDrivers = useMemo(() => {
@@ -1288,6 +1315,8 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
   // Fila de motoristas: disponíveis e sem rota no turno atual
   const queueDrivers = orderedDrivers.filter(d => !alreadyRoutedIds.has(d.driverId))
+  const queueClusterCount = useMemo(() => countByCluster(orderedDrivers.filter(d => !alreadyRoutedIds.has(d.driverId))), [orderedDrivers, alreadyRoutedIds])
+  const availableClusterCount = useMemo(() => countByCluster(availableDrivers), [availableDrivers])
   const alreadyRoutedDrivers = orderedDrivers.filter(d => alreadyRoutedIds.has(d.driverId))
 
   // ── Fiorino tab ───────────────────────────────────────────────────────────
@@ -1319,12 +1348,12 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       const result = new Map<string, LocalDriver>()
       const usedIds = new Set<string>()
       const sorted = [...targetRoutes].sort((a, b) => {
-        const ca = pool.filter(d => d.clusters.some(c => normCluster(c) === normCluster(a.cluster))).length
-        const cb = pool.filter(d => d.clusters.some(c => normCluster(c) === normCluster(b.cluster))).length
+        const ca = pool.filter(d => coversCluster(d.clusters, a.cluster)).length
+        const cb = pool.filter(d => coversCluster(d.clusters, b.cluster)).length
         return ca - cb
       })
       for (const route of sorted) {
-        const withCluster = pool.filter(d => !usedIds.has(d.driverId) && d.clusters.some(c => normCluster(c) === normCluster(route.cluster)))
+        const withCluster = pool.filter(d => !usedIds.has(d.driverId) && coversCluster(d.clusters, route.cluster))
         const candidate = withCluster[0]
         if (candidate) { result.set(route.atId, candidate); usedIds.add(candidate.driverId) }
       }
@@ -1646,7 +1675,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const driverCountForRoute = (route: LocalRoute) => {
     const rv = normalizeVehicle(route.requiredVehicleType)
     return availableDrivers.filter(d =>
-      d.clusters.some(c => normCluster(c) === normCluster(route.cluster)) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')
+      coversCluster(d.clusters, route.cluster) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO')
     ).length
   }
 
@@ -1703,10 +1732,18 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
               onClick={() => { setReportSnapshot(buildReportSnapshot()); setReportCopied(false); setReportModal(true) }}
               style={{ fontSize: 12, color: '#a78bfa', borderColor: 'rgba(167,139,250,.35)' }}
             >📊 Gerar Report</Btn>
-            <Btn
-              onClick={() => void handleConfirmAssign()}
-              disabled={isAssigning || effectiveAssignments.size === 0}
-            >{isAssigning ? '⏳ Atribuindo...' : `✦ Atribuir (${effectiveAssignments.size})`}</Btn>
+            {activeTab === 'fiorino' && fcSection === 'fiorino' ? (
+              <Btn
+                onClick={() => void handleFioAssign()}
+                disabled={fioAssigning || fiorino.assignments.size === 0}
+                style={{ background: '#d97706' }}
+              >{fioAssigning ? '⏳ Atribuindo...' : `🚐 Atribuir Fiorino (${fiorino.assignments.size})`}</Btn>
+            ) : (
+              <Btn
+                onClick={() => void handleConfirmAssign()}
+                disabled={isAssigning || effectiveAssignments.size === 0}
+              >{isAssigning ? '⏳ Atribuindo...' : `✦ Atribuir (${effectiveAssignments.size})`}</Btn>
+            )}
             <HeaderMenu
               spxConfigured={spxConfigured}
               onSpx={() => { setSpxCurlInput(''); setSpxModalOpen(true) }}
@@ -1858,6 +1895,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                       <td style={TD}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <Chip label="Atribuída" color="#4ade80" bg="rgba(34,197,94,.1)" small />
+                          {callUp && !declinedAtIds.has(route.atId) && <Chip label="⏳ Sem aceite" color="#fbbf24" bg="rgba(245,158,11,.1)" small />}
                           <Btn variant="ghost" onClick={() => handleReturnRoute(route)} style={{ fontSize: 11 }}>↩ Devolver</Btn>
                           <Btn variant="ghost" onClick={() => setIgnoredAtIds(s => new Set([...s, route.atId]))} style={{ fontSize: 10, color: '#64748b', padding: '2px 6px' }}>✕</Btn>
                         </div>
@@ -1910,7 +1948,9 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                     </td>
                     <td style={TD}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <Chip label="Disponível" color="#60a5fa" bg="rgba(59,130,246,.08)" small />
+                        {pendingAtIds.has(route.atId)
+                          ? <Chip label="⏳ Pendente" color="#fbbf24" bg="rgba(245,158,11,.1)" small />
+                          : <Chip label="Disponível" color="#60a5fa" bg="rgba(59,130,246,.08)" small />}
                         <Btn variant="ghost" onClick={e => { e.stopPropagation(); setIgnoredAtIds(s => new Set([...s, route.atId])) }} style={{ fontSize: 10, color: '#64748b', padding: '2px 6px' }}>✕</Btn>
                       </div>
                     </td>
@@ -1938,7 +1978,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: '#8892a4' }}>Todos os motoristas já receberam rota.</td></tr>
               ) : filteredDrivers.map((driver, idx) => {
                 const dsMeta = getDsMeta(driver.dsReal)
-                const clusterCount = (c: string) => queueDrivers.filter(d => !d.isBlocked && d.clusters.some(dc => normCluster(dc) === normCluster(c))).length
+                const clusterCount = (c: string) => queueClusterCount.get(normCluster(c)) ?? 0
                 return (
                   <tr key={driver.driverId} style={{ borderBottom: '1px solid #1e2130', background: driver.isBlocked ? 'rgba(239,68,68,.03)' : 'transparent' }}>
                     <td style={{ ...TD, color: '#64748b', fontFamily: 'monospace', width: 32 }}>{idx + 1}</td>
@@ -2080,13 +2120,6 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                     : 'Fiorino em rotas obrigatórias + qualquer rota disponível para aproveitar o restante da fila'}
                 </p>
               </div>
-              <Btn
-                onClick={() => void handleFioAssign()}
-                disabled={fioAssigning || fiorino.assignments.size === 0}
-                style={{ background: fioAssigning ? undefined : '#d97706' }}
-              >
-                {fioAssigning ? '⏳ Atribuindo...' : `🚐 Atribuir Fiorino (${fiorino.assignments.size})`}
-              </Btn>
             </div>
 
             {/* Stats Fiorino */}
@@ -2271,7 +2304,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         const currentDriver = effectiveAssignments.get(assignModal.id)
         const rv = normalizeVehicle(assignModal.requiredVehicleType)
         const _candidateBase = availableDrivers.filter(d => !alreadyRoutedIds.has(d.driverId) && (rv === 'MOTO' || normalizeVehicle(d.vehicleType) !== 'MOTO'))
-        const _withCluster = _candidateBase.filter(d => d.clusters.some(c => normCluster(c) === normCluster(assignModal.cluster)))
+        const _withCluster = _candidateBase.filter(d => coversCluster(d.clusters, assignModal.cluster))
         const candidates = (_withCluster.length > 0 ? _withCluster : _candidateBase)
           .sort((a, b) => {
             if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
@@ -2294,7 +2327,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 {candidates.map(driver => {
                   const dsMeta = getDsMeta(driver.dsReal)
                   const isSelected = currentDriver?.driverId === driver.driverId
-                  const clusterCount = (c: string) => availableDrivers.filter(d => !d.isBlocked && d.clusters.some(dc => normCluster(dc) === normCluster(c))).length
+                  const clusterCount = (c: string) => availableClusterCount.get(normCluster(c)) ?? 0
                   return (
                     <div key={driver.driverId} style={{ border: `1px solid ${isSelected ? '#7c3aed' : driver.isBlocked ? 'rgba(239,68,68,.25)' : '#2d3048'}`, borderRadius: 8, padding: '10px 14px', background: isSelected ? 'rgba(124,58,237,.05)' : driver.isBlocked ? 'rgba(239,68,68,.04)' : 'rgba(255,255,255,.015)', display: 'flex', alignItems: 'center', gap: 12 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>

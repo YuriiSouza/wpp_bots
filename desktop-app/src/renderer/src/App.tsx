@@ -33,7 +33,7 @@ import { getGlobalConfig, driverMatchesShift } from './lib/globalConfig'
 import { findLatestFile, FILE_PATTERNS, base64ToArrayBuffer } from './lib/fileFinder'
 import { noShowQueueStore } from './lib/noShowQueueStore'
 import type { QueueDriver } from './lib/noShowQueueStore'
-import { calculatePriorityScore, daysSinceLastRoute } from './lib/priorityScore'
+import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from './lib/priorityScore'
 import type { Shift } from './lib/globalConfig'
 import { checkForUpdate, type UpdateInfo } from './lib/updateChecker'
 
@@ -190,7 +190,7 @@ export default function App() {
           const ds = dsMap.get(d.driverId)
           const cu = callUpMap.get(d.driverId)
           const dsPercent = ds?.DS_Real != null ? ds.DS_Real * 100 : 50
-          const priorityScore = calculatePriorityScore(dsPercent, cu?.declined ?? 0, cu?.timeoutCount ?? 0)
+          const priorityScore = calculatePriorityScore(dsPercent, declineRatePercent(cu), d.noShowTime ?? 0)
           return {
             driverId: d.driverId,
             name: d.driverName || d.driverId,

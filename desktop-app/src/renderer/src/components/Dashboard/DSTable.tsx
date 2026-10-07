@@ -14,7 +14,7 @@ function StatusBadge({ status }: { status: string }) {
 function DsBadge({ value }: { value: number | null }) {
   if (value === null) return <span className="badge-gray">—</span>
   const pctVal = value * 100
-  const cls = pctVal >= 97 ? 'badge-green' : pctVal >= 93 ? 'badge-blue' : pctVal >= 85 ? 'badge-amber' : 'badge-red'
+  const cls = pctVal >= 95 ? 'badge-green' : 'badge-red'
   return <span className={cls}>{(pctVal).toFixed(2)}%</span>
 }
 

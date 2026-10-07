@@ -10,7 +10,7 @@ type Tab = 'geral' | 'motoristas' | 'cluster' | 'rotatividade' | 'spr'
 type SortKey = 'DS_Real' | 'route_count' | 'Media_Performance' | 'Nivel_Entrega_Dia'
 
 const pct = (v: number | null, dec = 2) => (v === null ? '—' : `${(v * 100).toFixed(dec)}%`)
-const dsBadge = (v: number | null) => (v === null ? C.dim : v * 100 >= 97 ? C.green : v * 100 >= 93 ? C.blue : v * 100 >= 85 ? C.yellow : C.red)
+const dsBadge = (v: number | null) => (v === null ? C.dim : v * 100 >= 95 ? C.green : C.red)
 const perfColor = (p: number) => (p >= 96 ? '#22c55e' : p >= 93 ? '#3b82f6' : p >= 85 ? '#f59e0b' : '#ef4444')
 const bucketColor = (l: string) => (l.startsWith('<') ? '#ef4444' : l.startsWith('80') || l.startsWith('85') ? '#f59e0b' : l.startsWith('90') || l.startsWith('93') ? '#3b82f6' : '#22c55e')
 const trend = (s: string) => (s === 'Melhorando' ? { icon: '↑', color: C.green } : s === 'Piorando' ? { icon: '↓', color: C.red } : { icon: '→', color: C.sub })

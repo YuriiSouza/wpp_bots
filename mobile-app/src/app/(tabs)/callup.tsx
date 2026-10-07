@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { coversCluster } from '@/lib/clusterMatch'
 import { FlatList, View } from 'react-native'
 import { Bar, Btn, C, Card, Chip, Empty, Input, NeedsData, Row, Segmented, SHIFT_COLOR, Sheet, Stat, StatRow, T, copy, fmtDate, rateColor } from '@/components/ui'
 import { DayBars } from '@/components/DayBars'
@@ -25,7 +26,7 @@ function regionCheck(r: FirstCallRoute, wp: Map<string, string[]>) {
   const dc = wp.get(r.driverId)
   if (!dc) return { label: 'sem dados WP', color: C.dim, clusters: null as string[] | null, hasAll: false }
   const hasAll = dc.some(c => c.toUpperCase() === 'ALL')
-  const has = hasAll || dc.some(c => c.toLowerCase() === r.cluster.toLowerCase())
+  const has = hasAll || coversCluster(dc, r.cluster)
   return { label: hasAll ? '✓ ALL' : has ? '✓ tem disponibilidade' : '✗ fora mesmo', color: has ? C.green : C.red, clusters: dc, hasAll }
 }
 
@@ -71,7 +72,7 @@ function ReportSheet({ open, onClose, routes, periodLabel, shiftFilter, wp, file
   for (const r of routes) { if (!r.cluster) continue; cm[r.cluster] ??= { total: 0, accepted: 0 }; cm[r.cluster].total++; if (r.status === 'Accepted') cm[r.cluster].accepted++ }
   const clusters = Object.entries(cm).map(([cluster, s]) => ({ cluster, rate: s.total > 0 ? Math.round((s.accepted / s.total) * 100) : 0 })).sort((a, b) => a.rate - b.rate).slice(0, 12)
   const declinedRegion = routes.filter(r => r.status === 'Declined' && r.declineReason === REGION_REASON)
-  const mismatch = declinedRegion.filter(r => { const dc = wp.get(r.driverId); return !!dc && !dc.some(c => c.toUpperCase() === 'ALL') && dc.some(c => c.toLowerCase() === r.cluster.toLowerCase()) })
+  const mismatch = declinedRegion.filter(r => { const dc = wp.get(r.driverId); return !!dc && !dc.some(c => c.toUpperCase() === 'ALL') && coversCluster(dc, r.cluster) })
   const maxReason = reasons[0]?.[1] ?? 1
   return (
     <Sheet open={open} onClose={onClose} title={<View><T size={16} bold>Relatório de Call Up</T><T size={11} color={C.dim}>{periodLabel}{shiftFilter !== 'all' ? ` · Turno ${shiftFilter}` : ''}</T></View>}>
@@ -133,7 +134,7 @@ export default function CallUpScreen() {
   const [dateFrom, setDateFrom] = useState(initial.from)
   const [dateTo, setDateTo] = useState(initial.to)
   const [shiftFilter, setShiftFilter] = useState<ShiftF>('all')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'Accepted' | 'Declined'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'Accepted' | 'Declined' | 'Pending'>('all')
   const [reasonFilter, setReasonFilter] = useState('all')
   const [driverView, setDriverView] = useState(false)
   const [routeSearch, setRouteSearch] = useState('')
@@ -153,7 +154,7 @@ export default function CallUpScreen() {
     if (shiftFilter === 'all') return fc.byDate.filter(d => inPeriod(d.date)).map(d => ({ date: d.date, value: d.acceptanceRate, accepted: d.accepted, total: d.total }))
     const m = new Map<string, { total: number; accepted: number }>()
     for (const r of fc.routes) {
-      if (r.shift !== shiftFilter || r.status === 'Cancelled') continue
+      if (r.shift !== shiftFilter || r.status === 'Cancelled' || r.status === 'Pending') continue
       const d = routeDate(r)
       if (!d || !inPeriod(d)) continue
       const e = m.get(d) ?? { total: 0, accepted: 0 }
@@ -165,14 +166,14 @@ export default function CallUpScreen() {
   }, [fc, dateFrom, dateTo, shiftFilter])
 
   const kpi = useMemo(() => {
-    let accepted = 0, declined = 0
+    let accepted = 0, declined = 0, pending = 0
     for (const r of fc.routes) {
       if (shiftFilter !== 'all' && r.shift !== shiftFilter) continue
       if (!inPeriod(routeDate(r))) continue
-      if (r.status === 'Accepted') accepted++; else if (r.status === 'Declined') declined++
+      if (r.status === 'Accepted') accepted++; else if (r.status === 'Declined') declined++; else if (r.status === 'Pending') pending++
     }
     const total = accepted + declined
-    return { total, accepted, declined, rate: total > 0 ? Math.round((accepted / total) * 1000) / 10 : 0 }
+    return { total, accepted, declined, pending, rate: total > 0 ? Math.round((accepted / total) * 1000) / 10 : 0 }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fc.routes, shiftFilter, dateFrom, dateTo])
 
@@ -230,9 +231,10 @@ export default function CallUpScreen() {
       </Row>
       <Segmented<ShiftF> value={shiftFilter} onChange={setShiftFilter} options={[{ value: 'all', label: 'Todos turnos' }, { value: 'AM', label: 'AM' }, { value: 'PM1', label: 'PM1' }, { value: 'PM2', label: 'PM2' }]} colors={SHIFT_COLOR} />
       <StatRow>
-        <Stat label="ATs analisadas" value={kpi.total} color={C.blue} />
+        <Stat label="ATs respondidas" value={kpi.total} color={C.blue} />
         <Stat label="1ª aceita" value={kpi.accepted} color={C.green} />
         <Stat label="1ª recusada" value={kpi.declined} color={C.red} />
+        {kpi.pending > 0 && <Stat label="Aguardando resposta" value={kpi.pending} color={C.yellow} />}
         <Stat label="Taxa de aceite" value={`${kpi.rate}%`} color={rateColor(kpi.rate)} />
       </StatRow>
       {fc.byDate.length > 0 && (
@@ -253,7 +255,7 @@ export default function CallUpScreen() {
       {!driverView ? (
         <>
           <Input value={routeSearch} onChangeText={setRouteSearch} placeholder="🔍 AT ID, motorista ou cluster" />
-          <Segmented value={statusFilter} onChange={setStatusFilter} options={[{ value: 'all', label: 'Todas' }, { value: 'Accepted', label: 'Aceitas' }, { value: 'Declined', label: 'Recusadas' }]} colors={{ Accepted: C.green, Declined: C.red }} />
+          <Segmented value={statusFilter} onChange={setStatusFilter} options={[{ value: 'all', label: 'Todas' }, { value: 'Accepted', label: 'Aceitas' }, { value: 'Declined', label: 'Recusadas' }, { value: 'Pending', label: 'Pendentes' }]} colors={{ Pending: C.yellow, Accepted: C.green, Declined: C.red }} />
           <Row>
             <T size={12} color={C.dim}>{filteredRoutes.length} ATs</T>
             {allReasons.length > 0 && <Btn small variant="outline" onPress={() => setReasonOpen(true)}>{reasonFilter === 'all' ? 'Todos os motivos ▾' : `${reasonFilter} ▾`}</Btn>}
@@ -292,7 +294,7 @@ export default function CallUpScreen() {
               <Card style={{ borderColor: r.status === 'Declined' ? 'rgba(239,68,68,.25)' : C.border }}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <T mono bold size={12}>{r.atId}</T>
-                  <Chip label={r.status === 'Accepted' ? 'Aceita' : r.status === 'Declined' ? 'Recusada' : 'Cancelada'} color={r.status === 'Accepted' ? C.green : r.status === 'Declined' ? C.red : C.sub} />
+                  <Chip label={r.status === 'Accepted' ? 'Aceita' : r.status === 'Declined' ? 'Recusada' : r.status === 'Pending' ? 'Pendente' : 'Cancelada'} color={r.status === 'Accepted' ? C.green : r.status === 'Declined' ? C.red : r.status === 'Pending' ? C.yellow : C.sub} />
                 </Row>
                 <T size={12} color={C.sub}>{r.cluster || '—'} · {r.triggerTime.slice(0, 16).replace(/\//g, '-')}</T>
                 <T size={12}>{r.driverName} <T size={10} mono color={C.dim}>{r.driverId}</T>{m?.vehicleType ? <T size={10} color={C.faint}>  {m.vehicleType}</T> : null}{m?.ds != null ? <T size={10} color={C.faint}>  DS {(m.ds * 100).toFixed(2)}%</T> : null}</T>

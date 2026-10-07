@@ -3,6 +3,7 @@ import { ActivityIndicator, AppState, Pressable, Text } from 'react-native'
 import { router } from 'expo-router'
 import { storage } from './storage'
 import { getLastSync, getSheetsConfig, syncWithSheets } from './sheetsSync'
+import { leaveDemo } from './demoData'
 
 interface SyncState {
   syncing: boolean
@@ -41,6 +42,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    // O modo demonstração não tem mais botão: se ficou ativo, limpa os dados fictícios e busca os reais.
+    if (leaveDemo()) storage.clearDirty()
     // eslint-disable-next-line react-hooks/set-state-in-effect -- starting the external Sheets sync on launch
     sync()
     const sub = AppState.addEventListener('change', st => { if (st === 'active') sync() })

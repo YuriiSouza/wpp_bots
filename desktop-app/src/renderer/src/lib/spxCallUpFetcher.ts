@@ -239,11 +239,14 @@ export function spxNotificationsToCallUp(
 
   // First call analysis: one entry per AT ID (earliest trigger_time)
   const atMap = new Map<string, SpxNotification>()
+  const latestByAt = new Map<string, SpxNotification>()
   for (const n of notifications) {
     const atId = n.assignment_task_id
     if (!atId) continue
     const existing = atMap.get(atId)
     if (!existing || n.trigger_time < existing.trigger_time) atMap.set(atId, n)
+    const last = latestByAt.get(atId)
+    if (!last || n.trigger_time >= last.trigger_time) latestByAt.set(atId, n)
   }
 
   const firstDriverMap = new Map<string, FirstCallDriverStats>()
@@ -290,7 +293,10 @@ export function spxNotificationsToCallUp(
 
       const shift = slotToShift(n.time_slot ?? '')
       const triggerTimeStr = n.trigger_time ? new Date(n.trigger_time * 1000).toISOString().replace('T', ' ').slice(0, 19) : ''
-      return { atId, driverId, driverName, status, declineReason: reason, triggerTime: triggerTimeStr, cluster, shift }
+      const date = n.notification_date ? tsToDateStr(n.notification_date) : undefined
+      const lastCall = latestByAt.get(atId)
+      const finalStatus = lastCall ? statusLabel(lastCall) : status
+      return { atId, driverId, driverName, status, declineReason: reason, triggerTime: triggerTimeStr, cluster, shift, date, finalStatus }
     })
 
   for (const fd of firstDriverMap.values()) {

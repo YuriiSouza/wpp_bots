@@ -28,7 +28,7 @@ export const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
 export const SHIFT_COLOR: Record<Shift, string> = { AM: '#fbbf24', PM1: '#60a5fa', PM2: '#a78bfa' }
 
 export const rateColor = (r: number) => r >= 70 ? C.green : r >= 40 ? C.yellow : C.red
-export const dsColor = (ds: number | null | undefined) => ds == null ? C.dim : ds >= 0.99 ? C.green : ds >= 0.97 ? C.yellow : C.red
+export const dsColor = (ds: number | null | undefined) => ds == null ? C.dim : ds >= 0.95 ? C.green : C.red
 export const fmtDate = (iso: string) => { const [y, m, d] = iso.slice(0, 10).split('-'); return d ? `${d}/${m}/${y}` : iso }
 
 export function Screen({ children, scroll = true, style }: { children: ReactNode; scroll?: boolean; style?: StyleProp<ViewStyle> }) {

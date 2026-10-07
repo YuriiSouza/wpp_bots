@@ -10,19 +10,26 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   noShowWeight: 30,
 }
 
+/** Taxa de recusa no Call Up, em % (recusas ÷ chamadas respondidas, sem contar canceladas nem pendentes). Sem chamadas = 0. */
+export function declineRatePercent(cu?: { declined: number; total: number; cancelled?: number; pending?: number } | null): number {
+  if (!cu) return 0
+  const calls = cu.total - (cu.cancelled ?? 0) - (cu.pending ?? 0)
+  return calls > 0 ? (cu.declined / calls) * 100 : 0
+}
+
 /**
  * dsPercent: 0–100
- * declineCount: quantidade absoluta de recusas (cada recusa desconta 10 pts, cap em 100)
- * noShowCount: quantidade absoluta de noshows (cada noshow desconta 10 pts, cap em 100)
+ * declineRate: taxa de recusa no Call Up, 0–100 (use declineRatePercent)
+ * noShowCount: campo "No Show Time" do relatório de disponibilidade (cada noshow desconta 10 pts, cap em 100)
  */
 export function calculatePriorityScore(
   dsPercent: number,
-  declineCount: number,
+  declineRate: number,
   noShowCount: number,
   weights: ScoreWeights = DEFAULT_WEIGHTS,
 ): number {
   const total = Math.max(1, weights.dsWeight + weights.declineWeight + weights.noShowWeight)
-  const declineComponent = Math.max(0, 100 - declineCount * 10)
+  const declineComponent = Math.max(0, 100 - declineRate)
   const noShowComponent  = Math.max(0, 100 - noShowCount  * 10)
   const score =
     (dsPercent          * weights.dsWeight +
@@ -41,5 +48,6 @@ export function daysSinceLastRoute(lastRouteDateRaw: string | null | undefined):
     .slice(0, 10)
   const d = new Date(clean + 'T12:00:00')
   if (isNaN(d.getTime())) return 0
-  return Math.floor((Date.now() - d.getTime()) / 86_400_000)
+  // Antes do meio-dia de hoje a diferença fica negativa; nunca menos que 0.
+  return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86_400_000))
 }

@@ -111,7 +111,7 @@ export default function VisaoGeral() {
               </Row>
               {r.assignedDriverId ? (
                 <View style={{ gap: 3 }}>
-                  <T size={12} bold>{r.assignedDriverName || '—'} <T size={10} mono color={C.dim}>{r.assignedDriverId}</T>{r.ds !== null ? <T size={11} color={r.ds * 100 >= 90 ? C.green : r.ds * 100 >= 70 ? '#a3e635' : r.ds * 100 >= 30 ? C.yellow : C.red}>  DS {(r.ds * 100).toFixed(1)}%</T> : null}</T>
+                  <T size={12} bold>{r.assignedDriverName || '—'} <T size={10} mono color={C.dim}>{r.assignedDriverId}</T>{r.ds !== null ? <T size={11} color={r.ds * 100 >= 95 ? C.green : C.red}>  DS {(r.ds * 100).toFixed(1)}%</T> : null}</T>
                   <PhoneActions phone={r.phone} />
                 </View>
               ) : null}

@@ -148,6 +148,10 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
   const unknownLetter = notArrived.filter(n => n.status === 'unknown-letter')
 
   const [reportOpen, setReportOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const q = search.trim().toLowerCase()
+  const shownRows = !q ? rows : rows.filter(({ e }) => e.driverName.toLowerCase().includes(q) || e.driverId.includes(q) || e.atId.toLowerCase().includes(q))
+  const shownNotArrived = !q ? notArrived : notArrived.filter(n => n.name.toLowerCase().includes(q) || n.driverId.includes(q) || n.atId.toLowerCase().includes(q))
   const [activeView, setActiveView] = useState<'lista' | 'dashboard'>('lista')
 
   // Timeline de chegadas (agrupada por slots de 15 min)
@@ -439,6 +443,18 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
             ))}
           </div>
 
+          {/* Busca */}
+          <div style={{ padding: '0 20px 10px', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              placeholder="🔍  Buscar motorista, ID ou AT..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ width: 280, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 7, padding: '6px 12px', fontSize: 12, outline: 'none' }}
+            />
+            {q && <span style={{ fontSize: 11, color: '#8892a4' }}>{shownRows.length} na fila · {shownNotArrived.length} não chegaram</span>}
+            {q && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}>✕ limpar</button>}
+          </div>
+
           {/* Copy actions */}
           <div style={{ display: 'flex', gap: 8, padding: '0 20px 12px', flexWrap: 'wrap', alignItems: 'center' }}>
             <Btn outline color="#f87171" onClick={() => copy('op', phones(overdue.map(n => n.driverId)))} disabled={overdue.length === 0}>📱 {lbl('op', `Tel. atrasados (${overdue.length})`)}</Btn>
@@ -452,7 +468,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
           </div>
 
           {/* Fila (quem chegou) */}
-          <p style={{ margin: '0 0 6px', padding: '0 20px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Na fila ({rows.length})</p>
+          <p style={{ margin: '0 0 6px', padding: '0 20px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Na fila ({q ? `${shownRows.length} de ${rows.length}` : rows.length})</p>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 24 }}>
             <thead style={{ position: 'sticky', top: 0, background: '#0f1117', zIndex: 1 }}>
               <tr style={{ borderBottom: '1px solid #2d3048' }}>
@@ -460,7 +476,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ e, w }) => (
+              {shownRows.map(({ e, w }) => (
                 <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent' }}>
                   <td style={TD}>
                     <span style={{ fontWeight: 500 }}>{e.driverName}</span>
@@ -488,7 +504,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
           {/* Não chegaram (aguardando + atrasados) */}
           <div style={{ padding: '0 20px 24px' }}>
             <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>
-              Não chegaram ({notArrived.length}) — <span style={{ color: '#f87171' }}>{overdue.length} atrasados</span> · <span style={{ color: '#fbbf24' }}>{waiting.length} aguardando</span>
+              Não chegaram ({q ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <span style={{ color: '#f87171' }}>{overdue.length} atrasados</span> · <span style={{ color: '#fbbf24' }}>{waiting.length} aguardando</span>
             </p>
             {expected.size === 0 ? (
               <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Nenhuma rota atribuída neste dia/turno na tela Atribuição — sem base para comparar quem não chegou.</p>
@@ -502,7 +518,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
                   </tr>
                 </thead>
                 <tbody>
-                  {notArrived.map(n => (
+                  {shownNotArrived.map(n => (
                     <tr key={n.driverId} style={{ borderBottom: '1px solid #1e2130', background: n.status === 'overdue' ? 'rgba(239,68,68,.05)' : 'transparent' }}>
                       <td style={TD}>
                         <span style={{ fontWeight: 500 }}>{n.name || n.driverId}</span>

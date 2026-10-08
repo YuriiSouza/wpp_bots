@@ -124,7 +124,11 @@ export default function Atribuicao() {
         <Btn loading={ns.fioAssigning} disabled={ns.fiorino.assignments.size === 0} style={{ backgroundColor: '#d97706', borderColor: '#d97706' }} onPress={() => void ns.handleFioAssign()}>
           {`🚐 Atribuir Fiorino (${ns.fiorino.assignments.size})`}
         </Btn>
-      ) : (
+      ) : tab === 'fc' && fcSection === 'novatos' ? (
+        <Btn loading={ns.isAssigning} disabled={ns.novatoAssignments.size === 0} style={{ backgroundColor: '#8b5cf6', borderColor: '#8b5cf6' }} onPress={() => void ns.handleConfirmAssign(ns.novatoAssignments)}>
+          {`🆕 Atribuir novatos (${ns.novatoAssignments.size})${ns.spxConfigured ? ' no SPX' : ''}`}
+        </Btn>
+      ) : tab === 'fc' && fcSection === '3pl' ? null : (
   <Btn loading={ns.isAssigning} disabled={ns.effectiveAssignments.size === 0} onPress={() => void ns.handleConfirmAssign()}>
         {ns.isAssigning ? 'Atribuindo...' : `✦ Atribuir (${ns.effectiveAssignments.size})${ns.spxConfigured ? ' no SPX' : ''}`}
       </Btn>

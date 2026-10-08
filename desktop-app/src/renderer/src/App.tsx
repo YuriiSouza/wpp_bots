@@ -466,7 +466,7 @@ function SpxModal({ onClose, onSaved, onRemoved }: { onClose: () => void; onSave
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 2000, background: 'rgba(0,0,0,.75)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
-      <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 12, padding: '20px 24px', width: '100%', maxWidth: 540, display: 'flex', flexDirection: 'column', gap: 14 }} onClick={e => e.stopPropagation()}>
+      <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 12, padding: '20px 24px', width: '100%', maxWidth: 540, maxHeight: '90vh', overflowY: 'auto', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 14 }} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>🔑 Credenciais SPX</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: 18, cursor: 'pointer' }}>×</button>
@@ -480,7 +480,7 @@ function SpxModal({ onClose, onSaved, onRemoved }: { onClose: () => void; onSave
           placeholder="curl 'https://spx.shopee.com.br/...' -H 'x-csrftoken: ...' -b '...'"
           rows={8}
           autoFocus
-          style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px 12px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
+          style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px 12px', resize: 'vertical', width: '100%', maxWidth: '100%', minWidth: 0, display: 'block', boxSizing: 'border-box', whiteSpace: 'pre-wrap', wordBreak: 'break-all', overflowX: 'hidden' }}
         />
         {curlInput && parsed && (
           <div style={{ background: hasMin ? 'rgba(34,197,94,.06)' : 'rgba(239,68,68,.06)', border: `1px solid ${hasMin ? 'rgba(34,197,94,.2)' : 'rgba(239,68,68,.2)'}`, borderRadius: 7, padding: '10px 12px', fontSize: 11 }}>
@@ -488,8 +488,8 @@ function SpxModal({ onClose, onSaved, onRemoved }: { onClose: () => void; onSave
               {hasAll ? '✓ Todas as credenciais identificadas' : hasMin ? '⚠ Básicas ok (x-sap-ri/sec não encontrados)' : '✗ Cookie ou csrftoken não encontrados'}
             </p>
             {(['cookie', 'x-csrftoken', 'device-id', 'x-sap-ri', 'x-sap-sec'] as const).map(k => (
-              <p key={k} style={{ margin: '2px 0', color: parsed[k] ? '#94a3b8' : '#4a5568' }}>
-                <span style={{ color: '#64748b' }}>{k}:</span> {parsed[k] ? (k === 'cookie' ? `${parsed[k].slice(0, 50)}…` : parsed[k]) : <em>não encontrado</em>}
+              <p key={k} style={{ margin: '2px 0', color: parsed[k] ? '#94a3b8' : '#4a5568', overflowWrap: 'anywhere' }}>
+                <span style={{ color: '#64748b' }}>{k}:</span> {parsed[k] ? (parsed[k].length > 50 ? `${parsed[k].slice(0, 50)}…` : parsed[k]) : <em>não encontrado</em>}
               </p>
             ))}
           </div>

@@ -7,7 +7,7 @@ import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '@/lib/
 import { getGlobalConfig, saveGlobalConfig, type Shift } from '@/lib/globalConfig'
 import { routeStore } from '@/lib/routeStore'
 import type { WorkPreferenceData } from '@/lib/workPreferenceParser'
-import { parseCurl, saveSpxCreds, SPX_CREDS_KEY, vehicleAllowed, vehiclePriority, type LocalDriver } from './logic'
+import { inDriverRegion, parseCurl, saveSpxCreds, SPX_CREDS_KEY, novatoVehicleOk, type LocalDriver } from './logic'
 import type { BatchAssignRow, ThreePlMap } from './useNoShow'
 
 // ─── Colar rotas ─────────────────────────────────────────────────────────────
@@ -236,8 +236,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       const hasAll = clusters.some(c => c.toUpperCase() === 'ALL')
       const vehicle = r?.driver.vehicleType ?? null
       const best = disponivel
-        .filter(rt => !used.has(rt.id) && vehicleAllowed(vehicle, rt.requiredVehicleType) && (hasAll || coversCluster(clusters, rt.cluster)))
-        .sort((a, b) => vehiclePriority(vehicle, a.requiredVehicleType) - vehiclePriority(vehicle, b.requiredVehicleType))[0] ?? null
+        .filter(rt => !used.has(rt.id) && novatoVehicleOk(vehicle, rt.requiredVehicleType) && (hasAll || coversCluster(clusters, rt.cluster)))[0] ?? null
       if (best) used.add(best.id)
       return { driverId, name: r?.driver.name ?? driverId, clusters, vehicleType: vehicle, suggestedRoute: best, availableToday: r?.availableToday ?? false, resolvable: r != null }
     }))
@@ -277,7 +276,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
             </T>
           </Card>
         ))}
-        <T size={11} color={C.muted}>As atribuições ficaram na pré-visualização da aba Rotas (chip Novato). Toque em ✦ Atribuir para gravar no SPX.</T>
+        <T size={11} color={C.muted}>Os novatos ficaram em pré-visualização. Toque em 🆕 Atribuir novatos, no topo, para gravar só eles no SPX.</T>
         <Btn onPress={() => { setResult(null); setSuggestions(null); setInput('') }}>Alocar mais</Btn>
       </View>
     )
@@ -310,6 +309,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
             <T size={11} color={C.dim}>{s.clusters.length ? s.clusters.join(', ') : 'sem dados WP'}</T>
             <Row>
               <T size={12} color={route ? C.text : C.red}>{route ? `${route.atId} · ${route.cluster}${route.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}` : '— sem rota —'}</T>
+              {route && s.resolvable && <Chip label={inDriverRegion(s.clusters, route.cluster) ? '✓ na região' : '⚠ fora da região'} color={inDriverRegion(s.clusters, route.cluster) ? C.green : C.yellow} />}
               {s.resolvable && <Btn small variant="outline" onPress={() => setPickFor(s.driverId)}>Trocar rota</Btn>}
             </Row>
           </Card>
@@ -317,12 +317,19 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       })}
       <Btn disabled={suggestions.every(s => !routeOf(s) || !s.resolvable)} onPress={confirm}>Confirmar atribuições</Btn>
       <Sheet open={!!picking} onClose={() => setPickFor(null)} title={`Rota para ${picking?.name ?? ''}`}>
-        {disponivel.filter(r => vehicleAllowed(picking?.vehicleType, r.requiredVehicleType)).map(r => (
-          <Card key={r.id} onPress={() => { setOverride(o => ({ ...o, [pickFor!]: r.id })); setPickFor(null) }}>
-            <T mono bold size={12}>{r.atId}</T>
-            <T size={11} color={C.sub}>{r.cluster}{r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}</T>
-          </Card>
-        ))}
+        {disponivel
+          .filter(r => novatoVehicleOk(picking?.vehicleType, r.requiredVehicleType))
+          .map(r => ({ r, inside: inDriverRegion(picking?.clusters ?? [], r.cluster) }))
+          .sort((a, b) => Number(b.inside) - Number(a.inside))
+          .map(({ r, inside }) => (
+            <Card key={r.id} onPress={() => { setOverride(o => ({ ...o, [pickFor!]: r.id })); setPickFor(null) }} style={{ borderColor: inside ? 'rgba(74,222,128,.35)' : C.border }}>
+              <Row style={{ justifyContent: 'space-between' }}>
+                <T mono bold size={12}>{r.atId}</T>
+                <Chip label={inside ? '✓ na região' : '⚠ fora da região'} color={inside ? C.green : C.yellow} />
+              </Row>
+              <T size={11} color={C.sub}>{r.cluster}{r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}</T>
+            </Card>
+          ))}
       </Sheet>
     </View>
   )

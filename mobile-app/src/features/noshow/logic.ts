@@ -146,6 +146,16 @@ export function vehicleAllowed(driverV: string | null | undefined, routeV: strin
   return true
 }
 
+// A rota está na região do motorista? "ALL" nos clusters dele significa qualquer região.
+export function inDriverRegion(driverClusters: string[], routeCluster: string) {
+  return driverClusters.some(c => c.toUpperCase() === 'ALL') || coversCluster(driverClusters, routeCluster)
+}
+
+// Novatos: rota de moto só para moto, e moto só em rota de moto. Sem veículo conhecido, nunca rota de moto.
+export function novatoVehicleOk(driverV: string | null | undefined, routeV: string | null | undefined) {
+  return (normalizeVehicle(driverV) === 'MOTO') === (normalizeVehicle(routeV) === 'MOTO')
+}
+
 export function getDsMeta(ds: number | null) {
   if (ds === null) return { label: '—', color: '#64748b', bg: 'rgba(100,116,139,.1)' }
   // Regra única do app: DS abaixo de 95% é vermelho.

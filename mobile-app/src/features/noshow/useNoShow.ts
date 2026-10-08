@@ -100,9 +100,9 @@ export function useNoShow() {
     return s
   }, [callUp, selectedShift, selectedDay])
 
-  const acceptedAtIds = useMemo(() => {
+  const notAcceptedAtIds = useMemo(() => {
     const s = new Set<string>()
-    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (isAcceptedInCallUp(fc)) s.add(fc.atId)
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (!isAcceptedInCallUp(fc)) s.add(fc.atId)
     return s
   }, [callUp])
 
@@ -137,10 +137,10 @@ export function useNoShow() {
   }, [declinedAtIds, routes])
 
   const noShowRoutes = useMemo(() => {
-    // Com Call Up: entra tudo o que não está aceito (recusada, cancelada ou ainda sem resposta). Sem Call Up: só as disponíveis.
-    const base = !callUp ? routes.filter(r => r.status === 'DISPONIVEL') : routes.filter(r => !acceptedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
+    // Com Call Up: rotas chamadas e não aceitas, as coladas à mão e as que já têm motorista escolhido (novatos). Rota ainda não chamada fica de fora.
+    const base = !callUp ? routes.filter(r => r.status === 'DISPONIVEL') : routes.filter(r => notAcceptedAtIds.has(r.atId) || forcedAtIds.has(r.atId) || overrides.has(r.id))
     return base.filter(r => !ignoredAtIds.has(r.atId))
-  }, [routes, callUp, acceptedAtIds, ignoredAtIds, forcedAtIds])
+  }, [routes, callUp, notAcceptedAtIds, ignoredAtIds, forcedAtIds, overrides])
 
   const orderedDrivers = useMemo(() => [...availableDrivers].sort((a, b) => {
     if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
@@ -290,26 +290,30 @@ export function useNoShow() {
   }
   const forceSelectDriver = (route: LocalRoute, driver: LocalDriver) => setOverrides(new Map([...overrides, [route.id, driver]]))
 
-  const handleConfirmAssign = async () => {
-    if (isAssigning || effectiveAssignments.size === 0) return
+  // No argument: assign every suggestion. With `subset`: only those routes (e.g. only the novatos).
+  const handleConfirmAssign = async (subset?: Map<string, LocalDriver>) => {
+    const target = subset ?? effectiveAssignments
+    if (isAssigning || target.size === 0) return
     setIsAssigning(true)
     setAssignResults(null)
     const results: AssignResult[] = []
-    for (const [rid, driver] of effectiveAssignments) {
+    for (const [rid, driver] of target) {
       const route = routes.find(r => r.id === rid)!
       const res = spxConfigured ? await spxReassign(driver.driverId, route.atId) : null
       results.push({ atId: route.atId, driverId: driver.driverId, local: true, spxOk: res?.ok, spxMsg: res?.message })
     }
     setRoutes(routes.map(r => {
-      const d = effectiveAssignments.get(r.id)
+      const d = target.get(r.id)
       return d ? { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: d.driverId, assignedDriverName: d.name } : r
     }))
-    removeFromQueue([...effectiveAssignments.values()].map(d => d.driverId))
+    removeFromQueue([...target.values()].map(d => d.driverId))
     setSessionAssignedOrder(new Map())
-    setOverrides(new Map())
+    setOverrides(subset ? new Map([...overrides].filter(([rid]) => !subset.has(rid))) : new Map())
     setAssignResults(results)
     setIsAssigning(false)
   }
+
+  const novatoAssignments = useMemo(() => new Map([...overrides].filter(([, d]) => d.isNewDriver)), [overrides])
 
   const handleRetryFailed = async () => {
     if (!assignResults || isRetrying) return
@@ -392,7 +396,7 @@ export function useNoShow() {
     selectedDay, selectedShift, registry, workPref, callUp,
     routes, setRoutes, overrides, ignoredAtIds, setIgnoredAtIds, queue,
     availableDrivers, declinedAtIds, pendingAtIds, alreadyRoutedIds, dobraIds, noShowRoutes, allRoutes, queueDrivers, alreadyRoutedDrivers,
-    effectiveAssignments, sessionAssignedOrder, spxConfigured, setSpxConfigured,
+    effectiveAssignments, novatoAssignments, sessionAssignedOrder, spxConfigured, setSpxConfigured,
     fioMode, setFioMode, fiorino, fioAssigning, fioResults, handleFioAssign,
     threePlAssignments, setThreePlAssignments, agencies, excludedRouteIds, applyOverrideAssignments,
     handleBatchAssign, selectDriver, forceSelectDriver, handleConfirmAssign, handleRetryFailed, handleReturnRoute,

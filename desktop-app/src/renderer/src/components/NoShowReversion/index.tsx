@@ -158,6 +158,16 @@ function vehicleAllowed(driverV: string | null | undefined, routeV: string | nul
   return true
 }
 
+// A rota está na região do motorista? "ALL" nos clusters dele significa qualquer região.
+function inDriverRegion(driverClusters: string[], routeCluster: string) {
+  return driverClusters.some(c => c.toUpperCase() === 'ALL') || coversCluster(driverClusters, routeCluster)
+}
+
+// Novatos: rota de moto só para moto, e moto só em rota de moto. Sem veículo conhecido, nunca rota de moto.
+function novatoVehicleOk(driverV: string | null | undefined, routeV: string | null | undefined) {
+  return (normalizeVehicle(driverV) === 'MOTO') === (normalizeVehicle(routeV) === 'MOTO')
+}
+
 function getDsMeta(ds: number | null) {
   if (ds === null) return { label: '—', color: '#64748b', bg: 'rgba(100,116,139,.1)' }
   // Regra única do app: DS abaixo de 95% é vermelho.
@@ -560,10 +570,10 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       const vehicle = resolved?.driver.vehicleType ?? null
       const compatible = disponivel.filter(r => {
         if (usedRouteIds.has(r.id)) return false
-        if (!vehicleAllowed(vehicle, r.requiredVehicleType)) return false
+        if (!novatoVehicleOk(vehicle, r.requiredVehicleType)) return false
         if (hasAll) return true
         return coversCluster(clusters, r.cluster)
-      }).sort((a, b) => vehiclePriority(vehicle, a.requiredVehicleType) - vehiclePriority(vehicle, b.requiredVehicleType))
+      })
 
       const best = compatible[0] ?? null
       if (best) usedRouteIds.add(best.id)
@@ -655,7 +665,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                   </table>
                 </div>
                 <p style={{ margin: 0, fontSize: 11, color: '#8892a4' }}>
-                  As atribuições ficaram em pré-visualização na aba "Rotas recusadas" (chip roxo <b>Novato</b>). Clique em <b>✦ Atribuir</b> para gravar no SPX.
+                  Os novatos ficaram em pré-visualização. Clique em <b>🆕 Atribuir novatos</b>, no topo, para gravar só eles no SPX.
                 </p>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Btn onClick={() => { setResult(null); setAnalyzed(false); setSuggestions([]); setInput('') }}>Alocar mais</Btn>
@@ -707,13 +717,32 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                           <select
                             value={overrideRoute[s.driverId] ?? route?.id ?? ''}
                             onChange={e => setOverrideRoute(prev => ({ ...prev, [s.driverId]: e.target.value }))}
-                            style={{ background: '#0f1117', border: `1px solid ${route ? '#2d3048' : 'rgba(239,68,68,.4)'}`, color: route ? '#e2e8f0' : '#f87171', borderRadius: 5, padding: '3px 6px', fontSize: 11, outline: 'none', maxWidth: 130 }}
+                            style={{ background: '#0f1117', border: `1px solid ${route ? '#2d3048' : 'rgba(239,68,68,.4)'}`, color: route ? '#e2e8f0' : '#f87171', borderRadius: 5, padding: '3px 6px', fontSize: 11, outline: 'none', maxWidth: 260 }}
                           >
                             {!route && <option value="">— sem rota —</option>}
-                            {disponivel.filter(r => vehicleAllowed(s.vehicleType, r.requiredVehicleType)).map(r => <option key={r.id} value={r.id}>{r.atId}{r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}</option>)}
+                            {(() => {
+                              // Separa as rotas pela região do motorista, para a escolha manual não sair dela sem querer.
+                              const options = disponivel.filter(r => novatoVehicleOk(s.vehicleType, r.requiredVehicleType))
+                              const label = (r: LocalRoute) => `${r.atId} — ${r.cluster || 'sem cluster'}${r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}`
+                              const inside = options.filter(r => inDriverRegion(s.clusters, r.cluster))
+                              const outside = options.filter(r => !inDriverRegion(s.clusters, r.cluster))
+                              return (
+                                <>
+                                  {inside.length > 0 && <optgroup label={`✓ Na região do motorista (${inside.length})`}>{inside.map(r => <option key={r.id} value={r.id}>{label(r)}</option>)}</optgroup>}
+                                  {outside.length > 0 && <optgroup label={`⚠ Fora da região (${outside.length})`}>{outside.map(r => <option key={r.id} value={r.id}>{label(r)}</option>)}</optgroup>}
+                                </>
+                              )
+                            })()}
                           </select>
                         </td>
-                        <td style={{ padding: '7px 10px', color: '#94a3b8', fontSize: 11 }}>{route?.cluster ?? '—'}{route?.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}</td>
+                        <td style={{ padding: '7px 10px', color: '#94a3b8', fontSize: 11 }}>
+                          {route?.cluster ?? '—'}{route?.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}
+                          {route && s.resolvable && (
+                            inDriverRegion(s.clusters, route.cluster)
+                              ? <span style={{ display: 'block', color: '#4ade80', fontWeight: 600 }}>✓ na região do motorista</span>
+                              : <span style={{ display: 'block', color: '#fbbf24', fontWeight: 600 }}>⚠ fora da região do motorista</span>
+                          )}
+                        </td>
                       </tr>
                     )
                   })}
@@ -1222,9 +1251,10 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     return declined
   }, [callUp, selectedShift, selectedDay])
 
-  const acceptedAtIds = useMemo(() => {
+  // ATs que tiveram chamada no Call Up e não estão aceitas
+  const notAcceptedAtIds = useMemo(() => {
     const s = new Set<string>()
-    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (isAcceptedInCallUp(fc)) s.add(fc.atId)
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) if (!isAcceptedInCallUp(fc)) s.add(fc.atId)
     return s
   }, [callUp])
 
@@ -1272,12 +1302,13 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   // Rotas a mostrar: apenas as que foram recusadas no Call Up (se callUp disponível), senão todas DISPONIVEL
   // ignoredAtIds é local (não persiste) — remove da view sem apagar do routeStore
   const noShowRoutes = useMemo(() => {
-    // Com Call Up: entra tudo o que não está aceito (recusada, cancelada ou ainda sem resposta). Sem Call Up: só as disponíveis.
+    // Com Call Up: entram as rotas chamadas e não aceitas (recusada, cancelada ou pendente), as coladas à mão
+    // e as que já têm motorista escolhido (novatos). Rota que ainda nem foi chamada fica de fora.
     const base = !callUp
       ? routes.filter(r => r.status === 'DISPONIVEL')
-      : routes.filter(r => !acceptedAtIds.has(r.atId) || forcedAtIds.has(r.atId))
+      : routes.filter(r => notAcceptedAtIds.has(r.atId) || forcedAtIds.has(r.atId) || overrides.has(r.id))
     return base.filter(r => !ignoredAtIds.has(r.atId))
-  }, [routes, callUp, acceptedAtIds, ignoredAtIds, forcedAtIds])
+  }, [routes, callUp, notAcceptedAtIds, ignoredAtIds, forcedAtIds, overrides])
 
   // Drivers ordenados: bloqueados por último, depois já atribuídos nesta sessão (FIFO — quem foi primeiro fica por último), depois por score
   const orderedDrivers = useMemo(() => {
@@ -1593,12 +1624,14 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     setAssignModal(null)
   }
 
-  const handleConfirmAssign = async () => {
-    if (isAssigning || effectiveAssignments.size === 0) return
+  // Sem argumento, atribui tudo o que está sugerido. Com `subset`, só aquelas rotas (ex.: só os novatos).
+  const handleConfirmAssign = async (subset?: Map<string, LocalDriver>) => {
+    const target = subset ?? effectiveAssignments
+    if (isAssigning || target.size === 0) return
     setIsAssigning(true)
     setAssignResults(null)
 
-    const pairs = [...effectiveAssignments.entries()].map(([rid, driver]) => {
+    const pairs = [...target.entries()].map(([rid, driver]) => {
       const route = routes.find(r => r.id === rid)!
       return { rid, atId: route.atId, driver }
     })
@@ -1626,18 +1659,21 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
     // Persist final routes state
     setRoutes(routes.map(r => {
-      const driver = effectiveAssignments.get(r.id)
+      const driver = target.get(r.id)
       if (driver) return { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: driver.driverId, assignedDriverName: driver.name }
       return r
     }))
     // Remover motoristas atribuídos da fila permanentemente
-    const assignedIds = [...effectiveAssignments.values()].map(d => d.driverId)
+    const assignedIds = [...target.values()].map(d => d.driverId)
     removeFromQueue(assignedIds)
     setSessionAssignedOrder(new Map()) // resetar ordem de sessão pois já saíram da fila
-    setOverrides(new Map())
+    setOverrides(subset ? new Map([...overrides].filter(([rid]) => !subset.has(rid))) : new Map())
     setAssignResults(results)
     setIsAssigning(false)
   }
+
+  // Só as rotas com novato escolhido na sub-aba Novatos
+  const novatoAssignments = useMemo(() => new Map([...overrides].filter(([, d]) => d.isNewDriver)), [overrides])
 
   const handleRetryFailed = async () => {
     if (!assignResults || isRetrying) return
@@ -1738,7 +1774,13 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 disabled={fioAssigning || fiorino.assignments.size === 0}
                 style={{ background: '#d97706' }}
               >{fioAssigning ? '⏳ Atribuindo...' : `🚐 Atribuir Fiorino (${fiorino.assignments.size})`}</Btn>
-            ) : (
+            ) : activeTab === 'fiorino' && fcSection === 'novatos' ? (
+              <Btn
+                onClick={() => void handleConfirmAssign(novatoAssignments)}
+                disabled={isAssigning || novatoAssignments.size === 0}
+                style={{ background: '#8b5cf6' }}
+              >{isAssigning ? '⏳ Atribuindo...' : `🆕 Atribuir novatos (${novatoAssignments.size})`}</Btn>
+            ) : activeTab === 'fiorino' && fcSection === '3pl' ? null : (
               <Btn
                 onClick={() => void handleConfirmAssign()}
                 disabled={isAssigning || effectiveAssignments.size === 0}
@@ -2422,7 +2464,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
           onChange={e => setSpxCurlInput(e.target.value)}
           placeholder="curl 'https://spx.shopee.com.br/...' -H 'x-csrftoken: ...' -b '...'"
           rows={9}
-          style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px 12px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
+          style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px 12px', resize: 'vertical', width: '100%', maxWidth: '100%', minWidth: 0, display: 'block', boxSizing: 'border-box', whiteSpace: 'pre-wrap', wordBreak: 'break-all', overflowX: 'hidden' }}
         />
         {spxCurlInput && (() => {
           const p = parseCurl(spxCurlInput)
@@ -2440,7 +2482,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 ['x-sap-ri', p['x-sap-ri'] ?? null],
                 ['x-sap-sec', p['x-sap-sec'] ? `${p['x-sap-sec'].slice(0, 30)}…` : null],
               ].map(([k, v]) => (
-                <p key={k} style={{ margin: '2px 0', color: v ? '#94a3b8' : '#64748b' }}>
+                <p key={k} style={{ margin: '2px 0', color: v ? '#94a3b8' : '#64748b', overflowWrap: 'anywhere' }}>
                   <span style={{ color: '#64748b' }}>{k}:</span> {v ?? <span style={{ color: '#64748b', fontStyle: 'italic' }}>não encontrado</span>}
                 </p>
               ))}

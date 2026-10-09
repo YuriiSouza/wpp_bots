@@ -15,8 +15,8 @@
     "test:watch": "vitest",
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:mac": "electron-vite build && electron-builder --mac",
-    "predist:win": "node scripts/check-key.js",
-    "predist:mac": "node scripts/check-key.js"
+    "predist:win": "node scripts/check-key.cjs",
+    "predist:mac": "node scripts/check-key.cjs"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",
@@ -52,6 +52,11 @@
     "directories": {
       "output": "dist-electron"
     },
+    "files": [
+      "**/*",
+      "!dist-electron/**/*",
+      "!release/**/*"
+    ],
     "mac": {
       "target": "dmg"
     },

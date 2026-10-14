@@ -149,9 +149,16 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
 
   const [reportOpen, setReportOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const q = search.trim().toLowerCase()
-  const shownRows = !q ? rows : rows.filter(({ e }) => e.driverName.toLowerCase().includes(q) || e.driverId.includes(q) || e.atId.toLowerCase().includes(q))
-  const shownNotArrived = !q ? notArrived : notArrived.filter(n => n.name.toLowerCase().includes(q) || n.driverId.includes(q) || n.atId.toLowerCase().includes(q))
+  // Busca sem diferenciar maiúsculas nem acentos ("joao" acha "João")
+  const norm = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const q = norm(search.trim())
+  // Letra selecionada ('' = todas; '—' = sem letra)
+  const [letterFilter, setLetterFilter] = useState('')
+  const inLetter = (letter: string) => !letterFilter || (letter || '—') === letterFilter
+  const shownRows = rows.filter(({ e }) => inLetter(e.letter) && (!q || norm(e.driverName).includes(q) || e.driverId.includes(q) || norm(e.atId).includes(q)))
+  const shownNotArrived = notArrived.filter(n => inLetter(n.letter) && (!q || norm(n.name).includes(q) || n.driverId.includes(q) || norm(n.atId).includes(q)))
+  const letterRows = rows.filter(({ e }) => inLetter(e.letter))
+  const letterNotArrived = notArrived.filter(n => inLetter(n.letter))
   const [activeView, setActiveView] = useState<'lista' | 'dashboard'>('lista')
 
   // Timeline de chegadas (agrupada por slots de 15 min)
@@ -451,8 +458,84 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
               onChange={e => setSearch(e.target.value)}
               style={{ width: 280, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 7, padding: '6px 12px', fontSize: 12, outline: 'none' }}
             />
-            {q && <span style={{ fontSize: 11, color: '#8892a4' }}>{shownRows.length} na fila · {shownNotArrived.length} não chegaram</span>}
+            {(q || letterFilter) && <span style={{ fontSize: 11, color: '#8892a4' }}>{shownRows.length} na fila · {shownNotArrived.length} não chegaram</span>}
             {q && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}>✕ limpar</button>}
+          </div>
+
+          {/* Por letra */}
+          <div style={{ padding: '0 20px 12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Por letra</span>
+              <span style={{ fontSize: 11, color: '#64748b' }}>clique numa letra para ver só os motoristas dela</span>
+              {letterFilter && <button onClick={() => setLetterFilter('')} style={{ background: 'none', border: 'none', color: '#a78bfa', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>✕ ver todas</button>}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 8 }}>
+              {perLetter.map(([letter, g]) => {
+                const arrived = g.onTime + g.outOfWindow
+                const t = arrived + g.overdue + g.waiting + g.unknown
+                const active = letterFilter === letter
+                const win = hasValidWindows && letter !== '—' ? windowForLetterMulti(letter, windows) : null
+                const seg = [[g.onTime, '#4ade80'], [g.outOfWindow, '#fb923c'], [g.waiting, '#fbbf24'], [g.overdue, '#f87171'], [g.unknown, '#374151']] as [number, string][]
+                const ids = [...rows.filter(r => (r.e.letter || '—') === letter).map(r => r.e.driverId), ...notArrived.filter(n => (n.letter || '—') === letter).map(n => n.driverId)]
+                const accent = g.overdue > 0 ? '#f87171' : g.waiting > 0 ? '#fbbf24' : '#4ade80'
+                return (
+                  <div key={letter} onClick={() => setLetterFilter(active ? '' : letter)}
+                    style={{ cursor: 'pointer', background: active ? 'rgba(124,58,237,.14)' : '#13151f', border: `1px solid ${active ? '#7c3aed' : '#2d3048'}`, borderLeft: `3px solid ${accent}`, borderRadius: 10, padding: '10px 12px', opacity: letterFilter && !active ? .55 : 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 }}>
+                      <span style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{letter}</span>
+                      <span style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{win ? `prazo ${minToHHMM(win.arriveByMin)} · carrega ${minToHHMM(win.startMin)}` : 'sem janela'}</span>
+                    </div>
+                    <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: '#1e2130', margin: '8px 0 6px' }}>
+                      {seg.filter(([n]) => n > 0).map(([n, c]) => <div key={c} style={{ width: `${(n / t) * 100}%`, background: c }} />)}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                      <span style={{ fontSize: 12, color: '#94a3b8' }}><b style={{ color: '#e2e8f0' }}>{arrived}</b>/{t} chegaram</span>
+                      <button title={`Copiar telefones da letra ${letter}`} onClick={ev => { ev.stopPropagation(); copy(`L${letter}`, phones(ids)) }}
+                        style={{ background: 'transparent', border: '1px solid #2d3048', color: copiedKey === `L${letter}` ? '#4ade80' : '#94a3b8', borderRadius: 6, padding: '2px 7px', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                        {copiedKey === `L${letter}` ? '✓ copiado' : '📱 copiar'}
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6, fontSize: 11, fontWeight: 600, flexWrap: 'wrap' }}>
+                      {g.overdue > 0 && <span style={{ color: '#f87171' }}>🔴 {g.overdue} atrasado{g.overdue > 1 ? 's' : ''}</span>}
+                      {g.waiting > 0 && <span style={{ color: '#fbbf24' }}>⏳ {g.waiting}</span>}
+                      {g.outOfWindow > 0 && <span style={{ color: '#fb923c' }}>🟠 {g.outOfWindow}</span>}
+                      {g.overdue + g.waiting === 0 && <span style={{ color: '#4ade80' }}>✅ completa</span>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {letterFilter && (
+              <div style={{ marginTop: 10, background: '#13151f', border: '1px solid #7c3aed55', borderRadius: 10, padding: '12px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>Letra {letterFilter}</span>
+                  <span style={{ fontSize: 11, color: '#8892a4' }}>{letterRows.length} na fila · {letterNotArrived.length} não chegaram</span>
+                  <span style={{ flex: 1 }} />
+                  <Btn outline color="#a78bfa" onClick={() => copy('lt', phones([...letterRows.map(r => r.e.driverId), ...letterNotArrived.map(n => n.driverId)]))} disabled={letterRows.length + letterNotArrived.length === 0}>📱 {lbl('lt', `Tel. de todos (${letterRows.length + letterNotArrived.length})`)}</Btn>
+                  <Btn outline color="#f87171" onClick={() => copy('ln', phones(letterNotArrived.map(n => n.driverId)))} disabled={letterNotArrived.length === 0}>📱 {lbl('ln', `Tel. não chegaram (${letterNotArrived.length})`)}</Btn>
+                  <Btn outline color="#60a5fa" onClick={() => copy('lq', phones(letterRows.map(r => r.e.driverId)))} disabled={letterRows.length === 0}>📱 {lbl('lq', `Tel. na fila (${letterRows.length})`)}</Btn>
+                </div>
+                {([
+                  ['🔴 Atrasados', '#f87171', letterNotArrived.filter(n => n.status === 'overdue').map(n => ({ id: n.driverId, name: n.name }))],
+                  ['⏳ Aguardando', '#fbbf24', letterNotArrived.filter(n => n.status !== 'overdue').map(n => ({ id: n.driverId, name: n.name }))],
+                  ['🟠 Fora da janela', '#fb923c', letterRows.filter(r => r.w.status === 'out-of-window').map(r => ({ id: r.e.driverId, name: r.e.driverName }))],
+                  ['✅ Na fila no prazo', '#4ade80', letterRows.filter(r => r.w.status !== 'out-of-window').map(r => ({ id: r.e.driverId, name: r.e.driverName }))],
+                ] as [string, string, { id: string; name: string }[]][]).filter(([, , list]) => list.length > 0).map(([title, color, list]) => (
+                  <div key={title} style={{ marginBottom: 8 }}>
+                    <p style={{ margin: '0 0 5px', fontSize: 11, fontWeight: 700, color }}>{title} ({list.length})</p>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {list.map(d => (
+                        <span key={d.id} title="Clique para copiar o telefone" onClick={() => copy(`D${d.id}`, [phoneMap.get(d.id) ?? ''])}
+                          style={{ cursor: phoneMap.get(d.id) ? 'pointer' : 'default', fontSize: 11, background: `${color}14`, border: `1px solid ${color}40`, borderRadius: 6, padding: '3px 8px', color: '#e2e8f0' }}>
+                          {d.name || d.id} <span style={{ color: '#8892a4', fontFamily: 'monospace', fontSize: 10 }}>{copiedKey === `D${d.id}` ? '✓ copiado' : phoneMap.get(d.id) || 'sem tel.'}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Copy actions */}
@@ -468,11 +551,11 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
           </div>
 
           {/* Fila (quem chegou) */}
-          <p style={{ margin: '0 0 6px', padding: '0 20px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Na fila ({q ? `${shownRows.length} de ${rows.length}` : rows.length})</p>
+          <p style={{ margin: '0 0 6px', padding: '0 20px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Na fila ({q || letterFilter ? `${shownRows.length} de ${rows.length}` : rows.length})</p>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 24 }}>
             <thead style={{ position: 'sticky', top: 0, background: '#0f1117', zIndex: 1 }}>
               <tr style={{ borderBottom: '1px solid #2d3048' }}>
-                {['Motorista', 'Letra', 'Janela da letra', 'Prazo chegada', 'Chegou', 'Aguardou', 'Status', 'AT', 'Cluster'].map(h => <th key={h} style={TH}>{h}</th>)}
+                {['Motorista', 'Letra', 'Janela da letra', 'Prazo chegada', 'Chegou', 'Aguardou', 'Status', 'AT', 'Cluster', 'Telefone'].map(h => <th key={h} style={TH}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -496,6 +579,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
                   </td>
                   <td style={{ ...TD, fontFamily: 'monospace', color: '#94a3b8' }}>{e.atId}</td>
                   <td style={{ ...TD, color: '#94a3b8' }}>{e.cluster}</td>
+                  <td style={{ ...TD, fontFamily: 'monospace', color: '#94a3b8' }}>{phoneMap.get(e.driverId) || '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -504,7 +588,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
           {/* Não chegaram (aguardando + atrasados) */}
           <div style={{ padding: '0 20px 24px' }}>
             <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>
-              Não chegaram ({q ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <span style={{ color: '#f87171' }}>{overdue.length} atrasados</span> · <span style={{ color: '#fbbf24' }}>{waiting.length} aguardando</span>
+              Não chegaram ({q || letterFilter ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <span style={{ color: '#f87171' }}>{overdue.length} atrasados</span> · <span style={{ color: '#fbbf24' }}>{waiting.length} aguardando</span>
             </p>
             {expected.size === 0 ? (
               <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Nenhuma rota atribuída neste dia/turno na tela Atribuição — sem base para comparar quem não chegou.</p>

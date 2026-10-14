@@ -501,7 +501,7 @@ interface NovatoSuggestion {
 interface NovatoResult {
   driverId: string
   name: string
-  status: 'ok' | 'no-route' | 'not-found'
+  status: 'ok' | 'no-route' | 'skipped' | 'not-found'
   atId?: string
   cluster?: string
   availableToday?: boolean
@@ -595,6 +595,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
 
   const getSelectedRoute = (s: NovatoSuggestion): LocalRoute | null => {
     const rid = overrideRoute[s.driverId]
+    if (rid === '') return null // deixado sem rota de propósito
     if (rid) return routes.find(r => r.id === rid) ?? s.suggestedRoute
     return s.suggestedRoute
   }
@@ -606,7 +607,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       const resolved = resolveDriver(s.driverId)
       if (!resolved) { res.push({ driverId: s.driverId, name: s.name, status: 'not-found' }); continue }
       const route = getSelectedRoute(s)
-      if (!route) { res.push({ driverId: s.driverId, name: s.name, status: 'no-route', availableToday: resolved.availableToday }); continue }
+      if (!route) { res.push({ driverId: s.driverId, name: s.name, status: overrideRoute[s.driverId] === '' ? 'skipped' : 'no-route', availableToday: resolved.availableToday }); continue }
       assignments.push({ route, driver: { ...resolved.driver, isNewDriver: true } })
       res.push({ driverId: s.driverId, name: s.name, status: 'ok', atId: route.atId, cluster: route.cluster, availableToday: resolved.availableToday })
     }
@@ -625,6 +626,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
           (() => {
             const ok = result.filter(r => r.status === 'ok')
             const noRoute = result.filter(r => r.status === 'no-route')
+            const skipped = result.filter(r => r.status === 'skipped')
             const notFound = result.filter(r => r.status === 'not-found')
             const foraDisp = result.filter(r => r.status === 'ok' && r.availableToday === false)
             return (
@@ -633,6 +635,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                   <Chip label={`✅ ${ok.length} alocado(s)`} color="#34d399" bg="rgba(52,211,153,.12)" />
                   {foraDisp.length > 0 && <Chip label={`↪ ${foraDisp.length} fora da disp. (via WP)`} color="#60a5fa" bg="rgba(59,130,246,.12)" />}
                   {noRoute.length > 0 && <Chip label={`⚠️ ${noRoute.length} sem rota`} color="#fbbf24" bg="rgba(245,158,11,.12)" />}
+                  {skipped.length > 0 && <Chip label={`➖ ${skipped.length} deixado(s) sem rota`} color="#94a3b8" bg="rgba(100,116,139,.12)" />}
                   {notFound.length > 0 && <Chip label={`⛔ ${notFound.length} não encontrado(s)`} color="#f87171" bg="rgba(239,68,68,.12)" />}
                 </div>
                 <div style={{ overflow: 'auto', maxHeight: 360 }}>
@@ -655,6 +658,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                           <td style={{ padding: '7px 10px' }}>
                             {r.status === 'ok' && <span style={{ color: '#34d399' }}>✅ Alocado</span>}
                             {r.status === 'no-route' && <span style={{ color: '#fbbf24' }}>⚠️ Sem rota disponível</span>}
+                            {r.status === 'skipped' && <span style={{ color: '#94a3b8' }}>➖ Deixado sem rota</span>}
                             {r.status === 'not-found' && <span style={{ color: '#f87171' }}>⛔ ID não encontrado (disp./WP)</span>}
                           </td>
                           <td style={{ padding: '7px 10px', fontFamily: 'monospace', color: r.atId ? '#e2e8f0' : '#374151' }}>{r.atId ?? '—'}</td>
@@ -717,9 +721,9 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                           <select
                             value={overrideRoute[s.driverId] ?? route?.id ?? ''}
                             onChange={e => setOverrideRoute(prev => ({ ...prev, [s.driverId]: e.target.value }))}
-                            style={{ background: '#0f1117', border: `1px solid ${route ? '#2d3048' : 'rgba(239,68,68,.4)'}`, color: route ? '#e2e8f0' : '#f87171', borderRadius: 5, padding: '3px 6px', fontSize: 11, outline: 'none', maxWidth: 260 }}
+                            style={{ background: '#0f1117', border: `1px solid ${route || overrideRoute[s.driverId] === '' ? '#2d3048' : 'rgba(239,68,68,.4)'}`, color: route ? '#e2e8f0' : overrideRoute[s.driverId] === '' ? '#94a3b8' : '#f87171', borderRadius: 5, padding: '3px 6px', fontSize: 11, outline: 'none', maxWidth: 260 }}
                           >
-                            {!route && <option value="">— sem rota —</option>}
+                            <option value="">— deixar sem rota —</option>
                             {(() => {
                               // Separa as rotas pela região do motorista, para a escolha manual não sair dela sem querer.
                               const options = disponivel.filter(r => novatoVehicleOk(s.vehicleType, r.requiredVehicleType))
@@ -1251,6 +1255,15 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     return declined
   }, [callUp, selectedShift, selectedDay])
 
+  // Assinatura da recusa de cada AT: muda quando um Call Up novo traz outra chamada para a mesma rota
+  const declineSignature = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const fc of callUp?.firstCallAnalysis.routes ?? []) {
+      if (declinedAtIds.has(fc.atId)) m.set(fc.atId, `${fc.driverId}|${fc.triggerTime}|${fc.finalStatus ?? fc.status}`)
+    }
+    return m
+  }, [callUp, declinedAtIds])
+
   // ATs que tiveram chamada no Call Up e não estão aceitas
   const notAcceptedAtIds = useMemo(() => {
     const s = new Set<string>()
@@ -1287,17 +1300,25 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   }, [selectedDay, selectedShift, alreadyRoutedIds, routes]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-devolver rotas ATRIBUIDA que foram recusadas no Call Up
+  // Cada recusa devolve a rota uma única vez: depois de reatribuída aqui, ela continua atribuída ao sair e voltar da tela.
   useEffect(() => {
     if (declinedAtIds.size === 0) return
-    const hasAny = routes.some(r => declinedAtIds.has(r.atId) && r.status === 'ATRIBUIDA')
-    if (!hasAny) return
+    const key = `spx:noshow-returned:${selectedDay}:${selectedShift}`
+    let handled: Record<string, string> = {}
+    try { handled = JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, string> } catch {}
+    const isNew = (atId: string) => declinedAtIds.has(atId) && handled[atId] !== declineSignature.get(atId)
+    const fresh = routes.filter(r => isNew(r.atId))
+    if (fresh.length === 0) return
+    for (const r of fresh) handled[r.atId] = declineSignature.get(r.atId) ?? ''
+    try { localStorage.setItem(key, JSON.stringify(handled)) } catch {}
+    if (!fresh.some(r => r.status === 'ATRIBUIDA')) return
     const updated = routes.map(r =>
-      declinedAtIds.has(r.atId) && r.status === 'ATRIBUIDA'
+      r.status === 'ATRIBUIDA' && fresh.includes(r)
         ? { ...r, status: 'DISPONIVEL' as const }  // mantém assignedDriverId para alreadyRoutedIds excluir o driver original
         : r
     )
     setRoutes(updated)
-  }, [declinedAtIds]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [declinedAtIds, declineSignature]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rotas a mostrar: apenas as que foram recusadas no Call Up (se callUp disponível), senão todas DISPONIVEL
   // ignoredAtIds é local (não persiste) — remove da view sem apagar do routeStore

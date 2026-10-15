@@ -14,6 +14,8 @@ interface ManualBlock {
 
 const MANUAL_BLOCKS_KEY = 'spx:noshow-manual-blocks'
 
+
+const INPUT: React.CSSProperties = { background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 12, padding: '8px 12px', outline: 'none', width: '100%', boxSizing: 'border-box' }
 function getManualBlocks(): ManualBlock[] {
   try { const raw = localStorage.getItem(MANUAL_BLOCKS_KEY); return raw ? JSON.parse(raw) : [] } catch { return [] }
 }
@@ -270,7 +272,7 @@ export default function Blocklist({ registry, forwardOrder, workPref }: Props) {
           placeholder="Buscar por ID, nome ou motivo..."
           value={search}
           onChange={e => setSearch(e.target.value)}
-          style={{ width: 300 }}
+          style={{ ...INPUT, width: 300 }}
         />
       </div>
 
@@ -364,7 +366,7 @@ export default function Blocklist({ registry, forwardOrder, workPref }: Props) {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <label style={{ fontSize: 11, color: '#8892a4' }}>Motivo</label>
-          <input value={bulkReason} onChange={e => setBulkReason(e.target.value)} placeholder="Ex: No-show, Atraso..." />
+          <input value={bulkReason} onChange={e => setBulkReason(e.target.value)} placeholder="Ex: No-show, Atraso..." style={INPUT} />
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
             {QUICK_REASONS.map(r => (
               <button key={r} onClick={() => setBulkReason(r)}
@@ -395,7 +397,7 @@ export default function Blocklist({ registry, forwardOrder, workPref }: Props) {
               onChange={e => setSingleModal(p => p ? { ...p, id: e.target.value } : null)}
               placeholder="Ex: 12345678"
               autoFocus
-              style={{ fontFamily: 'monospace' }}
+              style={{ ...INPUT, fontFamily: 'monospace' }}
             />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -404,6 +406,7 @@ export default function Blocklist({ registry, forwardOrder, workPref }: Props) {
               value={singleReason}
               onChange={e => setSingleReason(e.target.value)}
               placeholder="Ex: no-show, atraso..."
+              style={INPUT}
               onKeyDown={e => {
                 if (e.key === 'Enter' && singleModal.id.trim() && singleReason.trim()) {
                   addManual(singleModal.id.trim(), singleModal.name || singleModal.id.trim(), singleReason.trim())

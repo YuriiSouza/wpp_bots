@@ -248,15 +248,25 @@ export default function App() {
     perfil: profiles ? '#22c55e' : undefined,
   }
 
+  // Menu lateral recolhível (lembra a escolha)
+  const [navCollapsed, setNavCollapsed] = useState(() => { try { return localStorage.getItem('ui:nav-collapsed') === '1' } catch { return false } })
+  const toggleNav = () => setNavCollapsed(v => { try { localStorage.setItem('ui:nav-collapsed', v ? '0' : '1') } catch { /* */ } return !v })
+  const sideW = navCollapsed ? 56 : 200
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       {/* Sidebar */}
-      <aside style={{ width: 200, minWidth: 200, background: '#0a0c14', borderRight: '1px solid #1e2130', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '14px 16px 12px', borderBottom: '1px solid #1e2130' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 20 }}>📦</span>
-            <span style={{ fontWeight: 700, fontSize: 14, color: '#e2e8f0' }}>SPX Analytics</span>
-          </div>
+      <aside style={{ width: sideW, minWidth: sideW, background: '#0a0c14', borderRight: '1px solid #1e2130', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'width .15s, min-width .15s' }}>
+        <div style={{ padding: navCollapsed ? '14px 0 12px' : '14px 12px 12px 16px', borderBottom: '1px solid #1e2130', display: 'flex', alignItems: 'center', justifyContent: navCollapsed ? 'center' : 'space-between', gap: 8 }}>
+          {!navCollapsed && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <span style={{ fontSize: 20 }}>📦</span>
+              <span style={{ fontWeight: 700, fontSize: 14, color: '#e2e8f0', whiteSpace: 'nowrap' }}>SPX Analytics</span>
+            </div>
+          )}
+          <button onClick={toggleNav} title={navCollapsed ? 'Expandir menu' : 'Recolher menu'}
+            style={{ background: 'transparent', border: '1px solid #2d3048', color: '#8892a4', borderRadius: 6, width: 26, height: 26, cursor: 'pointer', fontSize: 13, lineHeight: 1, flexShrink: 0 }}>
+            {navCollapsed ? '»' : '«'}
+          </button>
         </div>
 
         <nav style={{ flex: 1, overflow: 'auto', padding: '8px 0' }}>
@@ -265,20 +275,18 @@ export default function App() {
             let lastGroup: string | undefined = undefined
             for (const item of NAV) {
               if (item.group && item.group !== lastGroup) {
-                items.push(
-                  <p key={`g-${item.group}`} style={{ margin: '10px 0 2px', padding: '0 16px', fontSize: 9, color: '#4a5568', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em' }}>
-                    {item.group}
-                  </p>
-                )
+                items.push(navCollapsed
+                  ? <div key={`g-${item.group}`} style={{ height: 1, background: '#1e2130', margin: '6px 12px' }} />
+                  : <p key={`g-${item.group}`} style={{ margin: '10px 0 2px', padding: '0 16px', fontSize: 9, color: '#4a5568', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em' }}>{item.group}</p>)
                 lastGroup = item.group
               }
               const dot = navDots[item.id]
               items.push(
-                <button key={item.id} onClick={() => setSection(item.id)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', background: section === item.id ? 'rgba(59,130,246,.12)' : 'transparent', border: 'none', borderLeft: `3px solid ${section === item.id ? '#3b82f6' : 'transparent'}`, color: section === item.id ? '#e2e8f0' : '#8892a4', fontSize: 13, fontWeight: section === item.id ? 600 : 400, cursor: 'pointer', width: '100%', textAlign: 'left', transition: 'all .1s' }}>
+                <button key={item.id} onClick={() => setSection(item.id)} title={navCollapsed ? item.label : undefined}
+                  style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: navCollapsed ? 'center' : 'flex-start', gap: 10, padding: navCollapsed ? '9px 0' : '8px 16px', background: section === item.id ? 'rgba(59,130,246,.12)' : 'transparent', border: 'none', borderLeft: `3px solid ${section === item.id ? '#3b82f6' : 'transparent'}`, color: section === item.id ? '#e2e8f0' : '#8892a4', fontSize: 13, fontWeight: section === item.id ? 600 : 400, cursor: 'pointer', width: '100%', textAlign: 'left', transition: 'all .1s' }}>
                   <span style={{ fontSize: 15 }}>{item.icon}</span>
-                  <span style={{ flex: 1 }}>{item.label}</span>
-                  {dot && <span style={{ width: 7, height: 7, borderRadius: '50%', background: dot, flexShrink: 0 }} />}
+                  {!navCollapsed && <span style={{ flex: 1, whiteSpace: 'nowrap' }}>{item.label}</span>}
+                  {dot && <span style={{ width: 7, height: 7, borderRadius: '50%', background: dot, flexShrink: 0, ...(navCollapsed ? { position: 'absolute', top: 7, right: 12 } : {}) }} />}
                 </button>
               )
             }
@@ -287,7 +295,7 @@ export default function App() {
         </nav>
 
         <div style={{ padding: '10px 16px', borderTop: '1px solid #1e2130' }}>
-          <p style={{ margin: 0, fontSize: 10, color: '#4a5568' }}>v1.1.0 · 100% local</p>
+          <p style={{ margin: 0, fontSize: 10, color: '#4a5568', textAlign: navCollapsed ? 'center' : 'left', whiteSpace: 'nowrap' }}>{navCollapsed ? 'v1.1' : 'v1.1.0 · 100% local'}</p>
         </div>
       </aside>
 

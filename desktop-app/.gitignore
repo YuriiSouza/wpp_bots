@@ -4,6 +4,7 @@ dist/
 .DS_Store
 *.log
 service-account.local.json
+google-oauth.local.json
 dist-electron/
 release/
 *.tsbuildinfo

@@ -19,6 +19,13 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   return () => ipcRenderer.removeListener(channel, handler)
 }
 
+const authAPI = {
+  getState: (): Promise<{ signedIn: boolean; email?: string }> => ipcRenderer.invoke('auth:state'),
+  signIn: (): Promise<{ signedIn: boolean; email?: string; error?: string }> =>
+    ipcRenderer.invoke('auth:sign-in'),
+  signOut: (): Promise<{ signedIn: boolean }> => ipcRenderer.invoke('auth:sign-out'),
+}
+
 const updaterAPI = {
   check: (): Promise<{ ok?: boolean; dev?: boolean; version?: string | null; error?: string }> =>
     ipcRenderer.invoke('updater:check'),
@@ -44,6 +51,7 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('spxBridge', spxAPI)
     contextBridge.exposeInMainWorld('fileBridge', fileAPI)
     contextBridge.exposeInMainWorld('updater', updaterAPI)
+    contextBridge.exposeInMainWorld('auth', authAPI)
   } catch (error) {
     console.error(error)
   }
@@ -56,4 +64,6 @@ if (process.contextIsolated) {
   window.fileBridge = fileAPI
   // @ts-ignore
   window.updater = updaterAPI
+  // @ts-ignore
+  window.auth = authAPI
 }

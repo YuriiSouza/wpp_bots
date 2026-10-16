@@ -14,9 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dist:win": "electron-vite build && electron-builder --win",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "predist:win": "node scripts/check-key.cjs",
-    "predist:mac": "node scripts/check-key.cjs"
+    "dist:mac": "electron-vite build && electron-builder --mac"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",

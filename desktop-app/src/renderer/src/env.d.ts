@@ -1,5 +1,3 @@
-declare const __SERVICE_ACCOUNT_KEY__: string
-
 interface UpdateProgress {
   percent: number
   transferred: number
@@ -23,5 +21,10 @@ interface Window {
     onProgress: (cb: (p: UpdateProgress) => void) => () => void
     onDownloaded: (cb: (info: { version: string }) => void) => () => void
     onError: (cb: (e: { message: string }) => void) => () => void
+  }
+  auth: {
+    getState: () => Promise<{ signedIn: boolean; email?: string }>
+    signIn: () => Promise<{ signedIn: boolean; email?: string; error?: string }>
+    signOut: () => Promise<{ signedIn: boolean }>
   }
 }

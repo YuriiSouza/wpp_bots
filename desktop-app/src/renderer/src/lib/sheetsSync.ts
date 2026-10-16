@@ -5,19 +5,19 @@ const LOCAL_ONLY = new Set([CONFIG_KEY, 'spx:header', 'spx:credentials'])
 
 export interface SheetsConfig {
   spreadsheetId: string
-  serviceAccountKeyJson: string // raw JSON string
 }
 
 const DEFAULT_SPREADSHEET_ID = '1LPsSbE5Jmgxrbe6ZKjq0ObBdDTOq7t5a3zLyqRBo0Y8'
 
-const DEFAULT_KEY_JSON = __SERVICE_ACCOUNT_KEY__
-
 export function getSheetsConfig(): SheetsConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed?.spreadsheetId) return { spreadsheetId: parsed.spreadsheetId }
+    }
   } catch {}
-  return { spreadsheetId: DEFAULT_SPREADSHEET_ID, serviceAccountKeyJson: DEFAULT_KEY_JSON }
+  return { spreadsheetId: DEFAULT_SPREADSHEET_ID }
 }
 
 export function saveSheetsConfig(cfg: SheetsConfig) {
@@ -29,17 +29,12 @@ function extractSpreadsheetId(urlOrId: string): string {
   return m ? m[1] : urlOrId.trim()
 }
 
-export function getServiceAccountEmail(keyJson: string): string {
-  try { return JSON.parse(keyJson).client_email ?? '' } catch { return '' }
-}
-
-// ─── IPC bridge ──────────────────────────────────────────────────────────────
+// ─── IPC bridge (o token OAuth do usuário é resolvido no processo main) ───────
 
 async function sheetsRequest(opts: {
   spreadsheetId: string
-  serviceAccountKeyJson: string
   method: 'GET' | 'POST' | 'PUT'
-  path: string       // e.g. "/values/app-data"
+  path: string // e.g. "/values/app-data"
   body?: unknown
 }): Promise<unknown> {
   const id = extractSpreadsheetId(opts.spreadsheetId)
@@ -48,7 +43,6 @@ async function sheetsRequest(opts: {
     url,
     method: opts.method,
     body: opts.body ?? null,
-    serviceAccountKeyJson: opts.serviceAccountKeyJson,
   })
 }
 
@@ -89,13 +83,11 @@ export async function pushToSheets(): Promise<{ written: number }> {
   const rows = buildRows(entries, new Date().toISOString())
   await sheetsRequest({
     spreadsheetId: cfg.spreadsheetId,
-    serviceAccountKeyJson: cfg.serviceAccountKeyJson,
     method: 'POST',
     path: '/values/app-data:clear',
   })
   await sheetsRequest({
     spreadsheetId: cfg.spreadsheetId,
-    serviceAccountKeyJson: cfg.serviceAccountKeyJson,
     method: 'PUT',
     path: '/values/app-data?valueInputOption=RAW',
     body: { values: rows },
@@ -107,12 +99,11 @@ export async function pushToSheets(): Promise<{ written: number }> {
 
 export async function pullFromSheets(): Promise<{ restored: number }> {
   const cfg = getSheetsConfig()
-  const result = await sheetsRequest({
+  const result = (await sheetsRequest({
     spreadsheetId: cfg.spreadsheetId,
-    serviceAccountKeyJson: cfg.serviceAccountKeyJson,
     method: 'GET',
     path: '/values/app-data',
-  }) as { values?: string[][] }
+  })) as { values?: string[][] }
   const data = parseRows(result?.values ?? [])
   let count = 0
   for (const [key, value] of data) {
@@ -130,15 +121,16 @@ export async function pullFromSheets(): Promise<{ restored: number }> {
 export async function testSheetsConnection(cfg: SheetsConfig): Promise<{ ok: boolean; error?: string; title?: string }> {
   try {
     const id = extractSpreadsheetId(cfg.spreadsheetId)
-    const result = await window.electron.ipcRenderer.invoke('sheets-request', {
+    const result = (await window.electron.ipcRenderer.invoke('sheets-request', {
       url: `https://sheets.googleapis.com/v4/spreadsheets/${id}?fields=properties.title`,
       method: 'GET',
       body: null,
-      serviceAccountKeyJson: cfg.serviceAccountKeyJson,
-    }) as { properties?: { title?: string }; error?: { message?: string } }
+    })) as { properties?: { title?: string }; error?: { message?: string } }
     if (result?.error) return { ok: false, error: result.error.message ?? 'Erro desconhecido' }
     return { ok: true, title: result?.properties?.title }
   } catch (err) {
-    return { ok: false, error: String(err) }
+    const msg = String(err)
+    if (msg.includes('NOT_SIGNED_IN')) return { ok: false, error: 'Entre com sua conta Google primeiro.' }
+    return { ok: false, error: msg }
   }
 }

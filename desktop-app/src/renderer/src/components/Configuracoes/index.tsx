@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { getGlobalConfig, saveGlobalConfig, DEFAULT_CONFIG, type GlobalConfig, type Shift } from '../../lib/globalConfig'
 import { pickFolder } from '../../lib/fileFinder'
 import { getAppVersion } from '../../lib/updateChecker'
-import { getSheetsConfig, saveSheetsConfig, pushToSheets, pullFromSheets, testSheetsConnection, getServiceAccountEmail, type SheetsConfig } from '../../lib/sheetsSync'
+import { getSheetsConfig, saveSheetsConfig, pushToSheets, pullFromSheets, testSheetsConnection, type SheetsConfig } from '../../lib/sheetsSync'
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
 const SHIFT_LABEL: Record<Shift, string> = { AM: 'AM (manhã)', PM1: 'PM1 (tarde)', PM2: 'PM2 (noite)' }
@@ -73,14 +73,26 @@ export default function Configuracoes() {
   useEffect(() => { getAppVersion().then(setAppVersion).catch(() => {}) }, [])
 
   const [sheets, setSheets] = useState<SheetsConfig>(() => getSheetsConfig())
-  // A chave em uso nunca é exibida; ela só entra por importação do arquivo .json.
-  const keyFileRef = useRef<HTMLInputElement>(null)
-  const [keyFile, setKeyFile] = useState<{ ok: boolean; msg: string } | null>(null)
   const [sheetsSaved, setSheetsSaved] = useState(false)
   const [sheetsTest, setSheetsTest] = useState<{ ok: boolean; msg: string } | null>(null)
   const [sheetsOp, setSheetsOp] = useState<{ loading: boolean; msg: string | null }>({ loading: false, msg: null })
   const [sheetsTutOpen, setSheetsTutOpen] = useState(false)
-  const accountEmail = getServiceAccountEmail(sheets.serviceAccountKeyJson)
+
+  // Login Google por usuário (o token fica no processo main, nunca no bundle).
+  const [auth, setAuth] = useState<{ signedIn: boolean; email?: string }>({ signedIn: false })
+  const [authBusy, setAuthBusy] = useState(false)
+  useEffect(() => { window.auth.getState().then(setAuth).catch(() => {}) }, [])
+  const signIn = async () => {
+    setAuthBusy(true)
+    try {
+      const r = await window.auth.signIn()
+      setAuth({ signedIn: r.signedIn, email: r.email })
+      if (!r.signedIn && r.error) setSheetsTest({ ok: false, msg: 'Login falhou: ' + r.error })
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+  const signOut = async () => { setAuth(await window.auth.signOut()) }
 
   const update = (next: GlobalConfig) => { setCfg(next); setDirty(true); setSaved(false) }
 
@@ -109,25 +121,6 @@ export default function Configuracoes() {
   }
 
   const changeSheets = (patch: Partial<SheetsConfig>) => { setSheets(s => ({ ...s, ...patch })); setSheetsSaved(false); setSheetsTest(null) }
-
-  // Importa o arquivo .json da conta de serviço, valida e já salva a conexão.
-  const handleKeyFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    try {
-      const text = await file.text()
-      const key = JSON.parse(text) as { type?: string; client_email?: string; private_key?: string }
-      if (key.type !== 'service_account' || !key.client_email || !key.private_key) throw new Error('não é uma chave de conta de serviço')
-      const next = { ...sheets, serviceAccountKeyJson: text }
-      setSheets(next)
-      saveSheetsConfig(next)
-      setSheetsTest(null)
-      setKeyFile({ ok: true, msg: `Chave importada de ${file.name}.` })
-    } catch (err) {
-      setKeyFile({ ok: false, msg: `Arquivo inválido: ${err instanceof SyntaxError ? 'não é um JSON' : err instanceof Error ? err.message : String(err)}.` })
-    }
-  }
 
   const runSheets = async (op: 'push' | 'pull') => {
     setSheetsOp({ loading: true, msg: null })
@@ -236,15 +229,20 @@ export default function Configuracoes() {
                 <input value={sheets.spreadsheetId} onChange={e => changeSheets({ spreadsheetId: e.target.value })} placeholder="https://docs.google.com/spreadsheets/d/..." style={{ ...INPUT, fontFamily: 'monospace' }} />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={LABEL}>Chave da conta de serviço</label>
+                <label style={LABEL}>Conta Google</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <Btn variant="outline" onClick={() => keyFileRef.current?.click()}>📄 {accountEmail ? 'Trocar arquivo .json' : 'Importar arquivo .json'}</Btn>
-                  <input ref={keyFileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={handleKeyFile} />
-                  <span style={{ fontSize: 11, color: accountEmail ? '#64748b' : '#fbbf24' }}>
-                    {accountEmail ? <>Conta em uso: <span style={{ color: '#60a5fa' }}>{accountEmail}</span></> : 'Nenhuma chave configurada.'}
-                  </span>
+                  {auth.signedIn ? (
+                    <>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>Conectado como <span style={{ color: '#60a5fa' }}>{auth.email || 'conta Google'}</span></span>
+                      <Btn variant="outline" onClick={signOut}>Sair</Btn>
+                    </>
+                  ) : (
+                    <>
+                      <Btn onClick={signIn} disabled={authBusy}>{authBusy ? 'Abrindo navegador…' : '🔑 Entrar com Google'}</Btn>
+                      <span style={{ fontSize: 11, color: '#fbbf24' }}>Não conectado. Entre com sua conta para sincronizar.</span>
+                    </>
+                  )}
                 </div>
-                {keyFile && <Status ok={keyFile.ok}>{keyFile.ok ? '✓ ' : '✕ '}{keyFile.msg}</Status>}
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Btn onClick={() => { saveSheetsConfig(sheets); setSheetsSaved(true); setTimeout(() => setSheetsSaved(false), 2000) }}>{sheetsSaved ? '✓ Salvo!' : 'Salvar conexão'}</Btn>
@@ -288,8 +286,8 @@ export default function Configuracoes() {
               <button onClick={() => setSheetsTutOpen(false)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: 18, cursor: 'pointer' }}>×</button>
             </div>
             {[
-              { n: '1', title: 'Crie ou abra uma planilha', body: 'Acesse sheets.google.com e crie uma planilha nova. O app cria sozinho a aba "app-data" na primeira sincronização.' },
-              { n: '2', title: 'Compartilhe com a conta de serviço', body: <>Clique em <strong style={{ color: '#e2e8f0' }}>Compartilhar</strong> na planilha e adicione o e-mail abaixo como <strong style={{ color: '#e2e8f0' }}>Editor</strong>:<br /><code style={{ background: '#0f1117', padding: '4px 8px', borderRadius: 4, fontSize: 11, display: 'block', marginTop: 6, wordBreak: 'break-all', color: '#60a5fa' }}>{accountEmail || '(configure a chave da conta de serviço primeiro)'}</code></> },
+              { n: '1', title: 'Compartilhe a planilha', body: <>No Google Sheets, clique em <strong style={{ color: '#e2e8f0' }}>Compartilhar</strong> e adicione as contas Google autorizadas como <strong style={{ color: '#e2e8f0' }}>Editor</strong>. Só quem estiver nessa lista consegue acessar pelo app.</> },
+              { n: '2', title: 'Entre com o Google', body: <>Clique em <strong style={{ color: '#e2e8f0' }}>Entrar com Google</strong> acima e faça login com uma conta que tenha acesso à planilha.</> },
               { n: '3', title: 'Cole o link da planilha', body: 'Copie o link da planilha no navegador e cole no campo "URL ou ID da planilha".' },
               { n: '4', title: 'Teste a conexão', body: 'Clique em "Testar conexão" para confirmar que o app consegue acessar a planilha.' },
               { n: '5', title: 'Sincronize os dados', body: 'Use "Enviar para Sheets" para gravar os dados deste computador, ou "Buscar do Sheets" para carregar os de outro.' },

@@ -3,10 +3,10 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import electronUpdater from 'electron-updater'
 import https from 'https'
-import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { getAuthState, getValidAccessToken, signIn, signOut } from './googleAuth'
 
 // electron-updater é CommonJS; em ESM o named export vem via default.
 const { autoUpdater } = electronUpdater
@@ -119,58 +119,7 @@ ipcMain.handle('find-latest-file', async (_event, { folder, pattern }: { folder:
   }
 })
 
-// ─── Google Sheets API via Service Account JWT ────────────────────────────────
-
-interface ServiceAccountKey {
-  client_email: string
-  private_key: string
-  token_uri?: string
-}
-
-// Simple in-memory token cache: { email -> { token, expiresAt } }
-const tokenCache = new Map<string, { token: string; expiresAt: number }>()
-
-function b64url(buf: Buffer | string): string {
-  const b = typeof buf === 'string' ? Buffer.from(buf) : buf
-  return b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-}
-
-function makeServiceAccountJWT(sa: ServiceAccountKey): string {
-  const now = Math.floor(Date.now() / 1000)
-  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
-  const payload = b64url(JSON.stringify({
-    iss: sa.client_email,
-    scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly',
-    aud: sa.token_uri ?? 'https://oauth2.googleapis.com/token',
-    exp: now + 3600,
-    iat: now,
-  }))
-  const unsigned = `${header}.${payload}`
-  const sign = crypto.createSign('RSA-SHA256')
-  sign.update(unsigned)
-  const sig = sign.sign(sa.private_key, 'base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-  return `${unsigned}.${sig}`
-}
-
-function httpsPost(url: string, body: string, contentType: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url)
-    const bodyBuf = Buffer.from(body, 'utf8')
-    const req = https.request({
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      method: 'POST',
-      headers: { 'Content-Type': contentType, 'Content-Length': bodyBuf.byteLength },
-    }, res => {
-      const chunks: Buffer[] = []
-      res.on('data', c => chunks.push(c))
-      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    })
-    req.on('error', reject)
-    req.write(bodyBuf)
-    req.end()
-  })
-}
+// ─── Google Sheets API (token OAuth do usuário) ───────────────────────────────
 
 function httpsGet(url: string, token: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -210,18 +159,6 @@ function httpsPutPost(method: 'PUT' | 'POST', url: string, body: string, token: 
   })
 }
 
-async function getAccessToken(sa: ServiceAccountKey): Promise<string> {
-  const cached = tokenCache.get(sa.client_email)
-  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token
-  const jwt = makeServiceAccountJWT(sa)
-  const body = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`
-  const raw = await httpsPost(sa.token_uri ?? 'https://oauth2.googleapis.com/token', body, 'application/x-www-form-urlencoded')
-  const data = JSON.parse(raw) as { access_token?: string; error?: string }
-  if (!data.access_token) throw new Error(data.error ?? 'Falha ao obter token')
-  tokenCache.set(sa.client_email, { token: data.access_token, expiresAt: Date.now() + 3500_000 })
-  return data.access_token
-}
-
 async function ensureSheetTab(spreadsheetId: string, tabName: string, token: string): Promise<void> {
   // Get existing sheets
   const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`
@@ -233,14 +170,12 @@ async function ensureSheetTab(spreadsheetId: string, tabName: string, token: str
     JSON.stringify({ requests: [{ addSheet: { properties: { title: tabName } } }] }), token)
 }
 
-ipcMain.handle('sheets-request', async (_event, { url, method, body, serviceAccountKeyJson }: {
+ipcMain.handle('sheets-request', async (_event, { url, method, body }: {
   url: string
   method: 'GET' | 'POST' | 'PUT'
   body: unknown
-  serviceAccountKeyJson: string
 }) => {
-  const sa = JSON.parse(serviceAccountKeyJson) as ServiceAccountKey
-  const token = await getAccessToken(sa)
+  const token = await getValidAccessToken()
 
   // Auto-create app-data tab when writing/reading values
   const tabMatch = url.match(/\/spreadsheets\/([^/]+)\/values\/([^?:/]+)/)
@@ -259,40 +194,18 @@ ipcMain.handle('sheets-request', async (_event, { url, method, body, serviceAcco
   return JSON.parse(raw)
 })
 
-// IPC: procura na pasta de releases do Drive o instalador com a maior versão no nome
-const RELEASES_FOLDER_ID = '1ixkdH_rPgY8yIl4RshWkJtuvV9xlbfRW'
-
-function parseVersion(v: string): number[] {
-  return v.split('.').map(Number)
-}
-
-function compareVersions(a: string, b: string): number {
-  const x = parseVersion(a), y = parseVersion(b)
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0)
-    if (d !== 0) return d
+// ─── Autenticação Google (OAuth por usuário) ──────────────────────────────────
+ipcMain.handle('auth:state', () => getAuthState())
+ipcMain.handle('auth:sign-in', async () => {
+  try {
+    return await signIn()
+  } catch (err) {
+    return { signedIn: false, error: err instanceof Error ? err.message : String(err) }
   }
-  return 0
-}
-
-ipcMain.handle('check-update', async (_event, { serviceAccountKeyJson }: { serviceAccountKeyJson: string }) => {
-  const current = app.getVersion()
-  const token = await getAccessToken(JSON.parse(serviceAccountKeyJson) as ServiceAccountKey)
-  const q = encodeURIComponent(`'${RELEASES_FOLDER_ID}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`)
-  const raw = await httpsGet(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`, token)
-  const data = JSON.parse(raw) as { files?: { id: string; name: string }[]; error?: { message?: string } }
-  if (data.error) throw new Error(data.error.message ?? 'Erro ao listar pasta de versões')
-  let latest: { version: string; name: string; url: string } | null = null
-  for (const f of data.files ?? []) {
-    // Only desktop installers count here; Android APKs share the folder.
-    if (!/\.(exe|dmg)$/i.test(f.name)) continue
-    const m = f.name.match(/(\d+\.\d+\.\d+)/)
-    if (!m) continue
-    if (!latest || compareVersions(m[1], latest.version) > 0) {
-      latest = { version: m[1], name: f.name, url: `https://drive.google.com/file/d/${f.id}/view` }
-    }
-  }
-  return { current, latest: latest && compareVersions(latest.version, current) > 0 ? latest : null }
+})
+ipcMain.handle('auth:sign-out', () => {
+  signOut()
+  return { signedIn: false }
 })
 
 ipcMain.handle('app-version', () => app.getVersion())

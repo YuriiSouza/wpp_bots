@@ -31,11 +31,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore service-account key
+      - name: Restore Google OAuth client config
         shell: bash
-        run: printf '%s' "$SERVICE_ACCOUNT_JSON" > service-account.local.json
+        run: printf '%s' "$GOOGLE_OAUTH_JSON" > google-oauth.local.json
         env:
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_OAUTH_JSON }}
 
       - name: Build and publish to GitHub Releases
         run: |

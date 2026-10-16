@@ -33,7 +33,6 @@ export const FILE_PATTERNS = {
   driver:       'br_driver_*.csv',
   callUp:       'br_export_call_up_notification_*.csv',
   forwardOrder: 'export_forward_order_*.csv',
-  assignment:   'br_assignment_task_*.csv',
   queueList:    'QueueList_*.csv',
   workPref:     'work_preference_result_*.xlsx',
 } as const

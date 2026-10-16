@@ -507,6 +507,129 @@ interface NovatoResult {
   availableToday?: boolean
 }
 
+// ─── Report dos novatos ────────────────────────────────────────────────────────
+interface NovatoLogEntry {
+  driverId: string; name: string; vehicle: string | null; atId: string; cluster: string; gaiola: string | null
+  routeVehicle: string | null; inRegion: boolean; replaced: string | null; spxOk: boolean | null; spxMsg: string | null; at: string
+}
+const novatoLogKey = (day: string, shift: Shift) => `spx:novatos-log:${day}:${shift}`
+function getNovatoLog(day: string, shift: Shift): NovatoLogEntry[] {
+  try { return JSON.parse(localStorage.getItem(novatoLogKey(day, shift)) ?? '[]') } catch { return [] }
+}
+function saveNovatoLog(list: NovatoLogEntry[], day: string, shift: Shift) {
+  try { localStorage.setItem(novatoLogKey(day, shift), JSON.stringify(list)) } catch { /* */ }
+}
+
+function NovatoReportModal({ open, onClose, day, shift, hub }: { open: boolean; onClose: () => void; day: string; shift: Shift; hub: string }) {
+  const [list, setList] = useState<NovatoLogEntry[]>([])
+  const [copied, setCopied] = useState<'' | 'img' | 'txt'>('')
+  const cardRef = useState(() => ({ current: null as HTMLDivElement | null }))[0]
+  useEffect(() => { if (open) { setList(getNovatoLog(day, shift)); setCopied('') } }, [open, day, shift])
+  if (!open) return null
+  const [y, m, d] = day.split('-')
+  const ok = list.filter(e => e.spxOk !== false)
+  const fail = list.filter(e => e.spxOk === false)
+  const inRegion = list.filter(e => e.inRegion).length
+  const replaced = list.filter(e => e.replaced).length
+  const byCluster = [...list.reduce((mp, e) => mp.set(e.cluster || '—', (mp.get(e.cluster || '—') ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1])
+  const flash = (k: 'img' | 'txt') => { setCopied(k); setTimeout(() => setCopied(''), 2000) }
+  const copyImage = async () => {
+    const el = cardRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    await window.electron.ipcRenderer.invoke('copy-region-image', { x: r.x, y: r.y, width: r.width, height: r.height })
+    flash('img')
+  }
+  const copyText = async () => {
+    const lines = [
+      `🆕 Convocação de Novatos – ${d}/${m}/${y}`, `🏢 Hub: ${hub || '—'} · 📍 Turno: ${shift}`, '',
+      `* Novatos convocados: ${list.length}`, `* Na região do motorista: ${inRegion}`, ...(replaced ? [`* Substituíram motorista: ${replaced}`] : []), ...(fail.length ? [`* Falharam no SPX: ${fail.length}`] : []), '',
+      ...list.map(e => `- ${e.name} (${e.driverId}) → ${e.atId} · ${e.gaiola ?? '—'} · ${e.cluster}${e.spxOk === false ? ' ⚠ não gravou no SPX' : ''}`),
+    ]
+    await navigator.clipboard.writeText(lines.join('\n'))
+    flash('txt')
+  }
+  const remove = (atId: string) => { const next = list.filter(e => e.atId !== atId); setList(next); saveNovatoLog(next, day, shift) }
+
+  return (
+    <Modal open={open} onClose={onClose} title="📊 Report dos novatos" maxWidth={760}>
+      <div style={{ overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {list.length === 0 ? (
+          <p style={{ margin: 0, fontSize: 13, color: '#8892a4' }}>Nenhum novato convocado em {shift} · {d}/{m}. O report é montado quando você clica em <b>🆕 Atribuir novatos</b>.</p>
+        ) : (
+          <>
+            {/* Cartão que vira imagem */}
+            <div ref={el => { cardRef.current = el }} style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 12, padding: '18px 20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#e2e8f0' }}>🆕 Convocação de novatos</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 12, color: '#8892a4' }}>{hub || 'Hub'} · Turno {shift} · {d}/{m}/{y}</p>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {[
+                    { label: 'Convocados', v: list.length, c: '#60a5fa' },
+                    { label: 'Na região', v: `${inRegion}/${list.length}`, c: inRegion === list.length ? '#4ade80' : '#fbbf24' },
+                    { label: 'Gravados no SPX', v: `${ok.length}/${list.length}`, c: fail.length ? '#f87171' : '#4ade80' },
+                  ].map(k => (
+                    <div key={k.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderTop: `3px solid ${k.c}`, borderRadius: 8, padding: '6px 12px', minWidth: 86 }}>
+                      <p style={{ margin: 0, fontSize: 9, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>{k.label}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: 18, fontWeight: 800, color: '#e2e8f0' }}>{k.v}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {byCluster.length > 1 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
+                  {byCluster.map(([c, n]) => <span key={c} style={{ fontSize: 11, background: 'rgba(96,165,250,.1)', border: '1px solid rgba(96,165,250,.25)', color: '#bfdbfe', borderRadius: 999, padding: '2px 9px' }}>{c} · {n}</span>)}
+                </div>
+              )}
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 14 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #2d3048' }}>
+                    {['Novato', 'Rota', 'Gaiola', 'Cluster', 'Situação'].map(h => <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontSize: 10, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map(e => (
+                    <tr key={e.atId} style={{ borderBottom: '1px solid #1e2130' }}>
+                      <td style={{ padding: '7px 8px' }}>
+                        <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{e.name}</span>
+                        <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.driverId}{e.vehicle ? ` · ${e.vehicle}` : ''}</span>
+                      </td>
+                      <td style={{ padding: '7px 8px', fontFamily: 'monospace', color: '#e2e8f0' }}>{e.atId}</td>
+                      <td style={{ padding: '7px 8px', fontWeight: 700, color: '#e2e8f0' }}>{e.gaiola ?? '—'}</td>
+                      <td style={{ padding: '7px 8px', color: '#94a3b8' }}>
+                        {e.cluster || '—'}
+                        <span style={{ display: 'block', fontSize: 10, color: e.inRegion ? '#4ade80' : '#fbbf24' }}>{e.inRegion ? '✓ na região' : '⚠ fora da região'}</span>
+                      </td>
+                      <td style={{ padding: '7px 8px' }}>
+                        {e.spxOk === false
+                          ? <span style={{ color: '#f87171', fontWeight: 700 }} title={e.spxMsg ?? ''}>✕ não gravou no SPX</span>
+                          : <span style={{ color: '#4ade80', fontWeight: 700 }}>✓ {e.spxOk ? 'no SPX' : 'atribuído'}</span>}
+                        {e.replaced && <span style={{ display: 'block', fontSize: 10, color: '#fca5a5' }}>substituiu {e.replaced}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Btn onClick={() => void copyImage()}>{copied === 'img' ? '✓ Imagem copiada — cole no WhatsApp' : '🖼 Copiar como imagem'}</Btn>
+              <Btn variant="outline" onClick={() => void copyText()}>{copied === 'txt' ? '✓ Texto copiado' : '📋 Copiar texto'}</Btn>
+              <span style={{ flex: 1 }} />
+              <select onChange={e => { if (e.target.value && window.confirm(`Tirar ${e.target.value} do report?`)) remove(e.target.value); e.target.value = '' }} defaultValue=""
+                style={{ background: '#0f1117', border: '1px solid #2d3048', color: '#8892a4', borderRadius: 6, padding: '5px 8px', fontSize: 11 }}>
+                <option value="">Tirar do report…</option>
+                {list.map(e => <option key={e.atId} value={e.atId}>{e.name} · {e.atId}</option>)}
+              </select>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
 function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
   workPref: import('../../lib/workPreferenceParser').WorkPreferenceData | null
   routes: LocalRoute[]
@@ -601,6 +724,13 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
   }
 
   const handleConfirm = () => {
+    // Rotas que já têm motorista só entram com autorização explícita
+    const replacing = suggestions.filter(s => s.resolvable).map(s => ({ s, r: getSelectedRoute(s) })).filter(x => x.r?.status === 'ATRIBUIDA')
+    if (replacing.length > 0 && !window.confirm(
+      `${replacing.length} rota(s) escolhida(s) JÁ TÊM motorista:\n\n` +
+      replacing.map(x => `• ${x.r!.atId} — hoje com ${x.r!.assignedDriverName || x.r!.assignedDriverId} → vai para ${x.s.name}`).join('\n') +
+      `\n\nO motorista atual perde a rota. Confirmar a troca?`
+    )) return
     const assignments: { route: LocalRoute; driver: LocalDriver }[] = []
     const res: NovatoResult[] = []
     for (const s of suggestions) {
@@ -729,11 +859,12 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                               const options = disponivel.filter(r => novatoVehicleOk(s.vehicleType, r.requiredVehicleType))
                               const label = (r: LocalRoute) => `${r.atId} — ${r.cluster || 'sem cluster'}${r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}`
                               const inside = options.filter(r => inDriverRegion(s.clusters, r.cluster))
-                              const outside = options.filter(r => !inDriverRegion(s.clusters, r.cluster))
+                              // Rotas que já têm motorista: só por escolha manual, e pedem confirmação
+                              const taken = routes.filter(r => r.status === 'ATRIBUIDA' && novatoVehicleOk(s.vehicleType, r.requiredVehicleType) && inDriverRegion(s.clusters, r.cluster))
                               return (
                                 <>
                                   {inside.length > 0 && <optgroup label={`✓ Na região do motorista (${inside.length})`}>{inside.map(r => <option key={r.id} value={r.id}>{label(r)}</option>)}</optgroup>}
-                                  {outside.length > 0 && <optgroup label={`⚠ Fora da região (${outside.length})`}>{outside.map(r => <option key={r.id} value={r.id}>{label(r)}</option>)}</optgroup>}
+                                  {taken.length > 0 && <optgroup label={`👤 Já têm motorista — substitui (${taken.length})`}>{taken.map(r => <option key={r.id} value={r.id}>{`${label(r)} · hoje: ${r.assignedDriverName || r.assignedDriverId}`}</option>)}</optgroup>}
                                 </>
                               )
                             })()}
@@ -741,6 +872,7 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                         </td>
                         <td style={{ padding: '7px 10px', color: '#94a3b8', fontSize: 11 }}>
                           {route?.cluster ?? '—'}{route?.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}
+                          {route?.status === 'ATRIBUIDA' && <span style={{ display: 'block', color: '#f87171', fontWeight: 700 }}>👤 já tem motorista: {route.assignedDriverName || route.assignedDriverId} — será substituído</span>}
                           {route && s.resolvable && (
                             inDriverRegion(s.clusters, route.cluster)
                               ? <span style={{ display: 'block', color: '#4ade80', fontWeight: 600 }}>✓ na região do motorista</span>
@@ -1584,6 +1716,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
   // ── Report modal ──────────────────────────────────────────────────────────
   const [reportModal, setReportModal] = useState(false)
+  const [novatoReportOpen, setNovatoReportOpen] = useState(false)
   const [reportHub, setReportHub] = useState(() => getGlobalConfig().hubName || '')
   const [reportCopied, setReportCopied] = useState(false)
   // Snapshot dos valores de atribuição no momento em que o report é aberto
@@ -1658,6 +1791,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     })
 
     const results: { atId: string; driverId: string; local: boolean; spxOk?: boolean; spxMsg?: string }[] = []
+    const novatoLog: NovatoLogEntry[] = []
 
     for (const { rid, atId, driver } of pairs) {
       let spxOk: boolean | undefined
@@ -1676,7 +1810,17 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       ))
 
       results.push({ atId, driverId: driver.driverId, local: true, spxOk, spxMsg })
+      if (driver.isNewDriver) {
+        const r = routes.find(x => x.id === rid)
+        novatoLog.push({
+          driverId: driver.driverId, name: driver.name, vehicle: driver.vehicleType, atId, cluster: r?.cluster ?? '', gaiola: r?.gaiola ?? null,
+          routeVehicle: r?.requiredVehicleType ?? null, inRegion: inDriverRegion(driver.clusters, r?.cluster ?? ''),
+          replaced: r?.status === 'ATRIBUIDA' ? (r.assignedDriverName || r.assignedDriverId) : null,
+          spxOk: spxOk ?? null, spxMsg: spxMsg ?? null, at: new Date().toISOString(),
+        })
+      }
     }
+    if (novatoLog.length) saveNovatoLog([...getNovatoLog(selectedDay, selectedShift).filter(x => !novatoLog.some(n => n.atId === x.atId)), ...novatoLog], selectedDay, selectedShift)
 
     // Persist final routes state
     setRoutes(routes.map(r => {
@@ -2322,6 +2466,9 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
             {fcSection === 'novatos' && (
               <div style={{ padding: '12px 20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                  <Btn variant="outline" onClick={() => setNovatoReportOpen(true)}>📊 Report dos novatos ({getNovatoLog(selectedDay, selectedShift).length})</Btn>
+                </div>
                 <NovatosPanel workPref={workPref} routes={routes} availableDrivers={availableDrivers} onAssign={applyOverrideAssignments} />
               </div>
             )}
@@ -2335,6 +2482,8 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         )}
       </div>
     </div>
+
+    <NovatoReportModal open={novatoReportOpen} onClose={() => setNovatoReportOpen(false)} day={selectedDay} shift={selectedShift} hub={reportHub} />
 
     {/* Batch assign modal */}
     <BatchAssignModal open={batchModal} onClose={() => setBatchModal(false)} onApply={handleBatchAssign} spxConfigured={spxConfigured} />

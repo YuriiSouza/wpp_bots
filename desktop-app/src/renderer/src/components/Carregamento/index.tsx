@@ -118,7 +118,8 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
     for (const r of routes) {
       seen.add(r.id)
       const ov = overrides.get(r.id)
-      if (ov) map.set(ov.driverId, { name: ov.name, atId: r.atId, cluster: r.cluster, gaiola: r.gaiola ?? '' })
+      // Rota já atribuída (no SPX ou confirmada no app) vale o motorista dela; a sugestão pendente só conta para rota livre
+      if (ov && r.status !== 'ATRIBUIDA') map.set(ov.driverId, { name: ov.name, atId: r.atId, cluster: r.cluster, gaiola: r.gaiola ?? '' })
       else if (r.assignedDriverId) map.set(r.assignedDriverId, { name: r.assignedDriverName ?? '', atId: r.atId, cluster: r.cluster, gaiola: r.gaiola ?? '' })
     }
     for (const [rid, ov] of overrides) if (!seen.has(rid)) map.set(ov.driverId, { name: ov.name, atId: '', cluster: '', gaiola: '' })
@@ -135,11 +136,14 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
   }, [queue, windows])
 
   const arrivedIds = useMemo(() => new Set((queue?.entries ?? []).map(e => e.driverId)), [queue])
+  // A rota já está na fila com outro motorista (trocada direto no SPX): não conta como "não chegou"
+  const arrivedAts = useMemo(() => new Set((queue?.entries ?? []).map(e => e.atId).filter(Boolean)), [queue])
 
   const notArrived = useMemo<NotArrived[]>(() => {
     const list: NotArrived[] = []
     for (const [driverId, info] of expected) {
       if (arrivedIds.has(driverId)) continue
+      if (info.atId && arrivedAts.has(info.atId)) continue
       const letter = extractLetter(info.gaiola)
       const w = windowForLetterMulti(letter, windows)
       let status: NotArrivedStatus
@@ -149,7 +153,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
     }
     const rank = (s: NotArrivedStatus) => (s === 'overdue' ? 0 : s === 'waiting' ? 1 : 2)
     return list.sort((a, b) => rank(a.status) - rank(b.status) || (a.arriveByMin ?? 0) - (b.arriveByMin ?? 0))
-  }, [expected, arrivedIds, windows, nowMin])
+  }, [expected, arrivedIds, arrivedAts, windows, nowMin])
 
   const onTime = rows.filter(r => r.w.status === 'on-time')
   const outOfWindow = rows.filter(r => r.w.status === 'out-of-window')

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { coversCluster, splitClusters } from '@/lib/clusterMatch'
-import { View } from 'react-native'
+import { Alert, View } from 'react-native'
 import { Btn, C, Card, Chip, Input, Row, Segmented, SHIFTS, SHIFT_COLOR, Sheet, T, copy } from '@/components/ui'
 import { parseRoutesTsv, type LocalRoute } from '@/lib/noshowRouteParser'
 import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '@/lib/threePlParser'
@@ -246,6 +246,20 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
   const routeOf = (s: NovatoSuggestion) => override[s.driverId] === '' ? null : (override[s.driverId] ? routes.find(r => r.id === override[s.driverId]) ?? s.suggestedRoute : s.suggestedRoute)
 
   const confirm = () => {
+    // Rotas que já têm motorista só entram com autorização explícita
+    const replacing = (suggestions ?? []).filter(s => s.resolvable).map(s => ({ s, r: routeOf(s) })).filter(x => x.r?.status === 'ATRIBUIDA')
+    if (replacing.length > 0) {
+      Alert.alert(
+        `${replacing.length} rota(s) já têm motorista`,
+        replacing.map(x => `• ${x.r!.atId}: ${x.r!.assignedDriverName || x.r!.assignedDriverId} → ${x.s.name}`).join('\n') + '\n\nO motorista atual perde a rota.',
+        [{ text: 'Cancelar', style: 'cancel' }, { text: 'Trocar', style: 'destructive', onPress: doConfirm }],
+      )
+      return
+    }
+    doConfirm()
+  }
+
+  const doConfirm = () => {
     const list: { route: LocalRoute; driver: LocalDriver }[] = []
     const res: NovatoResult[] = []
     for (const s of suggestions ?? []) {
@@ -310,6 +324,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
             <T size={11} color={C.dim}>{s.clusters.length ? s.clusters.join(', ') : 'sem dados WP'}</T>
             <Row>
               <T size={12} color={route ? C.text : override[s.driverId] === '' ? C.sub : C.red}>{route ? `${route.atId} · ${route.cluster}${route.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}` : override[s.driverId] === '' ? '➖ deixado sem rota' : '— sem rota —'}</T>
+              {route?.status === 'ATRIBUIDA' && <Chip label={`👤 substitui ${route.assignedDriverName || route.assignedDriverId}`} color={C.red} />}
               {route && s.resolvable && <Chip label={inDriverRegion(s.clusters, route.cluster) ? '✓ na região' : '⚠ fora da região'} color={inDriverRegion(s.clusters, route.cluster) ? C.green : C.yellow} />}
               {s.resolvable && <Btn small variant="outline" onPress={() => setPickFor(s.driverId)}>Trocar rota</Btn>}
             </Row>
@@ -319,10 +334,10 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       <Btn disabled={suggestions.every(s => !routeOf(s) || !s.resolvable)} onPress={confirm}>Confirmar atribuições</Btn>
       <Sheet open={!!picking} onClose={() => setPickFor(null)} title={`Rota para ${picking?.name ?? ''}`}>
         <Btn variant="outline" onPress={() => { setOverride(o => ({ ...o, [pickFor!]: '' })); setPickFor(null) }}>➖ Deixar sem rota</Btn>
-        {disponivel
-          .filter(r => novatoVehicleOk(picking?.vehicleType, r.requiredVehicleType))
-          .map(r => ({ r, inside: inDriverRegion(picking?.clusters ?? [], r.cluster) }))
-          .sort((a, b) => Number(b.inside) - Number(a.inside))
+        {[...disponivel, ...routes.filter(r => r.status === 'ATRIBUIDA')]
+          .filter(r => novatoVehicleOk(picking?.vehicleType, r.requiredVehicleType) && inDriverRegion(picking?.clusters ?? [], r.cluster))
+          .map(r => ({ r, inside: true }))
+          .sort((a, b) => Number(a.r.status === 'ATRIBUIDA') - Number(b.r.status === 'ATRIBUIDA') || Number(b.inside) - Number(a.inside))
           .map(({ r, inside }) => (
             <Card key={r.id} onPress={() => { setOverride(o => ({ ...o, [pickFor!]: r.id })); setPickFor(null) }} style={{ borderColor: inside ? 'rgba(74,222,128,.35)' : C.border }}>
               <Row style={{ justifyContent: 'space-between' }}>
@@ -330,6 +345,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
                 <Chip label={inside ? '✓ na região' : '⚠ fora da região'} color={inside ? C.green : C.yellow} />
               </Row>
               <T size={11} color={C.sub}>{r.cluster}{r.requiredVehicleType ? ` · ${r.requiredVehicleType}` : ''}</T>
+              {r.status === 'ATRIBUIDA' && <T size={11} bold color={C.red}>👤 já tem motorista: {r.assignedDriverName || r.assignedDriverId} — substitui</T>}
             </Card>
           ))}
       </Sheet>

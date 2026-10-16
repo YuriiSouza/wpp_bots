@@ -19,7 +19,7 @@ import { parseDriverCsv } from './lib/driverParser'
 import { reportStore } from './lib/reportStore'
 import { routeStore } from './lib/routeStore'
 import { parseRoutesTsv } from './lib/noshowRouteParser'
-import { parseBrAssignment } from './lib/brAssignmentParser'
+import { fetchAtDetails } from './lib/spxAtDetailFetcher'
 import { fetchAllSpxWorkPref, spxDriversToWorkPref } from './lib/spxWorkPrefFetcher'
 import { parseCallUpCsv } from './lib/callUpParser'
 import { parseForwardOrderCsv } from './lib/forwardOrderParser'
@@ -590,78 +590,63 @@ function RoutePasteCard({ defaultDate, defaultShift }: { defaultDate: string; de
   )
 }
 
-function applyBrAssignmentMap(map: ReturnType<typeof parseBrAssignment>): { matched: number; total: number } | null {
-  const allSaved = routeStore.list()
-  if (allSaved.length === 0) return null
-  let totalMatched = 0, totalRoutes = 0
-  // Track which drivers got routes per shift to remove from NoShow queue
-  const assignedByShift = new Map<string, Set<string>>()
-  for (const { date, shift } of allSaved) {
-    const routes = routeStore.get(date, shift)
-    if (!routes) continue
-    let matched = 0
-    const updated = routes.map(r => {
-      const entry = map.get(r.atId)
-      if (!entry) return r
-      matched++
-      if (entry.driverId) {
-        if (!assignedByShift.has(shift)) assignedByShift.set(shift, new Set())
-        assignedByShift.get(shift)!.add(entry.driverId)
-      }
-      return { ...r, assignedDriverId: entry.driverId || r.assignedDriverId, assignedDriverName: entry.driverName || r.assignedDriverName, status: (entry.driverId ? 'ATRIBUIDA' : r.status) as 'DISPONIVEL' | 'ATRIBUIDA' }
-    })
-    routeStore.save(date, shift, updated)
-    totalMatched += matched
-    totalRoutes += routes.length
-  }
-  // Remove drivers who got routes from the NoShow queues
-  for (const [shift, driverIds] of assignedByShift) {
-    noShowQueueStore.remove(shift as import('./lib/globalConfig').Shift, [...driverIds])
-  }
-  return { matched: totalMatched, total: totalRoutes }
-}
-
-function BrAssignmentCard() {
-  const [status, setStatus] = useState<{ matched: number; total: number } | null>(null)
+// Motorista de cada rota do dia/turno, consultado AT por AT no SPX (substitui o br_assignment_task).
+function SpxAtDriversCard({ selectedDay, selectedShift }: { selectedDay: string; selectedShift: Shift }) {
+  const [running, setRunning] = useState(false)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  const [result, setResult] = useState<{ withDriver: number; noDriver: number; failed: { atId: string; error: string }[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const routes = routeStore.get(selectedDay, selectedShift) ?? []
 
-  const handleFile = (csv: string) => {
-    setError(null); setStatus(null)
-    const map = parseBrAssignment(csv)
-    if (map.size === 0) { setError('Nenhum AT encontrado.'); return }
-    const allSaved = routeStore.list()
-    if (allSaved.length === 0) { setError('Nenhuma roteirização salva. Carregue primeiro.'); return }
-    const result = applyBrAssignmentMap(map)
-    if (result) setStatus(result)
-  }
-
-  const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => { const csv = ev.target?.result as string; if (csv) handleFile(csv) }
-    reader.readAsText(file, 'UTF-8')
-    e.target.value = ''
+  const run = async () => {
+    if (running) return
+    setRunning(true); setError(null); setResult(null); setProgress({ done: 0, total: routes.length })
+    try {
+      const { details, failed } = await fetchAtDetails(routes.map(r => r.atId), (done, total) => setProgress({ done, total }))
+      const current = routeStore.get(selectedDay, selectedShift) ?? []
+      const assigned = new Set<string>()
+      let withDriver = 0, noDriver = 0
+      const updated = current.map(r => {
+        const d = details.get(r.atId)
+        if (!d) return r
+        if (!d.driverId) { noDriver++; return { ...r, gaiola: r.gaiola || d.cage || null } }
+        withDriver++
+        assigned.add(d.driverId)
+        return { ...r, gaiola: r.gaiola || d.cage || null, assignedDriverId: d.driverId, assignedDriverName: d.driverName || r.assignedDriverName, status: 'ATRIBUIDA' as const }
+      })
+      routeStore.save(selectedDay, selectedShift, updated)
+      // Quem já tem rota sai da fila de reatribuição do turno
+      noShowQueueStore.remove(selectedShift, [...assigned])
+      setResult({ withDriver, noDriver, failed })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRunning(false)
+    }
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
-        Vincula o motorista a cada AT em todas as roteirizações salvas.
+        Consulta no SPX o motorista de cada AT das rotas de <b>{selectedShift} · {selectedDay}</b> ({routes.length} rotas), usando a sessão do SPX colada em Atribuição.
       </p>
-      <div
-        onClick={() => inputRef.current?.click()}
-        style={{ border: '2px dashed #2d3048', borderRadius: 8, padding: '14px 20px', textAlign: 'center', cursor: 'pointer', color: '#8892a4', fontSize: 12 }}
-        onDragOver={e => e.preventDefault()}
-        onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) { const r = new FileReader(); r.onload = ev => { const csv = ev.target?.result as string; if (csv) handleFile(csv) }; r.readAsText(f, 'UTF-8') } }}
-      >
-        📂 Clique ou arraste o <code>br_assignment_task_*.csv</code>
-        <input ref={inputRef} type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={onInputChange} />
-      </div>
-      {status && (
-        <div style={{ fontSize: 12, color: '#4ade80', fontWeight: 600 }}>
-          ✓ {status.matched} de {status.total} rotas vinculadas com motorista
+      <button onClick={() => void run()} disabled={running || routes.length === 0}
+        style={{ background: '#f97316', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: running || routes.length === 0 ? 'default' : 'pointer', opacity: routes.length === 0 ? .5 : 1 }}>
+        {running ? `⏳ Consultando ${progress?.done ?? 0}/${progress?.total ?? 0}…` : '🔄 Buscar motoristas no SPX'}
+      </button>
+      {routes.length === 0 && <div style={{ fontSize: 12, color: '#fbbf24' }}>Importe a roteirização deste dia/turno primeiro.</div>}
+      {result && (
+        <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <span style={{ color: '#4ade80', fontWeight: 600 }}>✓ {result.withDriver} rotas com motorista</span>
+          {result.noDriver > 0 && <span style={{ color: '#fbbf24' }}>{result.noDriver} AT sem motorista atribuído</span>}
+          {result.failed.length > 0 && (
+            <>
+              <span style={{ color: '#f87171', fontWeight: 600 }}>⚠ {result.failed.length} AT não consultadas — clique de novo para tentar</span>
+              {[...result.failed.reduce((m, f) => m.set(f.error, [...(m.get(f.error) ?? []), f.atId]), new Map<string, string[]>())].map(([err, ats]) => (
+                <span key={err} style={{ color: '#fca5a5', fontSize: 11, fontFamily: 'monospace', wordBreak: 'break-word' }}>{ats.length}× {err} <span style={{ color: '#64748b' }}>(ex.: {ats[0]})</span></span>
+              ))}
+            </>
+          )}
         </div>
       )}
       {error && <div style={{ fontSize: 12, color: '#f87171' }}>⚠ {error}</div>}
@@ -946,21 +931,19 @@ function UploadsPage(props: UploadsProps) {
           <RoutePasteCard defaultDate={selectedDay} defaultShift={selectedShift} />
         </UploadCard>
 
-        {/* BR Assignment */}
+        {/* Motorista por AT (SPX) */}
         <UploadCard
-          icon="🔗" title="BR Assignment (Motorista por AT)" color="#f97316"
-          description="Importa o arquivo br_assignment_task_*.csv e vincula o motorista a cada rota salva"
+          icon="🔗" title="Motorista por AT (SPX)" color="#f97316"
+          description="Busca no SPX quem está em cada rota do turno — não precisa mais do br_assignment_task"
           loaded={null}
           tutorial={[
-            'Acesse o sistema Shopee Xpress Live.',
-            'No menu lateral esquerdo, vá em Entrega → Event Management.',
-            'Selecione o hub onde você trabalha.',
-            'Clique em Exportar.',
-            'Acesse o menu de Downloads no canto superior esquerdo do sistema.',
-            'Baixe o relatório na pasta configurada neste aplicativo.',
+            'Importe a roteirização do turno no card acima.',
+            'Tenha a sessão do SPX colada em Atribuição › SPX (cURL).',
+            'Clique em Buscar motoristas no SPX. Cada AT é consultada uma vez.',
+            'Se a sessão expirar, cole um cURL novo e clique de novo.',
           ]}
         >
-          <BrAssignmentCard />
+          <SpxAtDriversCard selectedDay={selectedDay} selectedShift={selectedShift} />
         </UploadCard>
       </div>
     </div>

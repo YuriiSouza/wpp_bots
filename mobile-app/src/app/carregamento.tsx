@@ -54,7 +54,8 @@ export default function Carregamento() {
     for (const r of routes) {
       seen.add(r.id)
       const ov = overrides.get(r.id)
-      if (ov) map.set(ov.driverId, { name: ov.name, atId: r.atId, cluster: r.cluster, gaiola: r.gaiola ?? '' })
+      // Rota já atribuída (no SPX ou confirmada no app) vale o motorista dela; a sugestão pendente só conta para rota livre
+      if (ov && r.status !== 'ATRIBUIDA') map.set(ov.driverId, { name: ov.name, atId: r.atId, cluster: r.cluster, gaiola: r.gaiola ?? '' })
       else if (r.assignedDriverId) map.set(r.assignedDriverId, { name: r.assignedDriverName ?? '', atId: r.atId, cluster: r.cluster, gaiola: r.gaiola ?? '' })
     }
     for (const [rid, ov] of overrides) if (!seen.has(rid)) map.set(ov.driverId, { name: ov.name, atId: '', cluster: '', gaiola: '' })
@@ -69,9 +70,12 @@ export default function Carregamento() {
 
   const notArrived = useMemo<NotArrived[]>(() => {
     const arrived = new Set((queue?.entries ?? []).map(e => e.driverId))
+    // Rota já na fila com outro motorista (trocada direto no SPX) não conta como "não chegou"
+    const arrivedAts = new Set((queue?.entries ?? []).map(e => e.atId).filter(Boolean))
     const list: NotArrived[] = []
     for (const [driverId, info] of expected) {
       if (arrived.has(driverId)) continue
+      if (info.atId && arrivedAts.has(info.atId)) continue
       const letter = extractLetter(info.gaiola)
       const w = windowForLetterMulti(letter, windows)
       list.push({ driverId, ...info, letter, arriveByMin: w?.arriveByMin ?? null, status: !w ? 'unknown-letter' : nowMin >= w.arriveByMin ? 'overdue' : 'waiting' })

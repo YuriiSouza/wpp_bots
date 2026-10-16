@@ -1,11 +1,11 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import type { Shift } from '../../lib/globalConfig'
-import { findLatestFile, FILE_PATTERNS, pickFolder } from '../../lib/fileFinder'
-import { getGlobalConfig, saveGlobalConfig } from '../../lib/globalConfig'
 import type { StoredDriver } from '../../lib/localStore'
 import { routeStore } from '../../lib/routeStore'
 import { queueStore } from '../../lib/queueStore'
-import { parseQueueListCsv, computeLoadWindowMulti, windowForLetterMulti, extractLetter, minToHHMM, parseTimeToMinutes, type QueueEntry, type LoadWindowConfig } from '../../lib/queueListParser'
+import CarregamentoDashboard from './Dashboard'
+import { fetchSpxQueue, dockKey, SITUATION_LABEL, type QueueSituation } from '../../lib/spxQueueFetcher'
+import { computeLoadWindowMulti, windowForLetterMulti, extractLetter, minToHHMM, type QueueEntry, type LoadWindowConfig } from '../../lib/queueListParser'
 
 interface Props {
   registry: StoredDriver[]
@@ -87,14 +87,25 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
     return m
   }, [registry])
 
-  const handleFile = async (file: File) => {
-    const text = await file.text()
-    const res = parseQueueListCsv(text)
-    if (res.error) { setError(res.error); return }
-    setError(null)
-    setQueue({ entries: res.entries, fileName: file.name })
-    queueStore.save(selectedDay, selectedShift, res.entries, file.name)
+  // Atualiza a fila direto da API do SPX (mesma sessão usada em Atribuição)
+  const [loading, setLoading] = useState(false)
+  const refreshFromSpx = async () => {
+    if (loading) return
+    setLoading(true)
+    try {
+      const entries = await fetchSpxQueue()
+      const name = `SPX · ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+      setError(null)
+      setQueue({ entries, fileName: name })
+      queueStore.save(selectedDay, selectedShift, entries, name)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
   }
+  // Ao abrir a tela (ou trocar o turno), já busca a fila atual
+  useEffect(() => { void refreshFromSpx() }, [selectedDay, selectedShift]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Esperados (rota atribuída no app), com a gaiola — para achar quem não chegou e o prazo dele.
   // Por ROTA: cada rota conta 1 motorista efetivo (override manda sobre o assignedDriverId),
@@ -149,30 +160,18 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
 
   const [reportOpen, setReportOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const q = search.trim().toLowerCase()
-  const shownRows = !q ? rows : rows.filter(({ e }) => e.driverName.toLowerCase().includes(q) || e.driverId.includes(q) || e.atId.toLowerCase().includes(q))
-  const shownNotArrived = !q ? notArrived : notArrived.filter(n => n.name.toLowerCase().includes(q) || n.driverId.includes(q) || n.atId.toLowerCase().includes(q))
-  const [activeView, setActiveView] = useState<'lista' | 'dashboard'>('lista')
-
-  // Timeline de chegadas (agrupada por slots de 15 min)
-  const timeline = useMemo(() => {
-    const slots = new Map<number, { onTime: number; outOfWindow: number }>()
-    for (const { e, w } of rows) {
-      if (e.arrivalMin === null) continue
-      const slot = Math.floor(e.arrivalMin / 15) * 15
-      if (!slots.has(slot)) slots.set(slot, { onTime: 0, outOfWindow: 0 })
-      const s = slots.get(slot)!
-      if (w.status === 'on-time') s.onTime++; else s.outOfWindow++
-    }
-    return [...slots.entries()].sort((a, b) => a[0] - b[0])
-  }, [rows])
-
-  // Tempo médio de espera (waitingMin dos que chegaram)
-  const waitingStats = useMemo(() => {
-    const vals = rows.map(r => r.e.waitingMin).filter((v): v is number => v !== null)
-    if (vals.length === 0) return { avg: null, max: null }
-    return { avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length), max: Math.max(...vals) }
-  }, [rows])
+  // Busca sem diferenciar maiúsculas nem acentos ("joao" acha "João")
+  const norm = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const q = norm(search.trim())
+  // Letra selecionada ('' = todas; '—' = sem letra)
+  const [letterFilter, setLetterFilter] = useState('')
+  const inLetter = (letter: string) => !letterFilter || (letter || '—') === letterFilter
+  const shownRows = rows.filter(({ e }) => inLetter(e.letter) && (!q || norm(e.driverName).includes(q) || e.driverId.includes(q) || norm(e.atId).includes(q)))
+  const shownNotArrived = notArrived.filter(n => inLetter(n.letter) && (!q || norm(n.name).includes(q) || n.driverId.includes(q) || norm(n.atId).includes(q)))
+  const letterRows = rows.filter(({ e }) => inLetter(e.letter))
+  const letterNotArrived = notArrived.filter(n => inLetter(n.letter))
+  const [activeView, setActiveView] = useState<'lista' | 'dashboard' | 'mesas'>('lista')
+  const [showWindows, setShowWindows] = useState(false)
 
   // Quebra por letra (chegaram + não chegaram)
   const perLetter = useMemo(() => {
@@ -201,11 +200,20 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
           <div>
             <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>Carregamento</h2>
             <p style={{ margin: '2px 0 0', fontSize: 11, color: '#8892a4' }}>
-              {selectedShift} · {selectedDay}{queue ? ` · ${queue.entries.length} na fila · ${queue.fileName}` : ' · importe o QueueList'} · agora {minToHHMM(nowMin)}
+              {selectedShift} · {selectedDay} · agora {minToHHMM(nowMin)}{queue ? <> · <span style={{ color: '#4ade80' }}>●</span> {queue.fileName.replace('SPX · ', 'atualizado às ')}</> : ' · clique em Atualizar do SPX'}
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Janelas de carregamento */}
+            <Btn outline color="#94a3b8" onClick={() => setShowWindows(v => !v)}>⏱ Janelas: {windows.filter(w => w.startCage && w.startTime).map(w => `${w.startCage} ${w.startTime}`).join(' · ') || 'definir'}</Btn>
+            {queue && <Btn outline color="#a78bfa" onClick={() => setReportOpen(true)}>📊 Report</Btn>}
+            {queue && <button title="Remover a fila salva deste turno" onClick={() => { if (window.confirm('Remover a fila salva deste turno?')) { queueStore.clear(selectedDay, selectedShift); setQueue(null) } }}
+              style={{ background: 'transparent', border: '1px solid #2d3048', color: '#64748b', borderRadius: 7, padding: '6px 9px', fontSize: 12, cursor: 'pointer' }}>🗑</button>}
+            <Btn onClick={() => void refreshFromSpx()} disabled={loading}>{loading ? '⏳ Atualizando…' : '🔄 Atualizar do SPX'}</Btn>
+          </div>
+        </div>
+        {showWindows && (
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, padding: '6px 10px' }}>
               <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em' }}>Janelas</span>
               {windows.map((w, i) => (
@@ -229,19 +237,9 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
               <button onClick={() => saveWindows([...windows, { startCage: 'A', startTime: '' }])}
                 style={{ background: 'none', border: '1px dashed #2d3048', color: '#64748b', borderRadius: 5, cursor: 'pointer', fontSize: 11, padding: '2px 7px' }}>+ janela</button>
             </div>
-            {queue && <Btn outline color="#a78bfa" onClick={() => setReportOpen(true)}>📊 Gerar report</Btn>}
-            <AutoQueueFind onFound={(content, name) => {
-              const res = parseQueueListCsv(content)
-              if (!res.error) { setError(null); setQueue({ entries: res.entries, fileName: name }); queueStore.save(selectedDay, selectedShift, res.entries, name) }
-              else setError(res.error)
-            }} />
-            <label style={{ cursor: 'pointer' }}>
-              <span style={{ display: 'inline-block', background: '#7c3aed', color: '#fff', borderRadius: 7, padding: '6px 13px', fontSize: 12, fontWeight: 600 }}>📤 Importar QueueList</span>
-              <input type="file" accept=".csv" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.currentTarget.value = '' }} />
-            </label>
-            {queue && <Btn outline color="#f87171" onClick={() => { if (window.confirm('Remover a fila importada deste turno?')) { queueStore.clear(selectedDay, selectedShift); setQueue(null) } }}>🗑 Limpar</Btn>}
+            <span style={{ fontSize: 11, color: '#64748b' }}>Letra/gaiola em que começa o carregamento e o horário. Cada letra seguinte = +20 min; o prazo de chegada é 20 min antes.</span>
           </div>
-        </div>
+        )}
         {error && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#f87171' }}>⚠ {error}</p>}
         {!hasValidWindows && queue && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fbbf24' }}>⚠ Defina pelo menos uma janela de carregamento (letra + horário) para calcular os prazos.</p>}
       </div>
@@ -249,9 +247,9 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
       {/* Tab bar — só exibe quando há dados */}
       {queue && (
         <div style={{ display: 'flex', borderBottom: '1px solid #2d3048', flexShrink: 0, paddingLeft: 20 }}>
-          {(['lista', 'dashboard'] as const).map(v => (
+          {(['lista', 'mesas', 'dashboard'] as const).map(v => (
             <button key={v} onClick={() => setActiveView(v)} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: activeView === v ? '2px solid #7c3aed' : '2px solid transparent', background: 'transparent', color: activeView === v ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
-              {v === 'lista' ? 'Lista' : '📊 Dashboard'}
+              {v === 'lista' ? `📋 Motoristas (${rows.length + notArrived.length})` : v === 'mesas' ? `🪑 Mesas${queue.entries.some(e => e.situation === 'at-dock' || e.situation === 'calling') ? ` (${queue.entries.filter(e => e.situation === 'at-dock' || e.situation === 'calling').length} em uso)` : ''}` : '📊 Dashboard'}
             </button>
           ))}
         </div>
@@ -259,252 +257,113 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
 
       {!queue ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', fontSize: 13, textAlign: 'center', padding: 40 }}>
-          <p style={{ margin: 0, maxWidth: 420 }}>Importe o relatório <b>QueueList</b> deste turno para ver quem chegou no prazo, quem chegou fora da janela, quem está aguardando e quem está atrasado.</p>
+          <p style={{ margin: 0, maxWidth: 420 }}>{loading ? 'Buscando a fila no SPX…' : <>Clique em <b>🔄 Atualizar do SPX</b> para buscar a fila deste turno e ver</>} quem chegou no prazo, quem chegou fora da janela, quem está aguardando e quem está atrasado.</p>
         </div>
+      ) : activeView === 'mesas' ? (
+        <MesasView entries={queue.entries} phoneMap={phoneMap} day={selectedDay} onRefresh={refreshFromSpx} />
       ) : activeView === 'dashboard' ? (
-        <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px 80px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {(() => {
-            const total = rows.length + notArrived.length
-            const pct = (n: number) => total > 0 ? Math.round((n / total) * 100) : 0
-            const pctArrived = total > 0 ? Math.round((rows.length / total) * 100) : 0
-            const punctual = (onTime.length + outOfWindow.length) > 0 ? Math.round((onTime.length / (onTime.length + outOfWindow.length)) * 100) : 0
-            const tlMax = timeline.length > 0 ? Math.max(...timeline.map(([, s]) => s.onTime + s.outOfWindow)) : 1
-
-            const kpis = [
-              { label: 'Total esperado', value: total, color: '#60a5fa', sub: '' },
-              { label: 'Chegaram', value: rows.length, color: pctArrived >= 80 ? '#4ade80' : pctArrived >= 50 ? '#fbbf24' : '#f87171', sub: `${pctArrived}% do total` },
-              { label: 'No prazo', value: onTime.length, color: '#4ade80', sub: `${pct(onTime.length)}% do total` },
-              { label: 'Fora da janela', value: outOfWindow.length, color: '#fb923c', sub: `${pct(outOfWindow.length)}% do total` },
-              { label: 'Aguardando', value: waiting.length, color: '#fbbf24', sub: 'não chegaram ainda' },
-              { label: 'Atrasados', value: overdue.length, color: '#f87171', sub: 'passaram do prazo' },
-              { label: 'Pontualidade', value: `${punctual}%`, color: punctual >= 80 ? '#4ade80' : punctual >= 50 ? '#fbbf24' : '#f87171', sub: 'dos que chegaram' },
-              ...(waitingStats.avg !== null ? [{ label: 'Espera média', value: `${waitingStats.avg}min`, color: (waitingStats.avg ?? 0) >= 60 ? '#f87171' : (waitingStats.avg ?? 0) >= 30 ? '#fbbf24' : '#4ade80', sub: `máx ${waitingStats.max}min` }] : []),
-            ]
-
-            const segs = [
-              { label: 'No prazo', n: onTime.length, c: '#4ade80' },
-              { label: 'Fora da janela', n: outOfWindow.length, c: '#fb923c' },
-              { label: 'Aguardando', n: waiting.length, c: '#fbbf24' },
-              { label: 'Atrasados', n: overdue.length, c: '#f87171' },
-              { label: 'Sem dados', n: unknownArrived.length + unknownLetter.length, c: '#374151' },
-            ].filter(s => s.n > 0)
-
-            return (
-              <>
-                {/* KPI cards */}
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  {kpis.map(k => (
-                    <div key={k.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '10px 16px', minWidth: 110, flex: '1 1 110px' }}>
-                      <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em' }}>{k.label}</p>
-                      <p style={{ margin: '4px 0 2px', fontSize: 26, fontWeight: 700, color: k.color, lineHeight: 1 }}>{k.value}</p>
-                      {k.sub && <p style={{ margin: 0, fontSize: 10, color: '#8892a4' }}>{k.sub}</p>}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Barra de status */}
-                <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '14px 16px' }}>
-                  <p style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>Distribuição geral</p>
-                  <div style={{ display: 'flex', height: 28, borderRadius: 7, overflow: 'hidden', background: '#0f1117' }}>
-                    {segs.map(s => <div key={s.label} title={`${s.label}: ${s.n} (${pct(s.n)}%)`} style={{ width: `${pct(s.n)}%`, background: s.c, transition: 'width .3s' }} />)}
-                  </div>
-                  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10 }}>
-                    {segs.map(s => (
-                      <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                        <span style={{ width: 10, height: 10, borderRadius: 3, background: s.c, flexShrink: 0 }} />
-                        <span style={{ color: '#94a3b8' }}>{s.label}</span>
-                        <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{s.n}</span>
-                        <span style={{ color: '#64748b' }}>({pct(s.n)}%)</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Por letra */}
-                <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '14px 16px' }}>
-                  <p style={{ margin: '0 0 12px', fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>Por letra</p>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid #2d3048' }}>
-                        {['Letra', 'Janela', 'No prazo', 'Fora janela', 'Aguardando', 'Atrasado', 'Pontualidade', 'Distribuição'].map(h => (
-                          <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {perLetter.map(([letter, g]) => {
-                        const arrived = g.onTime + g.outOfWindow
-                        const t = arrived + g.overdue + g.waiting + g.unknown
-                        const pt = arrived > 0 ? Math.round((g.onTime / arrived) * 100) : null
-                        const seg = [[g.onTime, '#4ade80'], [g.outOfWindow, '#fb923c'], [g.waiting, '#fbbf24'], [g.overdue, '#f87171'], [g.unknown, '#374151']] as [number, string][]
-                        // Encontra a janela desta letra para mostrar o horário
-                        const winInfo = (() => {
-                          if (!hasValidWindows) return null
-                          // Usa a primeira entrada desta letra para calcular
-                          const sample = rows.find(r => r.e.letter === letter)
-                          return sample ? { startMin: sample.w.startMin, arriveByMin: sample.w.arriveByMin } : null
-                        })()
-                        return (
-                          <tr key={letter} style={{ borderBottom: '1px solid #1e2130' }}>
-                            <td style={{ padding: '8px 10px', fontWeight: 700, fontSize: 14, color: '#e2e8f0' }}>{letter}</td>
-                            <td style={{ padding: '8px 10px', color: '#64748b', fontSize: 11, fontFamily: 'monospace' }}>
-                              {winInfo ? `${minToHHMM(winInfo.arriveByMin)}→${minToHHMM(winInfo.startMin)}` : '—'}
-                            </td>
-                            <td style={{ padding: '8px 10px', color: '#4ade80', fontWeight: 600 }}>{g.onTime}</td>
-                            <td style={{ padding: '8px 10px', color: '#fb923c', fontWeight: 600 }}>{g.outOfWindow}</td>
-                            <td style={{ padding: '8px 10px', color: '#fbbf24', fontWeight: 600 }}>{g.waiting}</td>
-                            <td style={{ padding: '8px 10px', color: '#f87171', fontWeight: 600 }}>{g.overdue}</td>
-                            <td style={{ padding: '8px 10px' }}>
-                              {pt !== null
-                                ? <span style={{ color: pt >= 80 ? '#4ade80' : pt >= 50 ? '#fbbf24' : '#f87171', fontWeight: 700 }}>{pt}%</span>
-                                : <span style={{ color: '#374151' }}>—</span>}
-                            </td>
-                            <td style={{ padding: '8px 10px' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <div style={{ display: 'flex', height: 12, width: 120, borderRadius: 3, overflow: 'hidden', background: '#0f1117' }}>
-                                  {seg.filter(([n]) => n > 0).map(([n, c], i) => <div key={i} style={{ width: `${t > 0 ? (n / t) * 100 : 0}%`, background: c }} />)}
-                                </div>
-                                <span style={{ fontSize: 10, color: '#64748b' }}>{t}</span>
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Timeline de chegadas */}
-                {timeline.length > 0 && (
-                  <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '14px 16px' }}>
-                    <p style={{ margin: '0 0 14px', fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>Timeline de chegadas (slots de 15 min)</p>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                      {timeline.map(([slot, s]) => {
-                        const tot = s.onTime + s.outOfWindow
-                        const barW = tlMax > 0 ? Math.round((tot / tlMax) * 100) : 0
-                        const onTimeW = tot > 0 ? Math.round((s.onTime / tot) * barW) : 0
-                        const outW = barW - onTimeW
-                        return (
-                          <div key={slot} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <span style={{ fontSize: 11, fontFamily: 'monospace', color: '#64748b', width: 42, flexShrink: 0, textAlign: 'right' }}>{minToHHMM(slot)}</span>
-                            <div style={{ flex: 1, display: 'flex', height: 18, borderRadius: 4, overflow: 'hidden', background: '#0f1117' }}>
-                              {onTimeW > 0 && <div style={{ width: `${onTimeW}%`, background: '#4ade80' }} />}
-                              {outW > 0 && <div style={{ width: `${outW}%`, background: '#fb923c' }} />}
-                            </div>
-                            <span style={{ fontSize: 11, color: '#94a3b8', width: 24, flexShrink: 0 }}>{tot}</span>
-                          </div>
-                        )
-                      })}
-                    </div>
-                    <div style={{ display: 'flex', gap: 14, marginTop: 12 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#94a3b8' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: '#4ade80', display: 'inline-block' }} />No prazo</div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#94a3b8' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: '#fb923c', display: 'inline-block' }} />Fora da janela</div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Atrasados */}
-                {overdue.length > 0 && (
-                  <div style={{ background: '#13151f', border: '1px solid rgba(239,68,68,.25)', borderRadius: 10, padding: '14px 16px' }}>
-                    <p style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, color: '#f87171' }}>🔴 Atrasados ({overdue.length})</p>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {overdue.map(n => (
-                        <div key={n.driverId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12 }}>
-                          <span style={{ color: '#e2e8f0' }}>{n.name || n.driverId}</span>
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            <span style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11 }}>{n.letter || '—'} · prazo {minToHHMM(n.arriveByMin)}</span>
-                            {phoneMap.get(n.driverId) && <span style={{ color: '#94a3b8', fontFamily: 'monospace', fontSize: 10 }}>{phoneMap.get(n.driverId)}</span>}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>
-            )
-          })()}
-        </div>
+        <CarregamentoDashboard rows={rows} notArrived={notArrived} nowMin={nowMin} phoneMap={phoneMap} />
       ) : (
         <div style={{ flex: 1, overflow: 'auto', paddingBottom: 80 }}>
-          {/* Stats */}
-          <div style={{ display: 'flex', gap: 10, padding: '12px 20px', flexWrap: 'wrap' }}>
-            {[
-              { label: 'Na fila', value: rows.length, color: '#60a5fa' },
-              { label: '✅ No prazo', value: onTime.length, color: '#4ade80' },
-              { label: '🟠 Fora da janela', value: outOfWindow.length, color: '#fb923c' },
-              { label: '⏳ Aguardando', value: waiting.length, color: '#fbbf24' },
-              { label: '🔴 Atrasados', value: overdue.length, color: '#f87171' },
-              ...(unknownArrived.length + unknownLetter.length ? [{ label: 'Sem letra/hora', value: unknownArrived.length + unknownLetter.length, color: '#94a3b8' }] : []),
-            ].map(s => (
-              <div key={s.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, padding: '8px 14px', minWidth: 92 }}>
-                <p style={{ margin: 0, fontSize: 10, color: '#8892a4' }}>{s.label}</p>
-                <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* Busca */}
-          <div style={{ padding: '0 20px 10px', display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Barra: busca + copiar telefones */}
+          <div style={{ margin: '14px 20px 12px', background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '10px 12px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               placeholder="🔍  Buscar motorista, ID ou AT..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              style={{ width: 280, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 7, padding: '6px 12px', fontSize: 12, outline: 'none' }}
+              style={{ flex: '1 1 220px', maxWidth: 320, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 7, padding: '7px 12px', fontSize: 12, outline: 'none' }}
             />
-            {q && <span style={{ fontSize: 11, color: '#8892a4' }}>{shownRows.length} na fila · {shownNotArrived.length} não chegaram</span>}
-            {q && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}>✕ limpar</button>}
+            {q && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}>✕</button>}
+            {(q || letterFilter) && <span style={{ fontSize: 11, color: '#8892a4' }}>{shownRows.length} na fila · {shownNotArrived.length} não chegaram</span>}
+            <span style={{ flex: 1 }} />
+            <span style={{ fontSize: 10, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>Copiar telefones</span>
+            <Btn outline color="#f87171" onClick={() => copy('op', phones(overdue.map(n => n.driverId)))} disabled={overdue.length === 0}>{lbl('op', `🔴 Atrasados (${overdue.length})`)}</Btn>
+            <Btn outline color="#fbbf24" onClick={() => copy('wp', phones(waiting.map(n => n.driverId)))} disabled={waiting.length === 0}>{lbl('wp', `⏳ Aguardando (${waiting.length})`)}</Btn>
+            <Btn outline color="#fb923c" onClick={() => copy('fp', phones(outOfWindow.map(r => r.e.driverId)))} disabled={outOfWindow.length === 0}>{lbl('fp', `🟠 Fora da janela (${outOfWindow.length})`)}</Btn>
+            <Btn outline color="#94a3b8" onClick={() => copy('oi', overdue.map(n => n.driverId))} disabled={overdue.length === 0}>{lbl('oi', '🆔 IDs atrasados')}</Btn>
           </div>
+          {registry.length === 0 && <p style={{ margin: '-4px 20px 10px', fontSize: 11, color: '#fbbf24' }}>⚠ Importe o relatório de motoristas para ter os telefones.</p>}
 
-          {/* Copy actions */}
-          <div style={{ display: 'flex', gap: 8, padding: '0 20px 12px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <Btn outline color="#f87171" onClick={() => copy('op', phones(overdue.map(n => n.driverId)))} disabled={overdue.length === 0}>📱 {lbl('op', `Tel. atrasados (${overdue.length})`)}</Btn>
-            <Btn outline color="#f87171" onClick={() => copy('oi', overdue.map(n => n.driverId))} disabled={overdue.length === 0}>🆔 {lbl('oi', 'IDs')}</Btn>
-            <span style={{ width: 1, height: 20, background: '#2d3048' }} />
-            <Btn outline color="#fbbf24" onClick={() => copy('wp', phones(waiting.map(n => n.driverId)))} disabled={waiting.length === 0}>📱 {lbl('wp', `Tel. aguardando (${waiting.length})`)}</Btn>
-            <span style={{ width: 1, height: 20, background: '#2d3048' }} />
-            <Btn outline color="#fb923c" onClick={() => copy('fp', phones(outOfWindow.map(r => r.e.driverId)))} disabled={outOfWindow.length === 0}>📱 {lbl('fp', `Tel. fora da janela (${outOfWindow.length})`)}</Btn>
-            <Btn outline color="#fb923c" onClick={() => copy('fi', outOfWindow.map(r => r.e.driverId))} disabled={outOfWindow.length === 0}>🆔 {lbl('fi', 'IDs')}</Btn>
-            {registry.length === 0 && <span style={{ fontSize: 11, color: '#fbbf24' }}>⚠ Importe o relatório de motoristas para ter os telefones.</span>}
+          {/* Por letra */}
+          <div style={{ padding: '0 20px 12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Por letra</span>
+              <span style={{ fontSize: 11, color: '#64748b' }}>clique numa letra para ver só os motoristas dela</span>
+              {letterFilter && <button onClick={() => setLetterFilter('')} style={{ background: 'none', border: 'none', color: '#a78bfa', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>✕ ver todas</button>}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 8 }}>
+              {perLetter.map(([letter, g]) => {
+                const arrived = g.onTime + g.outOfWindow
+                const t = arrived + g.overdue + g.waiting + g.unknown
+                const active = letterFilter === letter
+                const win = hasValidWindows && letter !== '—' ? windowForLetterMulti(letter, windows) : null
+                const seg = [[g.onTime, '#4ade80'], [g.outOfWindow, '#fb923c'], [g.waiting, '#fbbf24'], [g.overdue, '#f87171'], [g.unknown, '#374151']] as [number, string][]
+                const ids = [...rows.filter(r => (r.e.letter || '—') === letter).map(r => r.e.driverId), ...notArrived.filter(n => (n.letter || '—') === letter).map(n => n.driverId)]
+                const accent = g.overdue > 0 ? '#f87171' : g.waiting > 0 ? '#fbbf24' : '#4ade80'
+                return (
+                  <div key={letter} onClick={() => setLetterFilter(active ? '' : letter)}
+                    style={{ cursor: 'pointer', background: active ? 'rgba(124,58,237,.14)' : '#13151f', border: `1px solid ${active ? '#7c3aed' : '#2d3048'}`, borderLeft: `3px solid ${accent}`, borderRadius: 10, padding: '10px 12px', opacity: letterFilter && !active ? .55 : 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 }}>
+                      <span style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{letter}</span>
+                      <span style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{win ? `prazo ${minToHHMM(win.arriveByMin)} · carrega ${minToHHMM(win.startMin)}` : 'sem janela'}</span>
+                    </div>
+                    <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: '#1e2130', margin: '8px 0 6px' }}>
+                      {seg.filter(([n]) => n > 0).map(([n, c]) => <div key={c} style={{ width: `${(n / t) * 100}%`, background: c }} />)}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                      <span style={{ fontSize: 12, color: '#94a3b8' }}><b style={{ color: '#e2e8f0' }}>{arrived}</b>/{t} chegaram</span>
+                      <button title={`Copiar telefones da letra ${letter}`} onClick={ev => { ev.stopPropagation(); copy(`L${letter}`, phones(ids)) }}
+                        style={{ background: 'transparent', border: '1px solid #2d3048', color: copiedKey === `L${letter}` ? '#4ade80' : '#94a3b8', borderRadius: 6, padding: '2px 7px', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                        {copiedKey === `L${letter}` ? '✓ copiado' : '📱 copiar'}
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6, fontSize: 11, fontWeight: 600, flexWrap: 'wrap' }}>
+                      {g.overdue > 0 && <span style={{ color: '#f87171' }}>🔴 {g.overdue} atrasado{g.overdue > 1 ? 's' : ''}</span>}
+                      {g.waiting > 0 && <span style={{ color: '#fbbf24' }}>⏳ {g.waiting}</span>}
+                      {g.outOfWindow > 0 && <span style={{ color: '#fb923c' }}>🟠 {g.outOfWindow}</span>}
+                      {g.overdue + g.waiting === 0 && <span style={{ color: '#4ade80' }}>✅ completa</span>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {letterFilter && (
+              <div style={{ marginTop: 10, background: '#13151f', border: '1px solid #7c3aed55', borderRadius: 10, padding: '12px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>Letra {letterFilter}</span>
+                  <span style={{ fontSize: 11, color: '#8892a4' }}>{letterRows.length} na fila · {letterNotArrived.length} não chegaram</span>
+                  <span style={{ flex: 1 }} />
+                  <Btn outline color="#a78bfa" onClick={() => copy('lt', phones([...letterRows.map(r => r.e.driverId), ...letterNotArrived.map(n => n.driverId)]))} disabled={letterRows.length + letterNotArrived.length === 0}>📱 {lbl('lt', `Tel. de todos (${letterRows.length + letterNotArrived.length})`)}</Btn>
+                  <Btn outline color="#f87171" onClick={() => copy('ln', phones(letterNotArrived.map(n => n.driverId)))} disabled={letterNotArrived.length === 0}>📱 {lbl('ln', `Tel. não chegaram (${letterNotArrived.length})`)}</Btn>
+                  <Btn outline color="#60a5fa" onClick={() => copy('lq', phones(letterRows.map(r => r.e.driverId)))} disabled={letterRows.length === 0}>📱 {lbl('lq', `Tel. na fila (${letterRows.length})`)}</Btn>
+                </div>
+                {([
+                  ['🔴 Atrasados', '#f87171', letterNotArrived.filter(n => n.status === 'overdue').map(n => ({ id: n.driverId, name: n.name }))],
+                  ['⏳ Aguardando', '#fbbf24', letterNotArrived.filter(n => n.status !== 'overdue').map(n => ({ id: n.driverId, name: n.name }))],
+                  ['🟠 Fora da janela', '#fb923c', letterRows.filter(r => r.w.status === 'out-of-window').map(r => ({ id: r.e.driverId, name: r.e.driverName }))],
+                  ['✅ Na fila no prazo', '#4ade80', letterRows.filter(r => r.w.status !== 'out-of-window').map(r => ({ id: r.e.driverId, name: r.e.driverName }))],
+                ] as [string, string, { id: string; name: string }[]][]).filter(([, , list]) => list.length > 0).map(([title, color, list]) => (
+                  <div key={title} style={{ marginBottom: 8 }}>
+                    <p style={{ margin: '0 0 5px', fontSize: 11, fontWeight: 700, color }}>{title} ({list.length})</p>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {list.map(d => (
+                        <span key={d.id} title="Clique para copiar o telefone" onClick={() => copy(`D${d.id}`, [phoneMap.get(d.id) ?? ''])}
+                          style={{ cursor: phoneMap.get(d.id) ? 'pointer' : 'default', fontSize: 11, background: `${color}14`, border: `1px solid ${color}40`, borderRadius: 6, padding: '3px 8px', color: '#e2e8f0' }}>
+                          {d.name || d.id} <span style={{ color: '#8892a4', fontFamily: 'monospace', fontSize: 10 }}>{copiedKey === `D${d.id}` ? '✓ copiado' : phoneMap.get(d.id) || 'sem tel.'}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-
-          {/* Fila (quem chegou) */}
-          <p style={{ margin: '0 0 6px', padding: '0 20px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Na fila ({q ? `${shownRows.length} de ${rows.length}` : rows.length})</p>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 24 }}>
-            <thead style={{ position: 'sticky', top: 0, background: '#0f1117', zIndex: 1 }}>
-              <tr style={{ borderBottom: '1px solid #2d3048' }}>
-                {['Motorista', 'Letra', 'Janela da letra', 'Prazo chegada', 'Chegou', 'Aguardou', 'Status', 'AT', 'Cluster'].map(h => <th key={h} style={TH}>{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {shownRows.map(({ e, w }) => (
-                <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent' }}>
-                  <td style={TD}>
-                    <span style={{ fontWeight: 500 }}>{e.driverName}</span>
-                    <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.driverId}</span>
-                  </td>
-                  <td style={TD}><span style={{ fontWeight: 700 }}>{e.letter || '—'}</span> <span style={{ color: '#64748b', fontSize: 10 }}>{e.cage}</span></td>
-                  <td style={{ ...TD, color: '#94a3b8' }}>{minToHHMM(w.startMin)}{w.startMin !== null ? `–${minToHHMM(w.startMin + 20)}` : ''}</td>
-                  <td style={{ ...TD, color: '#94a3b8' }}>{minToHHMM(w.arriveByMin)}</td>
-                  <td style={{ ...TD, fontFamily: 'monospace' }}>{minToHHMM(e.arrivalMin)}</td>
-                  <td style={{ ...TD, fontFamily: 'monospace', color: e.waitingMin !== null ? (e.waitingMin >= 60 ? '#f87171' : e.waitingMin >= 30 ? '#fbbf24' : '#4ade80') : '#64748b' }}>
-                    {e.waitingTime || '—'}
-                  </td>
-                  <td style={TD}>
-                    {w.status === 'out-of-window' && <Chip label={`🟠 Fora da janela +${w.lateMin} min`} color="#fb923c" bg="rgba(251,146,60,.12)" />}
-                    {w.status === 'on-time' && <Chip label="✅ No prazo" color="#4ade80" bg="rgba(74,222,128,.12)" />}
-                    {w.status === 'unknown' && <Chip label="— sem letra/hora" color="#94a3b8" bg="rgba(100,116,139,.12)" />}
-                  </td>
-                  <td style={{ ...TD, fontFamily: 'monospace', color: '#94a3b8' }}>{e.atId}</td>
-                  <td style={{ ...TD, color: '#94a3b8' }}>{e.cluster}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
 
           {/* Não chegaram (aguardando + atrasados) */}
           <div style={{ padding: '0 20px 24px' }}>
             <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>
-              Não chegaram ({q ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <span style={{ color: '#f87171' }}>{overdue.length} atrasados</span> · <span style={{ color: '#fbbf24' }}>{waiting.length} aguardando</span>
+              Não chegaram ({q || letterFilter ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <span style={{ color: '#f87171' }}>{overdue.length} atrasados</span> · <span style={{ color: '#fbbf24' }}>{waiting.length} aguardando</span>
             </p>
             {expected.size === 0 ? (
               <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Nenhuma rota atribuída neste dia/turno na tela Atribuição — sem base para comparar quem não chegou.</p>
@@ -540,6 +399,43 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
               </table>
             )}
           </div>
+
+          {/* Fila (quem chegou) */}
+          <p style={{ margin: '0 0 6px', padding: '0 20px', fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Na fila ({q || letterFilter ? `${shownRows.length} de ${rows.length}` : rows.length})</p>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 24 }}>
+            <thead style={{ position: 'sticky', top: 0, background: '#0f1117', zIndex: 1 }}>
+              <tr style={{ borderBottom: '1px solid #2d3048' }}>
+                {['Motorista', 'Situação', 'Letra', 'Janela da letra', 'Prazo chegada', 'Chegou', 'Aguardou', 'Status', 'AT', 'Cluster', 'Telefone'].map(h => <th key={h} style={TH}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {shownRows.map(({ e, w }) => (
+                <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent' }}>
+                  <td style={TD}>
+                    <span style={{ fontWeight: 500 }}>{e.driverName}</span>
+                    <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.driverId}</span>
+                  </td>
+                  <td style={TD}>{e.situation ? <SituationChip s={e.situation} dock={e.dock} /> : '—'}</td>
+                  <td style={TD}><span style={{ fontWeight: 700 }}>{e.letter || '—'}</span> <span style={{ color: '#64748b', fontSize: 10 }}>{e.cage}</span></td>
+                  <td style={{ ...TD, color: '#94a3b8' }}>{minToHHMM(w.startMin)}{w.startMin !== null ? `–${minToHHMM(w.startMin + 20)}` : ''}</td>
+                  <td style={{ ...TD, color: '#94a3b8' }}>{minToHHMM(w.arriveByMin)}</td>
+                  <td style={{ ...TD, fontFamily: 'monospace' }}>{minToHHMM(e.arrivalMin)}</td>
+                  <td style={{ ...TD, fontFamily: 'monospace', color: e.waitingMin !== null ? (e.waitingMin >= 60 ? '#f87171' : e.waitingMin >= 30 ? '#fbbf24' : '#4ade80') : '#64748b' }}>
+                    {e.waitingTime || '—'}
+                  </td>
+                  <td style={TD}>
+                    {w.status === 'out-of-window' && <Chip label={`🟠 Fora da janela +${w.lateMin} min`} color="#fb923c" bg="rgba(251,146,60,.12)" />}
+                    {w.status === 'on-time' && <Chip label="✅ No prazo" color="#4ade80" bg="rgba(74,222,128,.12)" />}
+                    {w.status === 'unknown' && <Chip label="— sem letra/hora" color="#94a3b8" bg="rgba(100,116,139,.12)" />}
+                  </td>
+                  <td style={{ ...TD, fontFamily: 'monospace', color: '#94a3b8' }}>{e.atId}</td>
+                  <td style={{ ...TD, color: '#94a3b8' }}>{e.cluster}</td>
+                  <td style={{ ...TD, fontFamily: 'monospace', color: '#94a3b8' }}>{phoneMap.get(e.driverId) || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
         </div>
       )}
 
@@ -688,27 +584,202 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
   )
 }
 
-function AutoQueueFind({ onFound }: { onFound: (content: string, name: string) => void }) {
-  const [status, setStatus] = useState<'idle' | 'searching' | 'ok' | 'err'>('idle')
-  const [msg, setMsg] = useState('')
-  const folder = getGlobalConfig().downloadsFolder
+const SITUATION_COLOR: Record<QueueSituation, string> = {
+  pending: '#94a3b8', waiting: '#60a5fa', calling: '#fbbf24', 'at-dock': '#f87171', 'on-hold': '#a78bfa', done: '#4ade80',
+}
 
-  if (!folder) return null
+function SituationChip({ s, dock }: { s: QueueSituation; dock?: string }) {
+  const c = SITUATION_COLOR[s]
+  return <Chip label={`${SITUATION_LABEL[s]}${dock && (s === 'at-dock' || s === 'calling' || s === 'on-hold') ? ` · ${dockKey(dock)}` : ''}`} color={c} bg={`${c}1f`} />
+}
 
-  const handleFind = async () => {
-    setStatus('searching')
-    const res = await findLatestFile(folder, FILE_PATTERNS.queueList)
-    if ('error' in res) { setStatus('err'); setMsg(res.error) }
-    else { setStatus('ok'); setMsg(res.name); onFound(res.content, res.name); setTimeout(() => setStatus('idle'), 2500) }
+// ─── Mesas: ocupada / chamando motorista / livre ─────────────────────────────
+const DOCK_COUNT_KEY = 'spx:dock-count'
+
+function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[]; phoneMap: Map<string, string>; day: string; onRefresh: () => Promise<void> }) {
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
+  useEffect(() => { const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000); return () => clearInterval(t) }, [])
+
+  // Quem está em cada mesa (ocupando ou chamado para ela)
+  const byDock = useMemo(() => {
+    const m = new Map<string, { occupied: QueueEntry[]; calling: QueueEntry[] }>()
+    for (const e of entries) {
+      if (!e.dock || (e.situation !== 'at-dock' && e.situation !== 'calling')) continue
+      const k = dockKey(e.dock)
+      if (!m.has(k)) m.set(k, { occupied: [], calling: [] })
+      m.get(k)![e.situation === 'at-dock' ? 'occupied' : 'calling'].push(e)
+    }
+    return m
+  }, [entries])
+
+  const maxSeen = Math.max(0, ...[...byDock.keys()].map(k => parseInt(k.replace(/\D/g, ''), 10) || 0))
+  const [dockCount, setDockCountState] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem(DOCK_COUNT_KEY) ?? '', 10) || 0 } catch { return 0 }
+  })
+  const setDockCount = (n: number) => { setDockCountState(n); try { localStorage.setItem(DOCK_COUNT_KEY, String(n)) } catch { /* */ } }
+  const total = Math.max(dockCount || maxSeen, maxSeen)
+
+  const docks = useMemo(() => {
+    const names = new Set<string>(Array.from({ length: total }, (_, i) => `Mesa ${i + 1}`))
+    for (const k of byDock.keys()) names.add(k)
+    return [...names].sort((a, b) => (parseInt(a.replace(/\D/g, ''), 10) || 999) - (parseInt(b.replace(/\D/g, ''), 10) || 999) || a.localeCompare(b))
+  }, [total, byDock])
+
+  const state = (k: string) => {
+    const d = byDock.get(k)
+    if (d?.occupied.length) return 'occupied' as const
+    if (d?.calling.length) return 'calling' as const
+    return 'free' as const
   }
+  const counts = { occupied: docks.filter(k => state(k) === 'occupied').length, calling: docks.filter(k => state(k) === 'calling').length, free: docks.filter(k => state(k) === 'free').length }
+  const nextInLine = entries.filter(e => e.situation === 'waiting').sort((a, b) => (a.queueSequence ?? 999) - (b.queueSequence ?? 999) || (a.arrivalMin ?? 0) - (b.arrivalMin ?? 0))
+  const onHold = entries.filter(e => e.situation === 'on-hold')
+  // Painel "Próximos na fila" recolhível (lembra a escolha)
+  const [sideCollapsed, setSideCollapsed] = useState(() => { try { return localStorage.getItem('ui:mesas-side-collapsed') === '1' } catch { return false } })
+  const toggleSide = () => setSideCollapsed(v => { try { localStorage.setItem('ui:mesas-side-collapsed', v ? '0' : '1') } catch { /* */ } return !v })
+  const STYLE = {
+    occupied: { label: 'Ocupada', color: '#f87171', bg: 'rgba(239,68,68,.08)' },
+    calling: { label: 'Chamando motorista', color: '#fbbf24', bg: 'rgba(245,158,11,.10)' },
+    free: { label: 'Livre', color: '#4ade80', bg: 'rgba(74,222,128,.06)' },
+  }
+  const minsAgo = (ts?: number) => (ts ? Math.max(0, Math.round((nowSec - ts) / 60)) : null)
+
+  // Atualiza sozinho a cada minuto enquanto a aba de mesas está aberta
+  const refreshRef = useRef(onRefresh)
+  refreshRef.current = onRefresh
+  useEffect(() => { const t = setInterval(() => { void refreshRef.current() }, 60000); return () => clearInterval(t) }, [])
+
+  // O SPX não diz desde quando a mesa está ocupada ou vazia: o app anota a hora em que viu cada mudança.
+  // `exact` = vimos a mudança acontecer (entre duas atualizações); senão é "pelo menos desde".
+  const historyKey = `spx:dock-history:${day}`
+  const [history, setHistory] = useState<Record<string, { state: string; who: string; since: number; exact: boolean }>>({})
+  useEffect(() => {
+    let prev: typeof history = {}
+    try { prev = JSON.parse(localStorage.getItem(historyKey) ?? '{}') } catch { /* */ }
+    const firstLook = Object.keys(prev).length === 0
+    const now = Math.floor(Date.now() / 1000)
+    const next: typeof history = {}
+    for (const k of docks) {
+      const st = state(k)
+      const d = byDock.get(k)
+      const who = (st === 'occupied' ? d!.occupied : st === 'calling' ? d!.calling : []).map(e => e.driverId).join(',')
+      const old = prev[k]
+      next[k] = old && old.state === st && old.who === who ? old : { state: st, who, since: now, exact: !firstLook && !!old }
+    }
+    setHistory(next)
+    try { localStorage.setItem(historyKey, JSON.stringify(next)) } catch { /* */ }
+  }, [entries, docks, historyKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const fmtDur = (min: number) => min >= 60 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}` : `${min} min`
+  const durationOf = (k: string, st: 'occupied' | 'calling' | 'free', calledAt?: number) => {
+    // Chamando: o SPX informa a hora da chamada
+    if (st === 'calling' && calledAt) return { min: minsAgo(calledAt)!, exact: true }
+    const h = history[k]
+    if (!h || h.state !== st) return null
+    return { min: minsAgo(h.since)!, exact: h.exact }
+  }
+  const noApiData = !entries.some(e => e.situation)
 
   return (
-    <button
-      onClick={() => void handleFind()}
-      disabled={status === 'searching'}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: status === 'ok' ? 'rgba(74,222,128,.12)' : status === 'err' ? 'rgba(248,113,113,.12)' : '#7c3aed', color: status === 'ok' ? '#4ade80' : status === 'err' ? '#f87171' : '#fff', border: status === 'idle' ? 'none' : `1px solid ${status === 'ok' ? 'rgba(74,222,128,.3)' : 'rgba(248,113,113,.3)'}`, borderRadius: 8, padding: '9px 20px', fontSize: 13, fontWeight: 700, cursor: status === 'searching' ? 'default' : 'pointer' }}
-    >
-      {status === 'searching' ? '⏳ Buscando…' : status === 'ok' ? `✓ ${msg}` : status === 'err' ? `✕ ${msg}` : '🔍 Atualizar QueueList'}
-    </button>
+    <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px 80px', display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 560px', minWidth: 0 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+          {(['occupied', 'calling', 'free'] as const).map(k => (
+            <div key={k} style={{ background: '#13151f', border: '1px solid #2d3048', borderLeft: `3px solid ${STYLE[k].color}`, borderRadius: 8, padding: '8px 14px', minWidth: 110 }}>
+              <p style={{ margin: 0, fontSize: 10, color: '#8892a4' }}>{STYLE[k].label}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 700, color: STYLE[k].color }}>{counts[k]}</p>
+            </div>
+          ))}
+          <span style={{ flex: 1 }} />
+          <label style={{ fontSize: 11, color: '#8892a4', display: 'flex', alignItems: 'center', gap: 6 }}>
+            Mesas no hub
+            <input type="number" min={1} max={99} value={total || ''} onChange={e => setDockCount(Math.max(0, parseInt(e.target.value, 10) || 0))}
+              style={{ width: 56, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 6, padding: '4px 6px', fontSize: 12, outline: 'none' }} />
+          </label>
+        </div>
+        <p style={{ margin: '0 0 10px', fontSize: 11, color: '#64748b' }}>Atualiza sozinho a cada minuto. Tempo em vermelho: ocupada há 40+ min, chamando há 10+ min, vazia há 15+ min. "≥" = o app começou a acompanhar a mesa depois que ela já estava assim.</p>
+        {noApiData && <p style={{ margin: '0 0 12px', fontSize: 12, color: '#fbbf24' }}>⚠ Esta fila veio de um CSV antigo, que não tem as mesas. Clique em 🔄 Atualizar do SPX.</p>}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
+          {docks.map(k => {
+            const st = state(k)
+            const sty = STYLE[st]
+            const d = byDock.get(k)
+            const people = st === 'occupied' ? d!.occupied : st === 'calling' ? d!.calling : []
+            return (
+              <div key={k} style={{ background: sty.bg, border: `1px solid ${sty.color}55`, borderTop: `3px solid ${sty.color}`, borderRadius: 10, padding: '10px 12px', minHeight: 92 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                  <span style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>{k}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: sty.color, textTransform: 'uppercase', letterSpacing: '.04em' }}>{st === 'calling' ? '📣 ' : ''}{sty.label}</span>
+                </div>
+                {(() => {
+                  const dur = durationOf(k, st, people[0]?.calledAt)
+                  if (!dur) return null
+                  const limit = st === 'occupied' ? 40 : st === 'calling' ? 10 : 15
+                  return (
+                    <p title={dur.exact ? undefined : 'O app só começou a acompanhar esta mesa agora — o tempo real pode ser maior.'}
+                      style={{ margin: '4px 0 0', fontSize: 20, fontWeight: 800, fontFamily: 'monospace', color: dur.min >= limit ? '#f87171' : sty.color }}>
+                      {dur.exact ? '' : '≥ '}{fmtDur(dur.min)}
+                      <span style={{ fontSize: 10, fontWeight: 600, color: '#8892a4', fontFamily: 'inherit', marginLeft: 6 }}>{st === 'occupied' ? 'ocupada' : st === 'calling' ? 'chamando' : 'vazia'}</span>
+                    </p>
+                  )
+                })()}
+                {people.length === 0 ? (
+                  <p style={{ margin: '14px 0 0', fontSize: 12, color: '#4ade80aa' }}>Disponível</p>
+                ) : people.map(e => {
+                  return (
+                    <div key={e.driverId + e.atId} style={{ marginTop: 8 }}>
+                      <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.driverName}>{e.driverName}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8892a4', fontFamily: 'monospace' }}>
+                        {e.cage || '—'} · {e.orderQty ?? '—'} pct · {e.plate || ''}
+                      </p>
+                      {st === 'calling' && phoneMap.get(e.driverId) && (
+                        <button onClick={() => navigator.clipboard.writeText(phoneMap.get(e.driverId)!)} title="Copiar telefone"
+                          style={{ marginTop: 4, background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 5, padding: '1px 6px', fontSize: 10, cursor: 'pointer' }}>📱 {phoneMap.get(e.driverId)}</button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Próximos da fila */}
+      {sideCollapsed ? (
+        <button onClick={toggleSide} title="Mostrar próximos na fila"
+          style={{ alignSelf: 'stretch', width: 38, background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, color: '#94a3b8', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '10px 0' }}>
+          <span style={{ fontSize: 13 }}>‹</span>
+          <span style={{ writingMode: 'vertical-rl', fontSize: 12, fontWeight: 700 }}>Próximos na fila ({nextInLine.length})</span>
+        </button>
+      ) : (
+      <div style={{ flex: '0 1 300px', minWidth: 260, background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '12px 14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 8px' }}>
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Próximos na fila ({nextInLine.length})</p>
+          <button onClick={toggleSide} title="Recolher"
+            style={{ background: 'transparent', border: '1px solid #2d3048', color: '#8892a4', borderRadius: 6, width: 24, height: 24, cursor: 'pointer', fontSize: 13, lineHeight: 1 }}>›</button>
+        </div>
+        {nextInLine.length === 0 ? <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Ninguém aguardando mesa.</p> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 520, overflow: 'auto' }}>
+            {nextInLine.map((e, i) => (
+              <div key={e.driverId + e.atId} style={{ display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid #1e2130', paddingBottom: 5 }}>
+                <span style={{ width: 20, fontSize: 11, color: '#64748b', textAlign: 'right' }}>{i + 1}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, fontSize: 12, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.driverName}</p>
+                  <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.cage || '—'} · {e.cluster}</p>
+                </div>
+                <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: e.overWaitLimit || (e.waitingMin ?? 0) >= 60 ? '#f87171' : (e.waitingMin ?? 0) >= 30 ? '#fbbf24' : '#4ade80' }}>{e.waitingMin ?? '—'}min</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {onHold.length > 0 && (
+          <>
+            <p style={{ margin: '14px 0 6px', fontSize: 12, fontWeight: 700, color: '#a78bfa' }}>Em espera ({onHold.length})</p>
+            {onHold.map(e => <p key={e.driverId + e.atId} style={{ margin: '0 0 4px', fontSize: 11, color: '#e2e8f0' }}>{e.driverName} <span style={{ color: '#64748b' }}>{e.dock ? `· ${dockKey(e.dock)}` : ''}</span></p>)}
+          </>
+        )}
+      </div>
+      )}
+    </div>
   )
 }

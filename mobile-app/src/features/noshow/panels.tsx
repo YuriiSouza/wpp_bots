@@ -204,7 +204,7 @@ export function ReportSheet({ open, onClose, snap, day, shift }: { open: boolean
 
 // ─── Novatos ────────────────────────────────────────────────────────────────
 interface NovatoSuggestion { driverId: string; name: string; clusters: string[]; vehicleType: string | null; suggestedRoute: LocalRoute | null; availableToday: boolean; resolvable: boolean }
-interface NovatoResult { driverId: string; name: string; status: 'ok' | 'no-route' | 'not-found'; atId?: string; cluster?: string; availableToday?: boolean }
+interface NovatoResult { driverId: string; name: string; status: 'ok' | 'no-route' | 'skipped' | 'not-found'; atId?: string; cluster?: string; availableToday?: boolean }
 
 export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
   workPref: WorkPreferenceData | null; routes: LocalRoute[]; availableDrivers: LocalDriver[]; onAssign: (a: { route: LocalRoute; driver: LocalDriver }[]) => void
@@ -243,7 +243,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
     setOverride({})
   }
 
-  const routeOf = (s: NovatoSuggestion) => (override[s.driverId] ? routes.find(r => r.id === override[s.driverId]) ?? s.suggestedRoute : s.suggestedRoute)
+  const routeOf = (s: NovatoSuggestion) => override[s.driverId] === '' ? null : (override[s.driverId] ? routes.find(r => r.id === override[s.driverId]) ?? s.suggestedRoute : s.suggestedRoute)
 
   const confirm = () => {
     const list: { route: LocalRoute; driver: LocalDriver }[] = []
@@ -252,7 +252,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       const r = resolve(s.driverId)
       if (!r) { res.push({ driverId: s.driverId, name: s.name, status: 'not-found' }); continue }
       const route = routeOf(s)
-      if (!route) { res.push({ driverId: s.driverId, name: s.name, status: 'no-route', availableToday: r.availableToday }); continue }
+      if (!route) { res.push({ driverId: s.driverId, name: s.name, status: override[s.driverId] === '' ? 'skipped' : 'no-route', availableToday: r.availableToday }); continue }
       list.push({ route, driver: { ...r.driver, isNewDriver: true } })
       res.push({ driverId: s.driverId, name: s.name, status: 'ok', atId: route.atId, cluster: route.cluster, availableToday: r.availableToday })
     }
@@ -266,13 +266,14 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
         <Row>
           <Chip label={`✅ ${result.filter(r => r.status === 'ok').length} alocado(s)`} color={C.green} />
           {result.some(r => r.status === 'no-route') && <Chip label={`⚠️ ${result.filter(r => r.status === 'no-route').length} sem rota`} color={C.yellow} />}
+          {result.some(r => r.status === 'skipped') && <Chip label={`➖ ${result.filter(r => r.status === 'skipped').length} deixado(s) sem rota`} color={C.sub} />}
           {result.some(r => r.status === 'not-found') && <Chip label={`⛔ ${result.filter(r => r.status === 'not-found').length} não encontrado(s)`} color={C.red} />}
         </Row>
         {result.map(r => (
           <Card key={r.driverId}>
             <Row><T bold>{r.name}</T>{r.availableToday === false && r.status !== 'not-found' && <Chip label="via WP" color={C.blue} />}</Row>
-            <T size={11} color={r.status === 'ok' ? C.green : r.status === 'no-route' ? C.yellow : C.red}>
-              {r.status === 'ok' ? `✅ ${r.atId} · ${r.cluster}` : r.status === 'no-route' ? '⚠️ Sem rota disponível' : '⛔ ID não encontrado'}
+            <T size={11} color={r.status === 'ok' ? C.green : r.status === 'no-route' ? C.yellow : r.status === 'skipped' ? C.sub : C.red}>
+              {r.status === 'ok' ? `✅ ${r.atId} · ${r.cluster}` : r.status === 'no-route' ? '⚠️ Sem rota disponível' : r.status === 'skipped' ? '➖ Deixado sem rota' : '⛔ ID não encontrado'}
             </T>
           </Card>
         ))}
@@ -308,7 +309,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
             {!s.resolvable && <T size={11} color={C.red}>ID não encontrado (disp./WP)</T>}
             <T size={11} color={C.dim}>{s.clusters.length ? s.clusters.join(', ') : 'sem dados WP'}</T>
             <Row>
-              <T size={12} color={route ? C.text : C.red}>{route ? `${route.atId} · ${route.cluster}${route.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}` : '— sem rota —'}</T>
+              <T size={12} color={route ? C.text : override[s.driverId] === '' ? C.sub : C.red}>{route ? `${route.atId} · ${route.cluster}${route.requiredVehicleType ? ` · ${route.requiredVehicleType}` : ''}` : override[s.driverId] === '' ? '➖ deixado sem rota' : '— sem rota —'}</T>
               {route && s.resolvable && <Chip label={inDriverRegion(s.clusters, route.cluster) ? '✓ na região' : '⚠ fora da região'} color={inDriverRegion(s.clusters, route.cluster) ? C.green : C.yellow} />}
               {s.resolvable && <Btn small variant="outline" onPress={() => setPickFor(s.driverId)}>Trocar rota</Btn>}
             </Row>
@@ -317,6 +318,7 @@ export function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
       })}
       <Btn disabled={suggestions.every(s => !routeOf(s) || !s.resolvable)} onPress={confirm}>Confirmar atribuições</Btn>
       <Sheet open={!!picking} onClose={() => setPickFor(null)} title={`Rota para ${picking?.name ?? ''}`}>
+        <Btn variant="outline" onPress={() => { setOverride(o => ({ ...o, [pickFor!]: '' })); setPickFor(null) }}>➖ Deixar sem rota</Btn>
         {disponivel
           .filter(r => novatoVehicleOk(picking?.vehicleType, r.requiredVehicleType))
           .map(r => ({ r, inside: inDriverRegion(picking?.clusters ?? [], r.cluster) }))

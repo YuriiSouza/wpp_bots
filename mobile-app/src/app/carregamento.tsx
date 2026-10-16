@@ -30,6 +30,8 @@ export default function Carregamento() {
   const [winOpen, setWinOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
   const [search, setSearch] = useState('')
+  // Letra selecionada ('' = todas; '—' = sem letra)
+  const [letterFilter, setLetterFilter] = useState('')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [nowMin, setNowMin] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes() })
 
@@ -85,9 +87,15 @@ export default function Carregamento() {
   const waiting = notArrived.filter(n => n.status === 'waiting')
   const unknownLetter = notArrived.filter(n => n.status === 'unknown-letter')
   const total = rows.length + notArrived.length
-  const q = search.trim().toLowerCase()
-  const shownRows = !q ? rows : rows.filter(({ e }) => e.driverName.toLowerCase().includes(q) || e.driverId.includes(q) || e.atId.toLowerCase().includes(q))
-  const shownNotArrived = !q ? notArrived : notArrived.filter(n => n.name.toLowerCase().includes(q) || n.driverId.includes(q) || n.atId.toLowerCase().includes(q))
+  // Busca sem diferenciar maiúsculas nem acentos ("joao" acha "João")
+  const norm = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const q = norm(search.trim())
+  const inLetter = (letter: string) => !letterFilter || (letter || '—') === letterFilter
+  const shownRows = rows.filter(({ e }) => inLetter(e.letter) && (!q || norm(e.driverName).includes(q) || e.driverId.includes(q) || norm(e.atId).includes(q)))
+  const shownNotArrived = notArrived.filter(n => inLetter(n.letter) && (!q || norm(n.name).includes(q) || n.driverId.includes(q) || norm(n.atId).includes(q)))
+  const letterRows = rows.filter(({ e }) => inLetter(e.letter))
+  const letterNotArrived = notArrived.filter(n => inLetter(n.letter))
+  const letters = [...new Set([...rows.map(r => r.e.letter || '—'), ...notArrived.map(n => n.letter || '—')])].sort((a, b) => a.localeCompare(b))
   const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0)
   const punctual = onTime.length + outOfWindow.length > 0 ? Math.round((onTime.length / (onTime.length + outOfWindow.length)) * 100) : 0
 
@@ -243,7 +251,15 @@ export default function Carregamento() {
             {registry.length === 0 && <T size={11} color={C.yellow}>⚠ Sem cadastro de motoristas: telefones indisponíveis.</T>}
 
             <Input value={search} onChangeText={setSearch} placeholder="🔍 Motorista, ID ou AT" />
-            <T bold>Não chegaram ({q ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <T bold color={C.red}>{overdue.length} atrasados</T> · <T bold color={C.yellow}>{waiting.length} aguardando</T></T>
+            <Segmented options={[{ value: '', label: 'Todas' }, ...letters.map(l => ({ value: l, label: l }))]} value={letterFilter} onChange={setLetterFilter} />
+            {letterFilter ? (
+              <Row gap={6}>
+                <Btn small variant="outline" disabled={!(letterRows.length + letterNotArrived.length)} onPress={() => doCopy('lt', phones([...letterRows.map(r => r.e.driverId), ...letterNotArrived.map(n => n.driverId)]))}>{lbl('lt', `📱 Letra ${letterFilter} (${letterRows.length + letterNotArrived.length})`)}</Btn>
+                <Btn small variant="danger" disabled={!letterNotArrived.length} onPress={() => doCopy('ln', phones(letterNotArrived.map(n => n.driverId)))}>{lbl('ln', `📱 Não chegaram (${letterNotArrived.length})`)}</Btn>
+                <Btn small variant="outline" disabled={!letterRows.length} onPress={() => doCopy('lq', phones(letterRows.map(r => r.e.driverId)))}>{lbl('lq', `📱 Na fila (${letterRows.length})`)}</Btn>
+              </Row>
+            ) : null}
+            <T bold>Não chegaram ({q || letterFilter ? `${shownNotArrived.length} de ${notArrived.length}` : notArrived.length}) — <T bold color={C.red}>{overdue.length} atrasados</T> · <T bold color={C.yellow}>{waiting.length} aguardando</T></T>
             {expected.size === 0 ? <T size={12} color={C.dim}>Nenhuma rota atribuída neste turno — sem base para comparar.</T>
               : notArrived.length === 0 ? <T size={12} color={C.green}>✅ Todos com rota atribuída já estão na fila.</T>
               : shownNotArrived.map(n => (
@@ -257,7 +273,7 @@ export default function Carregamento() {
                 </Card>
               ))}
 
-            <T bold>Na fila ({q ? `${shownRows.length} de ${rows.length}` : rows.length})</T>
+            <T bold>Na fila ({q || letterFilter ? `${shownRows.length} de ${rows.length}` : rows.length})</T>
             {shownRows.map(({ e, w }) => (
               <Card key={e.driverId + e.atId} style={w.status === 'out-of-window' ? { borderColor: 'rgba(251,146,60,.35)' } : undefined}>
                 <Row style={{ justifyContent: 'space-between' }}>

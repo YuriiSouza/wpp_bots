@@ -19,6 +19,14 @@ export interface QueueEntry {
   letter: string            // "A"
   atId: string
   cluster: string
+  // Só quando vem da API do SPX (o CSV não traz):
+  situation?: import('./spxQueueFetcher').QueueSituation
+  dock?: string             // mesa ocupada / para a qual foi chamado
+  calledAt?: number         // unix (s) da última chamada do motorista
+  queueSequence?: number
+  overWaitLimit?: boolean   // o próprio SPX marcou espera acima do limite
+  orderQty?: number
+  plate?: string
 }
 
 export interface QueueParseResult {

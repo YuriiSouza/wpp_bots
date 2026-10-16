@@ -78,6 +78,19 @@ function Panel({ title, sub, children, span }: { title: string; sub?: string; ch
   )
 }
 
+function Donut({ pct, color }: { pct: number; color: string }) {
+  const r = 40, circ = 2 * Math.PI * r
+  return (
+    <div style={{ position: 'relative', width: 100, height: 100, flexShrink: 0 }}>
+      <svg width={100} height={100} viewBox="0 0 100 100">
+        <circle cx={50} cy={50} r={r} fill="none" stroke="#1e2130" strokeWidth={11} />
+        <circle cx={50} cy={50} r={r} fill="none" stroke={color} strokeWidth={11} strokeLinecap="round" strokeDasharray={`${(pct / 100) * circ} ${circ}`} transform="rotate(-90 50 50)" />
+      </svg>
+      <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 800, color: '#e2e8f0' }}>{pct}%</span>
+    </div>
+  )
+}
+
 // Barra com a parte atribuída (verde) sobre o total.
 function Progress({ done, total, color = '#4ade80' }: { done: number; total: number; color?: string }) {
   return (
@@ -122,6 +135,29 @@ function RouteDashboard({ rows, onOpenTable }: { rows: Row[]; onOpenTable: (sear
       wrongVehicle: rows.filter(r => r.acertividade === false),
       heavyOpen: open.filter(r => r.vehicleRequired === 'FIORINO'),
       lowDs: assigned.filter(r => r.ds !== null && r.ds * 100 < 95).sort((a, b) => a.ds! - b.ds!),
+      // Necessário × alocado (só atribuídas com veículo conhecido)
+      matrix: (() => {
+        const m = new Map<string, number>()
+        for (const r of assigned) if (r.chosenVehicle) m.set(`${r.vehicleRequired}|${r.chosenVehicle}`, (m.get(`${r.vehicleRequired}|${r.chosenVehicle}`) ?? 0) + 1)
+        return m
+      })(),
+      dsBuckets: [
+        { label: 'abaixo de 90%', n: withDs.filter(r => r.ds! * 100 < 90).length, c: '#f87171' },
+        { label: '90–95%', n: withDs.filter(r => r.ds! * 100 >= 90 && r.ds! * 100 < 95).length, c: '#fb923c' },
+        { label: '95–98%', n: withDs.filter(r => r.ds! * 100 >= 95 && r.ds! * 100 < 98).length, c: '#60a5fa' },
+        { label: '98% ou mais', n: withDs.filter(r => r.ds! * 100 >= 98).length, c: '#4ade80' },
+        { label: 'sem DS', n: assigned.length - withDs.length, c: '#374151' },
+      ],
+      // Média de carga por veículo necessário
+      sizeByVehicle: (() => {
+        const m = new Map<string, { n: number; paradas: number; km: number; volume: number }>()
+        for (const r of rows) {
+          const g = m.get(r.vehicleRequired) ?? { n: 0, paradas: 0, km: 0, volume: 0 }
+          g.n++; g.paradas += r.paradas ?? 0; g.km += r.km ?? 0; g.volume += r.volume ?? 0
+          m.set(r.vehicleRequired, g)
+        }
+        return [...m.entries()].sort((a, b) => b[1].n - a[1].n)
+      })(),
     }
   }, [rows])
 
@@ -137,15 +173,33 @@ function RouteDashboard({ rows, onOpenTable }: { rows: Row[]; onOpenTable: (sear
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px 60px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-        {kpis.map(k => (
-          <div key={k.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '12px 16px' }}>
-            <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{k.label}</p>
-            <p style={{ margin: '4px 0 2px', fontSize: 26, fontWeight: 700, color: k.color, lineHeight: 1 }}>{k.value}</p>
-            {k.sub && <p style={{ margin: 0, fontSize: 10, color: '#8892a4' }}>{k.sub}</p>}
+      {/* Resumo */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(0, 3fr)', gap: 14 }}>
+        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 12, padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 18 }}>
+          <Donut pct={pctAssigned} color={pctColor(pctAssigned)} />
+          <div>
+            <p style={{ margin: 0, fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>Atribuição do turno</p>
+            <p style={{ margin: '4px 0 0', fontSize: 28, fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{d.assigned}<span style={{ fontSize: 16, color: '#64748b' }}> / {d.total}</span></p>
+            <p style={{ margin: '6px 0 0', fontSize: 12, color: d.open === 0 ? '#4ade80' : '#f87171', fontWeight: 600 }}>{d.open === 0 ? '✓ turno completo' : `${d.open} rota${d.open !== 1 ? 's' : ''} sem motorista`}</p>
+            {d.open > 0 && <button onClick={() => onOpenTable('', 'DISPONIVEL')} style={{ ...link, marginTop: 4 }}>ver rotas em aberto →</button>}
           </div>
-        ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+          {[
+            ...kpis.slice(3),
+            { label: 'Paradas', value: d.paradas.toLocaleString('pt-BR'), sub: d.total ? `${Math.round(d.paradas / d.total)} por rota` : '', color: '#e2e8f0' },
+            { label: 'Quilômetros', value: Math.round(d.km).toLocaleString('pt-BR'), sub: d.total ? `${Math.round(d.km / d.total)} km por rota` : '', color: '#e2e8f0' },
+            { label: 'Volume', value: `${(d.volume / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m³`, sub: d.total ? `${Math.round(d.volume / d.total)} L por rota` : '', color: '#e2e8f0' },
+            { label: 'Alertas de veículo', value: d.motoOnBigRoute.length + d.otherOnMotoRoute.length, sub: d.motoOnBigRoute.length ? `${d.motoOnBigRoute.length} críticos` : 'nenhum crítico', color: d.motoOnBigRoute.length ? '#f87171' : d.otherOnMotoRoute.length ? '#fbbf24' : '#4ade80' },
+          ].map(k => (
+            <div key={k.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 12, padding: '12px 14px' }}>
+              <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{k.label}</p>
+              <p style={{ margin: '6px 0 2px', fontSize: 24, fontWeight: 800, color: '#e2e8f0', lineHeight: 1 }}>{k.value}</p>
+              {k.sub && <p style={{ margin: 0, fontSize: 11, color: '#8892a4' }}>{k.sub}</p>}
+              <div style={{ height: 3, width: 28, background: k.color, borderRadius: 2, marginTop: 8 }} />
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Alerta crítico: moto em rota de passeio/fiorino */}
@@ -189,40 +243,75 @@ function RouteDashboard({ rows, onOpenTable }: { rows: Row[]; onOpenTable: (sear
         </div>
       )}
 
-      {/* Progresso geral */}
-      <Panel title="Progresso da atribuição" sub={`${d.paradas.toLocaleString('pt-BR')} paradas · ${Math.round(d.km).toLocaleString('pt-BR')} km · ${d.volume.toLocaleString('pt-BR')} L de volume no turno`}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1, height: 22, background: '#1e2130', borderRadius: 6, overflow: 'hidden', display: 'flex' }}>
-            <div style={{ width: `${pctAssigned}%`, background: '#4ade80' }} />
-            <div style={{ flex: 1, background: d.open > 0 ? 'rgba(248,113,113,.35)' : 'transparent' }} />
-          </div>
-          <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>{d.assigned} / {d.total}</span>
+      {/* Por letra (colunas) */}
+      <Panel title="Por letra de gaiola" sub="Ordem de carregamento — verde atribuído, vermelho sem motorista. Clique numa letra para ver as rotas.">
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height: 170, paddingTop: 18 }}>
+          {(() => {
+            const max = Math.max(1, ...d.byLetter.map(g => g.total))
+            return d.byLetter.map(g => (
+              <button key={g.name} onClick={() => onOpenTable(g.name === '—' ? '' : `${g.name}-`, 'all')} title={`${g.name}: ${g.assigned} atribuídas, ${g.open} sem motorista`}
+                style={{ flex: 1, maxWidth: 56, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', gap: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                <span style={{ fontSize: 10, color: g.open ? '#f87171' : '#4ade80', fontWeight: 700 }}>{g.open ? `−${g.open}` : '✓'}</span>
+                <div style={{ width: '70%', height: `${(g.total / max) * 78}%`, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {g.open > 0 && <div style={{ flex: g.open, background: 'rgba(248,113,113,.75)', borderRadius: g.assigned ? '4px 4px 2px 2px' : 4 }} />}
+                  {g.assigned > 0 && <div style={{ flex: g.assigned, background: '#4ade80', borderRadius: g.open ? '2px 2px 4px 4px' : 4 }} />}
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 800, color: '#e2e8f0' }}>{g.name}</span>
+                <span style={{ fontSize: 10, color: '#64748b' }}>{g.assigned}/{g.total}</span>
+              </button>
+            ))
+          })()}
         </div>
       </Panel>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
-        {/* Por gaiola */}
-        <Panel title="Por letra de gaiola" sub="Ordem de carregamento: quais letras já estão completas">
-          {d.byLetter.map(g => (
-            <div key={g.name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ width: 22, fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>{g.name}</span>
-              <Progress done={g.assigned} total={g.total} color={g.open === 0 ? '#4ade80' : '#fbbf24'} />
-              <span style={{ width: 54, textAlign: 'right', fontSize: 11, color: g.open === 0 ? '#4ade80' : '#94a3b8', fontWeight: 600 }}>{g.assigned}/{g.total}</span>
-            </div>
-          ))}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14 }}>
+        {/* Necessário × alocado */}
+        <Panel title="Veículo necessário × alocado" sub="Linha = o que a rota precisa · coluna = veículo do motorista atribuído">
+          {(() => {
+            const need = [...new Set(d.byVehicle.map(g => g.name))]
+            const got = [...new Set([...d.matrix.keys()].map(k => k.split('|')[1]))].sort()
+            if (got.length === 0) return <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Nenhuma rota atribuída com veículo conhecido.</p>
+            const cellColor = (n: string, c: string) => n === c ? '#4ade80' : c === 'MOTO' ? '#f87171' : n === 'MOTO' ? '#fbbf24' : '#fb923c'
+            return (
+              <table style={{ borderCollapse: 'separate', borderSpacing: 3, fontSize: 12 }}>
+                <thead><tr><th />{got.map(c => <th key={c} style={{ fontSize: 10, color: VEHICLE_COLOR[c] ?? '#94a3b8', fontWeight: 700, padding: '0 6px' }}>{c}</th>)}</tr></thead>
+                <tbody>
+                  {need.map(n => (
+                    <tr key={n}>
+                      <td style={{ fontSize: 10, fontWeight: 700, color: VEHICLE_COLOR[n] ?? '#94a3b8', paddingRight: 8 }}>{n}</td>
+                      {got.map(c => {
+                        const v = d.matrix.get(`${n}|${c}`) ?? 0
+                        const col = cellColor(n, c)
+                        return <td key={c} title={`Precisa ${n}, foi ${c}: ${v}`} style={{ minWidth: 54, height: 34, textAlign: 'center', borderRadius: 6, fontWeight: 700, background: v ? `${col}26` : '#0f1117', color: v ? col : '#374151', border: `1px solid ${v ? `${col}55` : '#1e2130'}` }}>{v || '·'}</td>
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          })()}
+          <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>Verde = certo · vermelho = moto em rota maior · amarelo = rota de moto com veículo maior</p>
         </Panel>
 
         {/* Por veículo */}
         <Panel title="Por veículo necessário" sub="Fiorino: volume acima de 700 L ou mais de 1 GG">
-          {d.byVehicle.map(g => (
-            <div key={g.name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ width: 70, fontSize: 11, fontWeight: 700, color: VEHICLE_COLOR[g.name] ?? '#94a3b8' }}>{g.name}</span>
-              <Progress done={g.assigned} total={g.total} color={VEHICLE_COLOR[g.name] ?? '#94a3b8'} />
-              <span style={{ width: 54, textAlign: 'right', fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>{g.assigned}/{g.total}</span>
-            </div>
-          ))}
+          {d.byVehicle.map(g => {
+            const sz = d.sizeByVehicle.find(([k]) => k === g.name)?.[1]
+            return (
+              <div key={g.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ width: 70, fontSize: 11, fontWeight: 700, color: VEHICLE_COLOR[g.name] ?? '#94a3b8' }}>{g.name}</span>
+                  <Progress done={g.assigned} total={g.total} color={VEHICLE_COLOR[g.name] ?? '#94a3b8'} />
+                  <span style={{ width: 54, textAlign: 'right', fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>{g.assigned}/{g.total}</span>
+                </div>
+                {sz && sz.n > 0 && <span style={{ marginLeft: 80, fontSize: 10, color: '#64748b' }}>média {Math.round(sz.paradas / sz.n)} paradas · {Math.round(sz.km / sz.n)} km · {Math.round(sz.volume / sz.n)} L</span>}
+              </div>
+            )
+          })}
         </Panel>
+      </div>
 
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14 }}>
         {/* Por cluster */}
         <Panel title="Clusters com rota sem motorista" sub="Clique para ver as rotas na tabela">
           {d.byCluster.filter(g => g.open > 0).length === 0
@@ -234,6 +323,25 @@ function RouteDashboard({ rows, onOpenTable }: { rows: Row[]; onOpenTable: (sear
                 <span style={{ width: 66, textAlign: 'right', fontSize: 11, color: '#f87171', fontWeight: 700 }}>{g.open} em aberto</span>
               </div>
             ))}
+        </Panel>
+
+        {/* DS dos atribuídos */}
+        <Panel title="DS dos motoristas atribuídos" sub="Qualidade de entrega de quem vai rodar hoje (meta 95%)">
+          {(() => {
+            const items = d.dsBuckets.filter(b => b.n > 0)
+            const tot = items.reduce((a, b) => a + b.n, 0)
+            if (!tot) return <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Sem rotas atribuídas.</p>
+            return (
+              <>
+                <div style={{ display: 'flex', gap: 2, height: 26 }}>
+                  {items.map(b => <div key={b.label} title={`${b.label}: ${b.n}`} style={{ flex: b.n, background: b.c, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#0f1117', minWidth: 3 }}>{b.n / tot >= 0.08 ? b.n : ''}</div>)}
+                </div>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  {items.map(b => <span key={b.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#94a3b8' }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.c }} />{b.label} <b style={{ color: '#e2e8f0' }}>{b.n}</b></span>)}
+                </div>
+              </>
+            )
+          })()}
         </Panel>
       </div>
 
@@ -309,6 +417,7 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
       if (!q) return true
       return (
         r.atId.toLowerCase().includes(q) ||
+        (r.gaiola ?? '').toLowerCase().startsWith(q) ||
         r.cluster.toLowerCase().includes(q) ||
         (r.cidade ?? '').toLowerCase().includes(q) ||
         (r.assignedDriverName ?? '').toLowerCase().includes(q) ||

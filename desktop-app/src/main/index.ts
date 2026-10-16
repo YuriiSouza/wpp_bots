@@ -1,14 +1,20 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import electronUpdater from 'electron-updater'
 import https from 'https'
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
+// electron-updater é CommonJS; em ESM o named export vem via default.
+const { autoUpdater } = electronUpdater
+
+let mainWindow: BrowserWindow | null = null
+
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
@@ -291,6 +297,57 @@ ipcMain.handle('check-update', async (_event, { serviceAccountKeyJson }: { servi
 
 ipcMain.handle('app-version', () => app.getVersion())
 
+// ─── Auto-update via GitHub Releases (electron-updater) ───────────────────────
+
+function sendToRenderer(channel: string, payload?: unknown): void {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function setupAutoUpdater(): void {
+  autoUpdater.autoDownload = false // só baixa quando o usuário clicar
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('update-available', info => sendToRenderer('updater:available', { version: info.version }))
+  autoUpdater.on('update-not-available', () => sendToRenderer('updater:not-available'))
+  autoUpdater.on('download-progress', p =>
+    sendToRenderer('updater:progress', {
+      percent: p.percent,
+      transferred: p.transferred,
+      total: p.total,
+      bytesPerSecond: p.bytesPerSecond,
+    }),
+  )
+  autoUpdater.on('update-downloaded', info => sendToRenderer('updater:downloaded', { version: info.version }))
+  autoUpdater.on('error', err =>
+    sendToRenderer('updater:error', { message: err == null ? 'erro desconhecido' : err.message || String(err) }),
+  )
+}
+
+// Renderer dispara a verificação (quando já está pronto pra ouvir os eventos).
+ipcMain.handle('updater:check', async () => {
+  if (is.dev) return { dev: true }
+  try {
+    const r = await autoUpdater.checkForUpdates()
+    return { ok: true, version: r?.updateInfo?.version ?? null }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('updater:download', async () => {
+  try {
+    await autoUpdater.downloadUpdate()
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('updater:install', () => {
+  // isSilent=false mostra o assistente do NSIS; isForceRunAfter=true reabre o app ao terminar.
+  autoUpdater.quitAndInstall(false, true)
+})
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.spx.analytics')
 
@@ -299,6 +356,7 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+  setupAutoUpdater()
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -35,7 +35,7 @@ import { noShowQueueStore } from './lib/noShowQueueStore'
 import type { QueueDriver } from './lib/noShowQueueStore'
 import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from './lib/priorityScore'
 import type { Shift } from './lib/globalConfig'
-import { checkForUpdate, type UpdateInfo } from './lib/updateChecker'
+import { UpdateModal } from './components/UpdateModal'
 
 // ─── DS persistence ───────────────────────────────────────────────────────────
 const DS_KEY = 'spx_ds_result'
@@ -100,12 +100,6 @@ export default function App() {
   const [selectedShift, setSelectedShift] = useState<Shift>(() => loadHeader().shift ?? 'AM')
   const [spxHeaderOpen, setSpxHeaderOpen] = useState(false)
   const [spxConfigured, setSpxConfigured] = useState(() => !!localStorage.getItem('spx:credentials'))
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
-  const [updateDismissed, setUpdateDismissed] = useState(false)
-
-  useEffect(() => {
-    checkForUpdate().then(info => { if (info) setUpdateInfo(info) }).catch(() => {})
-  }, [])
 
   const handleDayChange = (d: string) => {
     setSelectedDay(d)
@@ -310,22 +304,7 @@ export default function App() {
           onSpxClick={() => setSpxHeaderOpen(true)}
         />
         {spxHeaderOpen && <SpxModal onClose={() => setSpxHeaderOpen(false)} onSaved={() => { setSpxConfigured(true); setSpxHeaderOpen(false) }} onRemoved={() => { setSpxConfigured(false); setSpxHeaderOpen(false) }} />}
-        {updateInfo && !updateDismissed && (
-          <div style={{ background: '#1a2e1a', borderBottom: '1px solid #22c55e44', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-            <span style={{ fontSize: 16 }}>🆕</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: '#4ade80' }}>Nova versão disponível: {updateInfo.version}</span>
-              <span style={{ fontSize: 12, color: '#86efac', marginLeft: 10 }}>{updateInfo.name}</span>
-              <span style={{ fontSize: 11, color: '#64748b', marginLeft: 10 }}>· versão atual: {updateInfo.current}</span>
-            </div>
-            {(
-              <button onClick={() => window.open(updateInfo.url, '_blank')} style={{ background: '#22c55e', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
-                Baixar
-              </button>
-            )}
-            <button onClick={() => setUpdateDismissed(true)} style={{ background: 'transparent', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 4px', flexShrink: 0 }}>×</button>
-          </div>
-        )}
+        <UpdateModal />
         {section === 'uploads' && (
           <UploadsPage
             dsState={dsState}

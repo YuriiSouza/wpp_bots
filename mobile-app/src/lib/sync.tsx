@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { ActivityIndicator, AppState, Pressable, Text } from 'react-native'
 import { router } from 'expo-router'
 import { storage } from './storage'
-import { getLastSync, getSheetsConfig, syncWithSheets } from './sheetsSync'
+import { getLastSync, syncWithSheets } from './sheetsSync'
+import { isSignedIn } from './googleAuth'
 import { leaveDemo } from './demoData'
 
 interface SyncState {
@@ -20,13 +21,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const [syncing, setSyncing] = useState(false)
   const [lastSync, setLastSync] = useState<string | null>(() => getLastSync())
   const [error, setError] = useState<string | null>(null)
-  const [configured, setConfigured] = useState(() => !!getSheetsConfig().serviceAccountKeyJson)
+  const [configured, setConfigured] = useState(false)
   const running = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const sync = useCallback(async () => {
     if (running.current) return
-    if (!getSheetsConfig().serviceAccountKeyJson) { setError('Planilha não configurada.'); return }
+    if (!(await isSignedIn())) { setConfigured(false); setError('Entre com sua conta Google em Configurações.'); return }
+    setConfigured(true)
     running.current = true
     setSyncing(true)
     setError(null)
@@ -51,7 +53,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, [sync])
 
   useEffect(() => storage.subscribe(() => {
-    setConfigured(!!getSheetsConfig().serviceAccountKeyJson)
+    void isSignedIn().then(setConfigured)
     if (running.current) return
     const pending = storage.dirtyKeys().some(k => k.startsWith('spx:') && k !== 'spx:header' && k !== 'spx:sheets-config' && k !== 'spx:credentials')
     if (!pending) return

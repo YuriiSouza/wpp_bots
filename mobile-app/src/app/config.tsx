@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { View } from 'react-native'
 import Constants from 'expo-constants'
-import { Btn, C, Card, Input, Row, Screen, SHIFTS, Sheet, T, copy } from '@/components/ui'
+import { Btn, C, Card, Input, Row, Screen, SHIFTS, Sheet, T } from '@/components/ui'
 import { DEFAULT_CONFIG, getGlobalConfig, saveGlobalConfig, type GlobalConfig, type Shift } from '@/lib/globalConfig'
-import { DEFAULT_SPREADSHEET_ID, getServiceAccountEmail, getSheetsConfig, saveSheetsConfig, testConnection } from '@/lib/sheetsSync'
+import { DEFAULT_SPREADSHEET_ID, getSheetsConfig, saveSheetsConfig, testConnection } from '@/lib/sheetsSync'
+import { useGoogleSignIn, isSignedIn, getAuthEmail, signOut } from '@/lib/googleAuth'
 import { useSync } from '@/lib/sync'
 import { getSpxCreds } from '@/features/noshow/logic'
 import { SpxCredsSheet } from '@/features/noshow/panels'
@@ -22,9 +23,6 @@ function Section({ title, children, right }: { title: string; children: React.Re
 export default function Config() {
   const sync = useSync()
   const [sheets, setSheets] = useState(() => getSheetsConfig())
-  // A chave em uso nunca é exibida; o campo só serve para colar uma chave nova.
-  const [savedKey] = useState(() => getSheetsConfig().serviceAccountKeyJson)
-  const [newKey, setNewKey] = useState('')
   const [sheetsMsg, setSheetsMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [testing, setTesting] = useState(false)
   const [tutOpen, setTutOpen] = useState(false)
@@ -32,20 +30,36 @@ export default function Config() {
   const [spxConfigured, setSpxConfigured] = useState(() => !!getSpxCreds())
   const [cfg, setCfg] = useState<GlobalConfig>(() => getGlobalConfig())
   const [saved, setSaved] = useState(false)
-  const email = getServiceAccountEmail(sheets.serviceAccountKeyJson)
-  const saveSheets = async () => {
+
+  // Login Google por usuário (o token fica no SecureStore, nunca no bundle).
+  const [authEmail, setAuthEmail] = useState<string | null>(null)
+  const [authLoading, setAuthLoading] = useState(false)
+  useEffect(() => {
+    isSignedIn().then(async s => setAuthEmail(s ? (await getAuthEmail()) || 'conta Google' : null))
+  }, [])
+  const testAndSync = async () => {
     saveSheetsConfig(sheets)
-    setTesting(true)
-    setSheetsMsg(null)
     try {
       const title = await testConnection(sheets)
       setSheetsMsg({ ok: true, text: `Conectado: "${title}"` })
       void sync.sync()
     } catch (e) {
       setSheetsMsg({ ok: false, text: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setTesting(false)
     }
+  }
+  const { ready, promptAsync } = useGoogleSignIn(async (email, error) => {
+    setAuthLoading(false)
+    if (error) { setSheetsMsg({ ok: false, text: 'Login falhou: ' + error }); return }
+    setAuthEmail(email || 'conta Google')
+    await testAndSync()
+  })
+  const doSignIn = () => { setAuthLoading(true); setSheetsMsg(null); promptAsync() }
+  const doSignOut = async () => { await signOut(); setAuthEmail(null); setSheetsMsg(null) }
+  const saveSheets = async () => {
+    setTesting(true)
+    setSheetsMsg(null)
+    await testAndSync()
+    setTesting(false)
   }
 
   const saveCfg = () => { saveGlobalConfig(cfg); setSaved(true); setTimeout(() => setSaved(false), 2000) }
@@ -58,10 +72,18 @@ export default function Config() {
         <T size={11} bold color={C.muted}>URL OU ID DA PLANILHA</T>
         <Input mono value={sheets.spreadsheetId} onChangeText={v => { setSheets(s => ({ ...s, spreadsheetId: v })); setSheetsMsg(null) }} placeholder="https://docs.google.com/spreadsheets/d/..." />
         {sheets.spreadsheetId !== DEFAULT_SPREADSHEET_ID && <Btn small variant="ghost" onPress={() => setSheets(s => ({ ...s, spreadsheetId: DEFAULT_SPREADSHEET_ID }))}>Usar planilha padrão</Btn>}
-        <T size={11} bold color={C.muted}>CHAVE DA CONTA DE SERVIÇO (JSON)</T>
-        <Input multiline mono value={newKey} onChangeText={v => { setNewKey(v); setSheets(s => ({ ...s, serviceAccountKeyJson: v.trim() ? v : savedKey })); setSheetsMsg(null) }} placeholder={savedKey ? 'Chave já configurada. Cole aqui só para trocar por outra.' : '{"type":"service_account","client_email":"...","private_key":"..."}'} style={{ minHeight: 70, fontSize: 10 }} />
-        {email ? <T size={11} color={C.dim}>Conta: <T size={11} color={C.blue}>{email}</T></T> : null}
-        <Btn loading={testing} disabled={!sheets.serviceAccountKeyJson.trim()} onPress={() => void saveSheets()}>Salvar e testar conexão</Btn>
+        <T size={11} bold color={C.muted}>CONTA GOOGLE</T>
+        {authEmail ? (
+          <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <T size={12} color={C.dim}>Conectado: <T size={12} color={C.blue}>{authEmail}</T></T>
+            <Btn small variant="ghost" onPress={() => void doSignOut()}>Sair</Btn>
+          </Row>
+        ) : (
+          <T size={11} color={C.muted}>Entre com uma conta Google que tenha acesso à planilha.</T>
+        )}
+        {authEmail
+          ? <Btn loading={testing} onPress={() => void saveSheets()}>Testar conexão</Btn>
+          : <Btn loading={authLoading} disabled={!ready} onPress={doSignIn}>🔑 Entrar com Google</Btn>}
         {sheetsMsg && <T size={12} bold color={sheetsMsg.ok ? C.green : C.red}>{sheetsMsg.ok ? '✓ ' : '✕ '}{sheetsMsg.text}</T>}
       </Section>
 
@@ -114,17 +136,16 @@ export default function Config() {
       <SpxCredsSheet open={spxOpen} onClose={() => setSpxOpen(false)} configured={spxConfigured} onChange={setSpxConfigured} />
       <Sheet open={tutOpen} onClose={() => setTutOpen(false)} title="🔗 Como configurar o Google Sheets">
         {[
-          { n: '1', title: 'Pegue a chave da conta de serviço', body: 'No PC, abra o arquivo .json da conta de serviço (o mesmo configurado no app desktop) e envie o conteúdo para o celular por um canal seguro (ex: nota privada). Evite grupos de WhatsApp.' },
-          { n: '2', title: 'Cole a chave aqui', body: 'Cole o conteúdo inteiro no campo "Chave da conta de serviço (JSON)".' },
-          { n: '3', title: 'Confira a planilha', body: 'A planilha padrão já vem preenchida. Para usar outra, cole o link dela e compartilhe-a como Editor com o e-mail da conta de serviço:' },
-          { n: '4', title: 'Salve e teste', body: 'Toque em "Salvar e testar conexão". Se aparecer "Conectado", os dados do PC já começam a chegar.' },
+          { n: '1', title: 'Compartilhe a planilha', body: 'No Google Sheets, use Compartilhar e adicione as contas Google autorizadas como Editor. Só quem estiver na lista consegue acessar pelo app.' },
+          { n: '2', title: 'Entre com o Google', body: 'Toque em "Entrar com Google" e faça login com uma conta que tenha acesso à planilha.' },
+          { n: '3', title: 'Confira a planilha', body: 'A planilha padrão já vem preenchida. Para usar outra, cole o link dela no campo acima.' },
+          { n: '4', title: 'Teste e sincronize', body: 'Toque em "Testar conexão". Se aparecer "Conectado", os dados já começam a sincronizar.' },
         ].map(s => (
           <Row key={s.n} style={{ alignItems: 'flex-start', flexWrap: 'nowrap' }} gap={12}>
             <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' }}><T bold color="#fff">{s.n}</T></View>
             <View style={{ flex: 1, gap: 3 }}>
               <T bold>{s.title}</T>
               <T size={12} color={C.sub}>{s.body}</T>
-              {s.n === '3' && email ? <Btn small variant="outline" onPress={() => copy(email)}>{`📋 ${email}`}</Btn> : null}
             </View>
           </Row>
         ))}

@@ -1,6 +1,5 @@
-import Constants from 'expo-constants'
-import { KJUR, KEYUTIL } from 'jsrsasign'
 import { storage } from './storage'
+import { getValidAccessToken } from './googleAuth'
 
 const CONFIG_KEY = 'spx:sheets-config'
 const LAST_SYNC_KEY = 'mobile:last-sync'
@@ -10,7 +9,6 @@ export const DEFAULT_SPREADSHEET_ID = '1LPsSbE5Jmgxrbe6ZKjq0ObBdDTOq7t5a3zLyqRBo
 
 export interface SheetsConfig {
   spreadsheetId: string
-  serviceAccountKeyJson: string
 }
 
 const LOCAL_ONLY = new Set([CONFIG_KEY, 'spx:header', 'spx:credentials'])
@@ -19,9 +17,12 @@ const isSynced = (k: string) => (k.startsWith('spx:') || k === 'spx_ds_result') 
 export function getSheetsConfig(): SheetsConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed?.spreadsheetId) return { spreadsheetId: parsed.spreadsheetId }
+    }
   } catch {}
-  return { spreadsheetId: DEFAULT_SPREADSHEET_ID, serviceAccountKeyJson: (Constants.expoConfig?.extra?.serviceAccountKeyJson as string | undefined) ?? '' }
+  return { spreadsheetId: DEFAULT_SPREADSHEET_ID }
 }
 
 export function saveSheetsConfig(cfg: SheetsConfig) {
@@ -32,41 +33,13 @@ export function getLastSync(): string | null {
   return localStorage.getItem(LAST_SYNC_KEY)
 }
 
-export function getServiceAccountEmail(keyJson: string): string {
-  try { return JSON.parse(keyJson).client_email ?? '' } catch { return '' }
-}
-
 function spreadsheetId(urlOrId: string) {
   const m = urlOrId.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)
   return m ? m[1] : urlOrId.trim()
 }
 
-let cachedToken: { email: string; token: string; expiresAt: number } | null = null
-
-async function accessToken(keyJson: string): Promise<string> {
-  let sa: { client_email: string; private_key: string; token_uri?: string }
-  try { sa = JSON.parse(keyJson) } catch { throw new Error('Chave JSON inválida. Cole a chave da conta de serviço em Configurações.') }
-  if (!sa.client_email || !sa.private_key) throw new Error('Chave JSON sem client_email/private_key.')
-  if (cachedToken?.email === sa.client_email && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.token
-  const now = Math.floor(Date.now() / 1000)
-  const aud = sa.token_uri ?? 'https://oauth2.googleapis.com/token'
-  const jwt = KJUR.jws.JWS.sign('RS256',
-    JSON.stringify({ alg: 'RS256', typ: 'JWT' }),
-    JSON.stringify({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/spreadsheets', aud, iat: now, exp: now + 3600 }),
-    KEYUTIL.getKey(sa.private_key) as never)
-  const res = await fetch(aud, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
-  })
-  const data = await res.json() as { access_token?: string; error_description?: string; error?: string }
-  if (!data.access_token) throw new Error(data.error_description ?? data.error ?? 'Falha ao autenticar no Google')
-  cachedToken = { email: sa.client_email, token: data.access_token, expiresAt: Date.now() + 3500_000 }
-  return data.access_token
-}
-
 async function api(cfg: SheetsConfig, method: string, path: string, body?: unknown) {
-  const token = await accessToken(cfg.serviceAccountKeyJson)
+  const token = await getValidAccessToken()
   const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId(cfg.spreadsheetId)}${path}`, {
     method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

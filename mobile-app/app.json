@@ -26,9 +26,14 @@
     },
     "plugins": [
       "expo-router",
-      "expo-status-bar"
+      "expo-status-bar",
+      "expo-web-browser",
+      "expo-secure-store"
     ],
-    "scheme": "spxanalytics",
+    "scheme": [
+      "spxanalytics",
+      "com.googleusercontent.apps.196424894215-2s93ruclcqadgq9ukdcackmmn6nqq22d"
+    ],
     "backgroundColor": "#0f1117"
   }
 }

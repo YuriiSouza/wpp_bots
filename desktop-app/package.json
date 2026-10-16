@@ -69,7 +69,8 @@
       {
         "provider": "github",
         "owner": "YuriiSouza",
-        "repo": "wpp_bots"
+        "repo": "wpp_bots",
+        "releaseType": "release"
       }
     ]
   }

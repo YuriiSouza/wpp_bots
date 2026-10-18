@@ -6,6 +6,7 @@ import type { CallUpAnalysis } from '../../lib/callUpParser'
 import type { ForwardOrderAnalysis } from '../../lib/forwardOrderParser'
 import type { Shift } from '../../lib/globalConfig'
 import { getGlobalConfig, driverMatchesShift, calcRodizio } from '../../lib/globalConfig'
+import Rotatividade from './Rotatividade'
 import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from '../../lib/priorityScore'
 
 // ─── manual blocklist (shared key) ───────────────────────────────────────────
@@ -488,7 +489,7 @@ function DashboardView({ drivers }: { drivers: EnrichedDriver[] }) {
 }
 
 export default function Disponibilidade({ data, registry, dsDrivers, callUp, forwardOrder, selectedDay, selectedShift }: Props) {
-  const [activeView, setActiveView] = useState<'lista' | 'dashboard'>('lista')
+  const [activeView, setActiveView] = useState<'lista' | 'dashboard' | 'rotatividade'>('lista')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<Set<DriverStatus>>(new Set())
   const [rodizioFilter, setRodizioFilter] = useState<Set<Rodizio>>(new Set())
@@ -700,10 +701,10 @@ export default function Disponibilidade({ data, registry, dsDrivers, callUp, for
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {/* Vista toggle */}
             <div style={{ display: 'flex', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, overflow: 'hidden' }}>
-              {(['lista', 'dashboard'] as const).map(v => (
+              {(['lista', 'dashboard', 'rotatividade'] as const).map(v => (
                 <button key={v} onClick={() => setActiveView(v)}
                   style={{ background: activeView === v ? 'rgba(99,102,241,.2)' : 'transparent', color: activeView === v ? '#a5b4fc' : '#64748b', border: 'none', padding: '5px 14px', fontSize: 12, fontWeight: activeView === v ? 700 : 400, cursor: 'pointer', textTransform: 'capitalize' }}>
-                  {v === 'lista' ? '☰ Lista' : '📊 Dashboard'}
+                  {v === 'lista' ? '☰ Lista' : v === 'dashboard' ? '📊 Dashboard' : '🔄 Rotatividade'}
                 </button>
               ))}
             </div>
@@ -738,6 +739,7 @@ export default function Disponibilidade({ data, registry, dsDrivers, callUp, for
       </div>
 
       {activeView === 'dashboard' && <DashboardView drivers={drivers} />}
+      {activeView === 'rotatividade' && <Rotatividade data={data} registry={registry} dsDrivers={dsDrivers} callUp={callUp} forwardOrder={forwardOrder} selectedDay={selectedDay} />}
 
       {activeView === 'lista' && <>
       {/* Filters */}

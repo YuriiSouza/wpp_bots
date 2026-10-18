@@ -13,6 +13,9 @@ import Carregamento from './components/Carregamento'
 import Blocklist from './components/Blocklist'
 import GlobalHeader from './components/GlobalHeader'
 import Configuracoes from './components/Configuracoes'
+import NovatosAnalise from './components/NovatosAnalise'
+import { saveRouteHistory } from './lib/routeHistory'
+import { getAppVersion } from './lib/updateChecker'
 
 import { localStore } from './lib/localStore'
 import { parseDriverCsv } from './lib/driverParser'
@@ -53,13 +56,14 @@ type DSState =
   | { phase: 'done'; result: AnalysisResult; fileName: string }
   | { phase: 'error'; message: string }
 
-type Section = 'uploads' | 'ds' | 'motoristas' | 'disponibilidade' | 'callup' | 'pacotes' | 'perfil' | 'noshow' | 'carregamento' | 'blocklist' | 'config'
+type Section = 'uploads' | 'ds' | 'novatos' | 'motoristas' | 'disponibilidade' | 'callup' | 'pacotes' | 'perfil' | 'noshow' | 'carregamento' | 'blocklist' | 'config'
 
 interface NavItem { id: Section; icon: string; label: string; group?: string }
 
 const NAV: NavItem[] = [
   { id: 'uploads',       icon: '📤', label: 'Uploads' },
   { id: 'ds',            icon: '📊', label: 'Análise DS',     group: 'Análise' },
+  { id: 'novatos',       icon: '🆕', label: 'Novatos',        group: 'Análise' },
   { id: 'motoristas',    icon: '👥', label: 'Motoristas',     group: 'Análise' },
   { id: 'disponibilidade', icon: '📅', label: 'Disponibilidade', group: 'Operação' },
   { id: 'callup',        icon: '📞', label: 'Call Up',        group: 'Operação' },
@@ -132,7 +136,7 @@ export default function App() {
       else if (type === 'done') {
         saveDsResult(result, fileName)
         setDsState({ phase: 'done', result, fileName })
-        if (pr) setParsedRoutes(pr)
+        if (pr) { setParsedRoutes(pr); saveRouteHistory(pr) }
         worker.terminate()
       }
       else if (type === 'error') { setDsState({ phase: 'error', message }); worker.terminate() }
@@ -242,6 +246,10 @@ export default function App() {
     perfil: profiles ? '#22c55e' : undefined,
   }
 
+  // Versão real do app (package.json), mostrada no rodapé do menu
+  const [appVersion, setAppVersion] = useState('')
+  useEffect(() => { getAppVersion().then(setAppVersion).catch(() => { /* */ }) }, [])
+
   // Menu lateral recolhível (lembra a escolha)
   const [navCollapsed, setNavCollapsed] = useState(() => { try { return localStorage.getItem('ui:nav-collapsed') === '1' } catch { return false } })
   const toggleNav = () => setNavCollapsed(v => { try { localStorage.setItem('ui:nav-collapsed', v ? '0' : '1') } catch { /* */ } return !v })
@@ -289,7 +297,7 @@ export default function App() {
         </nav>
 
         <div style={{ padding: '10px 16px', borderTop: '1px solid #1e2130' }}>
-          <p style={{ margin: 0, fontSize: 10, color: '#4a5568', textAlign: navCollapsed ? 'center' : 'left', whiteSpace: 'nowrap' }}>{navCollapsed ? 'v1.1' : 'v1.1.0 · 100% local'}</p>
+          <p style={{ margin: 0, fontSize: 10, color: '#4a5568', textAlign: navCollapsed ? 'center' : 'left', whiteSpace: 'nowrap' }}>{appVersion ? (navCollapsed ? `v${appVersion.split('.').slice(0, 2).join('.')}` : `v${appVersion} · 100% local`) : ''}</p>
         </div>
       </aside>
 
@@ -336,6 +344,8 @@ export default function App() {
             {dsState.phase === 'done' && <Dashboard result={dsState.result} fileName={dsState.fileName} onReset={handleResetDS} parsedRoutes={parsedRoutes} />}
           </>
         )}
+
+        {section === 'novatos' && <NovatosAnalise registry={localStore.getDrivers()} onGoUploads={() => setSection('uploads')} />}
 
         {section === 'motoristas' && <DriversApp onImported={onDriversImported} />}
 

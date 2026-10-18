@@ -655,6 +655,24 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
 
   // O SPX não diz desde quando a mesa está ocupada ou vazia: o app anota a hora em que viu cada mudança.
   // `exact` = vimos a mudança acontecer (entre duas atualizações); senão é "pelo menos desde".
+  // Tempo da chamada até ocupar a mesa, direto dos dados do SPX: hora em que ocupou − hora da chamada
+  const arrivalStats = useMemo(() => {
+    const done = entries
+      .filter(e => e.calledAt && e.occupiedAt)
+      .map(e => ({ name: e.driverName, dock: dockKey(e.dock ?? ''), at: e.occupiedAt!, min: Math.round((e.occupiedAt! - e.calledAt!) / 60) }))
+      .filter(d => d.min >= 0 && d.min <= 120)
+    if (!done.length) return null
+    const mins = done.map(d => d.min).sort((x, y) => x - y)
+    return {
+      n: done.length,
+      avg: Math.round(mins.reduce((x, y) => x + y, 0) / mins.length),
+      median: mins[Math.floor(mins.length / 2)],
+      max: mins[mins.length - 1],
+      slow: done.filter(d => d.min >= 10).length,
+      recent: done.sort((x, y) => y.at - x.at).slice(0, 6),
+    }
+  }, [entries])
+
   const historyKey = `spx:dock-history:${day}`
   const [history, setHistory] = useState<Record<string, { state: string; who: string; since: number; exact: boolean }>>({})
   useEffect(() => {
@@ -693,6 +711,12 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
               <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 700, color: STYLE[k].color }}>{counts[k]}</p>
             </div>
           ))}
+          <div title={arrivalStats ? `Últimos:\n${arrivalStats.recent.map(r => `${r.name} · ${r.dock}: ${r.min} min`).join('\n')}` : 'Nenhum motorista chamado ocupou mesa ainda (ou a fila veio de CSV)'}
+            style={{ background: '#13151f', border: '1px solid #2d3048', borderLeft: `3px solid ${!arrivalStats ? '#64748b' : arrivalStats.avg >= 10 ? '#f87171' : arrivalStats.avg >= 5 ? '#fbbf24' : '#4ade80'}`, borderRadius: 8, padding: '8px 14px', minWidth: 170 }}>
+            <p style={{ margin: 0, fontSize: 10, color: '#8892a4' }}>Tempo médio até a mesa</p>
+            <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 700, color: '#e2e8f0' }}>{arrivalStats ? `${arrivalStats.avg} min` : '—'}</p>
+            <p style={{ margin: 0, fontSize: 10, color: '#64748b' }}>{arrivalStats ? `mediana ${arrivalStats.median} · máx ${arrivalStats.max} · ${arrivalStats.n} chamada${arrivalStats.n !== 1 ? 's' : ''}${arrivalStats.slow ? ` · ${arrivalStats.slow} com 10+ min` : ''}` : 'sem chamadas atendidas ainda'}</p>
+          </div>
           <span style={{ flex: 1 }} />
           <label style={{ fontSize: 11, color: '#8892a4', display: 'flex', alignItems: 'center', gap: 6 }}>
             Mesas no hub

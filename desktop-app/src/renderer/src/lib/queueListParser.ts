@@ -23,6 +23,7 @@ export interface QueueEntry {
   situation?: import('./spxQueueFetcher').QueueSituation
   dock?: string             // mesa ocupada / para a qual foi chamado
   calledAt?: number         // unix (s) da última chamada do motorista
+  occupiedAt?: number       // unix (s) em que ocupou a mesa (entrada na fila + espera)
   queueSequence?: number
   overWaitLimit?: boolean   // o próprio SPX marcou espera acima do limite
   orderQty?: number

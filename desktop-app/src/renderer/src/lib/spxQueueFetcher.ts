@@ -79,6 +79,8 @@ function toEntry(q: SpxQueueItem): QueueEntry {
     situation,
     dock: (dock ?? '').replace(/\s+/g, ' ').trim(),
     calledAt: q.last_inform_driver_time || 0,
+    // O SPX congela o waiting_time quando o motorista ocupa a mesa: entrada na fila + espera = hora em que ocupou
+    occupiedAt: (q.queue_status === 3 || q.queue_status === 4) && q.add_to_queue_time && q.waiting_time != null ? q.add_to_queue_time + q.waiting_time * 60 : 0,
     queueSequence: q.queue_sequence,
     overWaitLimit: q.out_of_waiting_time_threshold,
     orderQty: q.order_quantity,

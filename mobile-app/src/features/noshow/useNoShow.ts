@@ -171,8 +171,9 @@ export function useNoShow() {
     const fioDrivers = orderedDrivers
       .filter(d => normalizeVehicle(d.vehicleType) === 'FIORINO' && !d.isBlocked && !alreadyRoutedIds.has(d.driverId))
       .sort((a, b) => (b.priorityScore !== a.priorityScore ? b.priorityScore - a.priorityScore : b.daysSinceRoute - a.daysSinceRoute))
-    const strictRoutes = routes.filter(r => r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId) && (r.gg ?? 0) >= 2 && (r.volume ?? 0) >= 800)
-    const allAvailableRoutes = routes.filter(r => r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId))
+    const strictRoutes = routes.filter(r => r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId) && (r.gg ?? 0) >= 2 && (r.volume ?? 0) >= 800 && normalizeVehicle(r.requiredVehicleType) !== 'MOTO')
+    // Fiorino nunca pega rota de moto: só rota de passeio ou de Fiorino
+    const allAvailableRoutes = routes.filter(r => r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId) && normalizeVehicle(r.requiredVehicleType) !== 'MOTO')
     const build = (targets: LocalRoute[], pool: LocalDriver[]) => {
       const result = new Map<string, LocalDriver>()
       const used = new Set<string>()

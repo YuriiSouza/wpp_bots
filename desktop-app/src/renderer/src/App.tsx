@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { parseSpxCurl, curlProblem } from './lib/spxCurl'
 import type { AnalysisResult, ParsedRoute } from './lib/types'
 import FileUpload from './components/FileUpload'
 import Dashboard from './components/Dashboard'
@@ -438,21 +439,7 @@ export default function App() {
 
 const SPX_CREDS_KEY = 'spx:credentials'
 
-function parseCurl(curl: string): Record<string, string> {
-  const creds: Record<string, string> = {}
-  const cookieMatch = curl.match(/-b\s+'([^']+)'/)
-  if (cookieMatch) creds['cookie'] = cookieMatch[1]
-  const extract = (p: RegExp) => { const m = curl.match(p); return m ? m[1].trim() : undefined }
-  const csrf = extract(/x-csrftoken:\s*([^\s'\\]+)/i)
-  if (csrf) creds['x-csrftoken'] = csrf
-  const sapRi = extract(/x-sap-ri:\s*([^\s'\\]+)/i)
-  if (sapRi) creds['x-sap-ri'] = sapRi
-  const dev = extract(/device-id:\s*([^\s'\\]+)/i)
-  if (dev) creds['device-id'] = dev
-  const sapSec = curl.match(/x-sap-sec:\s*([^']+?)'[\s\\]*(?:-H|--data|$)/i)
-  if (sapSec) creds['x-sap-sec'] = sapSec[1].trim()
-  return creds
-}
+const parseCurl = parseSpxCurl
 
 function SpxModal({ onClose, onSaved, onRemoved }: { onClose: () => void; onSaved: () => void; onRemoved: () => void }) {
   const [curlInput, setCurlInput] = useState('')
@@ -479,6 +466,7 @@ function SpxModal({ onClose, onSaved, onRemoved }: { onClose: () => void; onSave
           autoFocus
           style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px 12px', resize: 'vertical', width: '100%', maxWidth: '100%', minWidth: 0, display: 'block', boxSizing: 'border-box', whiteSpace: 'pre-wrap', wordBreak: 'break-all', overflowX: 'hidden' }}
         />
+        {curlProblem(curlInput) && <p style={{ margin: 0, fontSize: 12, color: '#fbbf24' }}>⚠ {curlProblem(curlInput)}</p>}
         {curlInput && parsed && (
           <div style={{ background: hasMin ? 'rgba(34,197,94,.06)' : 'rgba(239,68,68,.06)', border: `1px solid ${hasMin ? 'rgba(34,197,94,.2)' : 'rgba(239,68,68,.2)'}`, borderRadius: 7, padding: '10px 12px', fontSize: 11 }}>
             <p style={{ margin: '0 0 5px', fontWeight: 600, color: hasAll ? '#4ade80' : hasMin ? '#fbbf24' : '#f87171' }}>

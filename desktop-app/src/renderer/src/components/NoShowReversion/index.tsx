@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useCallback } from 'react'
+import { parseSpxCurl, curlProblem } from '../../lib/spxCurl'
 import { coversCluster, splitClusters } from '../../lib/clusterMatch'
 import type { StoredDriver } from '../../lib/localStore'
 import type { DriverResult } from '../../lib/types'
@@ -37,21 +38,7 @@ function saveManualBlocks(blocks: ManualBlock[]) {
 
 const SPX_CREDS_KEY = 'spx:credentials'
 
-function parseCurl(curl: string): Record<string, string> {
-  const creds: Record<string, string> = {}
-  const cookieMatch = curl.match(/-b\s+'([^']+)'/)
-  if (cookieMatch) creds['cookie'] = cookieMatch[1]
-  const extract = (p: RegExp) => { const m = curl.match(p); return m ? m[1].trim() : undefined }
-  const csrf = extract(/x-csrftoken:\s*([^\s'\\]+)/i)
-  if (csrf) creds['x-csrftoken'] = csrf
-  const sapRi = extract(/x-sap-ri:\s*([^\s'\\]+)/i)
-  if (sapRi) creds['x-sap-ri'] = sapRi
-  const dev = extract(/device-id:\s*([^\s'\\]+)/i)
-  if (dev) creds['device-id'] = dev
-  const sapSec = curl.match(/x-sap-sec:\s*([^']+?)'[\s\\]*(?:-H|--data|$)/i)
-  if (sapSec) creds['x-sap-sec'] = sapSec[1].trim()
-  return creds
-}
+const parseCurl = parseSpxCurl
 
 function getSpxCreds(): Record<string, string> | null {
   try { const raw = localStorage.getItem(SPX_CREDS_KEY); return raw ? JSON.parse(raw) : null } catch { return null }
@@ -1519,12 +1506,15 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     // Rotas que exigem Fiorino (GG ≥ 2 E volume ≥ 800)
     const strictRoutes = routes.filter(r =>
       r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId) &&
-      (r.gg ?? 0) >= 2 && (r.volume ?? 0) >= 800
+      (r.gg ?? 0) >= 2 && (r.volume ?? 0) >= 800 &&
+      normalizeVehicle(r.requiredVehicleType) !== 'MOTO'
     )
 
     // Todas as rotas disponíveis (para modo maximize)
+    // Fiorino nunca pega rota de moto: só rota de passeio ou de Fiorino
     const allAvailableRoutes = routes.filter(r =>
-      r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId)
+      r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId) &&
+      normalizeVehicle(r.requiredVehicleType) !== 'MOTO'
     )
 
     // Greedy assignment — rotas mais restritivas de cluster primeiro
@@ -2636,6 +2626,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
           rows={9}
           style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 11, fontFamily: 'monospace', padding: '10px 12px', resize: 'vertical', width: '100%', maxWidth: '100%', minWidth: 0, display: 'block', boxSizing: 'border-box', whiteSpace: 'pre-wrap', wordBreak: 'break-all', overflowX: 'hidden' }}
         />
+        {curlProblem(spxCurlInput) && <p style={{ margin: 0, fontSize: 12, color: '#fbbf24' }}>⚠ {curlProblem(spxCurlInput)}</p>}
         {spxCurlInput && (() => {
           const p = parseCurl(spxCurlInput)
           const hasMin = !!(p['cookie'] && p['x-csrftoken'])

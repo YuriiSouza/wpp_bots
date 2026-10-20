@@ -24,6 +24,7 @@ import { reportStore } from './lib/reportStore'
 import { routeStore } from './lib/routeStore'
 import { parseRoutesTsv } from './lib/noshowRouteParser'
 import { fetchAtDetails } from './lib/spxAtDetailFetcher'
+import { parseBrAssignment } from './lib/brAssignmentParser'
 import { fetchAllSpxWorkPref, spxDriversToWorkPref } from './lib/spxWorkPrefFetcher'
 import { parseCallUpCsv } from './lib/callUpParser'
 import { parseForwardOrderCsv } from './lib/forwardOrderParser'
@@ -595,6 +596,29 @@ function SpxAtDriversCard({ selectedDay, selectedShift }: { selectedDay: string;
   const [result, setResult] = useState<{ withDriver: number; noDriver: number; failed: { atId: string; error: string }[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const routes = routeStore.get(selectedDay, selectedShift) ?? []
+  const csvRef = useRef<HTMLInputElement>(null)
+  const [csvResult, setCsvResult] = useState<string | null>(null)
+  const applyCsv = (csv: string) => {
+    const map = parseBrAssignment(csv)
+    if (map.size === 0) { setCsvResult('⚠ Nenhuma AT encontrada no arquivo.'); return }
+    let matched = 0, total = 0
+    const assignedByShift = new Map<Shift, Set<string>>()
+    for (const { date, shift } of routeStore.list()) {
+      const list = routeStore.get(date, shift)
+      if (!list) continue
+      total += list.length
+      routeStore.save(date, shift, list.map(r => {
+        const e = map.get(r.atId)
+        if (!e?.driverId) return r
+        matched++
+        if (!assignedByShift.has(shift)) assignedByShift.set(shift, new Set())
+        assignedByShift.get(shift)!.add(e.driverId)
+        return { ...r, assignedDriverId: e.driverId, assignedDriverName: e.driverName || r.assignedDriverName, status: 'ATRIBUIDA' as const }
+      }))
+    }
+    for (const [shift, ids] of assignedByShift) noShowQueueStore.remove(shift, [...ids])
+    setCsvResult(total ? `✓ ${matched} de ${total} rotas vinculadas com motorista` : '⚠ Nenhuma roteirização salva. Importe primeiro.')
+  }
 
   const run = async () => {
     if (running) return
@@ -648,6 +672,20 @@ function SpxAtDriversCard({ selectedDay, selectedShift }: { selectedDay: string;
         </div>
       )}
       {error && <div style={{ fontSize: 12, color: '#f87171' }}>⚠ {error}</div>}
+
+      {/* Alternativa: relatório br_assignment_task (CSV) */}
+      <div style={{ borderTop: '1px solid #1e2130', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>Ou pelo relatório <code>br_assignment_task_*.csv</code> — vincula o motorista a cada AT em todas as roteirizações salvas.</p>
+        <div
+          onClick={() => csvRef.current?.click()}
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) void f.text().then(applyCsv) }}
+          style={{ border: '2px dashed #2d3048', borderRadius: 8, padding: '10px 14px', textAlign: 'center', cursor: 'pointer', color: '#8892a4', fontSize: 12 }}>
+          📂 Clique ou arraste o <code>br_assignment_task_*.csv</code>
+          <input ref={csvRef} type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) void f.text().then(applyCsv); e.target.value = '' }} />
+        </div>
+        {csvResult && <div style={{ fontSize: 12, color: csvResult.startsWith('✓') ? '#4ade80' : '#f87171', fontWeight: 600 }}>{csvResult}</div>}
+      </div>
     </div>
   )
 }
@@ -932,7 +970,7 @@ function UploadsPage(props: UploadsProps) {
         {/* Motorista por AT (SPX) */}
         <UploadCard
           icon="🔗" title="Motorista por AT (SPX)" color="#f97316"
-          description="Busca no SPX quem está em cada rota do turno — não precisa mais do br_assignment_task"
+          description="Busca no SPX quem está em cada rota do turno, ou importa o br_assignment_task"
           loaded={null}
           tutorial={[
             'Importe a roteirização do turno no card acima.',

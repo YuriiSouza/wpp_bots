@@ -3,7 +3,7 @@
 
 export type SpxCreds = Record<string, string>
 
-const WANTED = ['cookie', 'x-csrftoken', 'device-id', 'x-sap-ri', 'x-sap-sec'] as const
+const WANTED = ['cookie', 'x-csrftoken', 'device-id', 'x-sap-ri', 'x-sap-sec', 'user-agent', 'accept-language'] as const
 
 function normalize(curl: string): string {
   let s = curl.replace(/\r\n?/g, '\n')

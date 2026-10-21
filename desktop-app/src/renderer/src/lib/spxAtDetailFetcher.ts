@@ -14,36 +14,54 @@ export interface AtDetail {
 
 export class SpxSessionError extends Error {}
 
-function headers(creds: Record<string, string>): Record<string, string> {
+// Igual ao outro sistema que já funciona: só os cabeçalhos de sessão, SEM os x-sap-* —
+// eles são assinaturas geradas para cada requisição do site e invalidam a consulta se reaproveitados.
+function headers(creds: Record<string, string>, withSap: boolean): Record<string, string> {
   return {
     'accept': 'application/json, text/plain, */*',
+    'accept-language': creds['accept-language'] || 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
     'app': 'FMS Portal',
     'cookie': creds['cookie'] ?? '',
     'device-id': creds['device-id'] ?? '',
     'referer': 'https://spx.shopee.com.br/',
+    'user-agent': creds['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'x-csrftoken': creds['x-csrftoken'] ?? '',
-    ...(creds['x-sap-ri'] ? { 'x-sap-ri': creds['x-sap-ri'] } : {}),
-    ...(creds['x-sap-sec'] ? { 'x-sap-sec': creds['x-sap-sec'] } : {}),
+    ...(withSap && creds['x-sap-ri'] ? { 'x-sap-ri': creds['x-sap-ri'] } : {}),
+    ...(withSap && creds['x-sap-sec'] ? { 'x-sap-sec': creds['x-sap-sec'] } : {}),
   }
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+const snippet = (body: string) => body.replace(/\s+/g, ' ').slice(0, 140)
+
+// Variante de cabeçalhos que funcionou (descoberta na 1ª AT e reaproveitada nas outras)
+let workingSap: boolean | null = null
+
+async function getOnce(creds: Record<string, string>, atId: string, withSap: boolean) {
+  return await window.electron.ipcRenderer.invoke('spx-get', { url: DETAIL_URL + encodeURIComponent(atId), headers: headers(creds, withSap) }) as { status: number; body: string }
+}
 
 async function fetchOne(creds: Record<string, string>, atId: string): Promise<AtDetail> {
   let lastErr = ''
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const res = await window.electron.ipcRenderer.invoke('spx-get', { url: DETAIL_URL + encodeURIComponent(atId), headers: headers(creds) }) as { status: number; body: string }
-      if (res.status === 401 || res.status === 403) throw new SpxSessionError('Sessão do SPX expirou — cole um cURL novo em Atribuição › SPX.')
-      if (res.status === 429 || res.status >= 500) { lastErr = `SPX ${res.status}`; await sleep(800 * attempt); continue }
-      let data: { retcode: number; message?: string; data?: { driver_id?: number; driver_name?: string; corridor_cage?: string } }
-      try { data = JSON.parse(res.body) } catch { throw new SpxSessionError('O SPX não respondeu JSON (provavelmente pediu login) — cole um cURL novo em Atribuição › SPX.') }
-      if (data.retcode !== 0) throw new Error(data.message ?? `retcode ${data.retcode}`)
-      const d = data.data ?? {}
-      return { atId, driverId: d.driver_id ? String(d.driver_id) : '', driverName: d.driver_name ?? '', cage: d.corridor_cage ?? '' }
+      const variants = workingSap === null ? [false, true] : [workingSap]
+      let sessionFail = ''
+      for (const withSap of variants) {
+        const res = await getOnce(creds, atId, withSap)
+        if (res.status === 429 || res.status >= 500) { lastErr = `SPX ${res.status}`; break }
+        if (res.status === 401 || res.status === 403) { sessionFail = `SPX ${res.status}: ${snippet(res.body)}`; continue }
+        let data: { retcode: number; message?: string; data?: { driver_id?: number; driver_name?: string; corridor_cage?: string } }
+        try { data = JSON.parse(res.body) } catch { sessionFail = `resposta não é JSON (HTTP ${res.status}): ${snippet(res.body)}`; continue }
+        if (data.retcode !== 0) { lastErr = `SPX retcode ${data.retcode}: ${data.message ?? ''}`; continue }
+        workingSap = withSap
+        const d = data.data ?? {}
+        return { atId, driverId: d.driver_id ? String(d.driver_id) : '', driverName: d.driver_name ?? '', cage: d.corridor_cage ?? '' }
+      }
+      if (sessionFail && !lastErr.startsWith('SPX retcode')) throw new SpxSessionError(`Sessão do SPX recusada — cole um cURL novo em Atribuição › SPX. (${sessionFail})`)
+      if (attempt < 3) await sleep(800 * attempt)
     } catch (e) {
       if (e instanceof SpxSessionError) throw e
-      // App aberto antes desta versão: o processo principal ainda não conhece o canal novo
       if (e instanceof Error && /No handler registered/i.test(e.message)) throw new SpxSessionError('Feche e abra o app de novo para ativar a consulta de AT no SPX.')
       lastErr = e instanceof Error ? e.message : String(e)
       if (attempt < 3) await sleep(800 * attempt)
@@ -57,6 +75,7 @@ export async function fetchAtDetails(atIds: string[], onProgress?: (done: number
   let creds: Record<string, string> | null = null
   try { creds = JSON.parse(localStorage.getItem(CREDS_KEY) ?? 'null') } catch { /* */ }
   if (!creds?.cookie) throw new SpxSessionError('Sessão do SPX não configurada. Cole o cURL em Atribuição › SPX.')
+  workingSap = null
   const unique = [...new Set(atIds.filter(Boolean))]
   const details = new Map<string, AtDetail>()
   const failed: { atId: string; error: string }[] = []

@@ -7,6 +7,7 @@ import type { ForwardOrderAnalysis } from '../../lib/forwardOrderParser'
 import type { Shift } from '../../lib/globalConfig'
 import { getGlobalConfig, driverMatchesShift, calcRodizio } from '../../lib/globalConfig'
 import Rotatividade from './Rotatividade'
+import { routeStore } from '../../lib/routeStore'
 import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from '../../lib/priorityScore'
 
 // ─── manual blocklist (shared key) ───────────────────────────────────────────
@@ -518,6 +519,17 @@ export default function Disponibilidade({ data, registry, dsDrivers, callUp, for
     const callUpMap = new Map(callUp?.byDriver.map(d => [d.driverId, d]) ?? [])
     const fwdMap = new Map(forwardOrder?.allDrivers.map(d => [d.driverId, d]) ?? [])
     const manualBlockIds = getManualBlockIds()
+    // Quem tem rota em cada turno do dia: aceitou no Call Up OU está atribuído nas rotas salvas
+    // (atribuição feita no app, pelo SPX/relatório ou vinda da planilha do Sheets)
+    const ranCache = new Map<Shift, Set<string>>()
+    const ranIn = (shift: Shift) => {
+      if (!ranCache.has(shift)) {
+        const set = new Set<string>(callUp?.acceptedByDateShift[`${selectedDay}|${shift}`] ?? [])
+        for (const r of routeStore.get(selectedDay, shift) ?? []) if (r.status === 'ATRIBUIDA' && r.assignedDriverId) set.add(r.assignedDriverId)
+        ranCache.set(shift, set)
+      }
+      return ranCache.get(shift)!
+    }
 
     return data.drivers
       .filter(d => {
@@ -540,11 +552,11 @@ export default function Disponibilidade({ data, registry, dsDrivers, callUp, for
         const ultimaViagem = cu?.lastAcceptedDate ?? null
         const rodizio = calcRodizio(ultimaViagem, cfg)
 
-        // INDISPONÍVEL: aceitou rota no próprio turno atual
-        const acceptedCurrentShift = (callUp?.acceptedByDateShift[`${selectedDay}|${selectedShift}`] ?? []).includes(d.driverId)
-        // DOBRA: aceitou rota em turno anterior do mesmo dia
+        // INDISPONÍVEL: já tem rota no próprio turno atual
+        const acceptedCurrentShift = ranIn(selectedShift).has(d.driverId)
+        // DOBRA: já pegou rota em turno anterior do mesmo dia
         const prevShifts: Shift[] = selectedShift === 'PM2' ? ['AM', 'PM1'] : selectedShift === 'PM1' ? ['AM'] : []
-        const isDobra = !acceptedCurrentShift && prevShifts.some(s => (callUp?.acceptedByDateShift[`${selectedDay}|${s}`] ?? []).includes(d.driverId))
+        const isDobra = !acceptedCurrentShift && prevShifts.some(s => ranIn(s).has(d.driverId))
 
         let status: DriverStatus = 'DISPONÍVEL'
         if (isBlocked) status = 'BLOQUEADO'

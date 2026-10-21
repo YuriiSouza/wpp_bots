@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { routeStore } from '@/lib/routeStore'
 import { FlatList, Linking, Pressable, ScrollView, View } from 'react-native'
 import DayShiftBar from '@/components/DayShiftBar'
 import { Btn, C, Card, Chip, Input, NeedsData, Row, Screen, Segmented, Sheet, T, copy } from '@/components/ui'
@@ -151,7 +152,11 @@ export default function Disponibilidade() {
     const cuMap = new Map(callUp?.byDriver.map(d => [d.driverId, d]) ?? [])
     const fwdMap = new Map(forwardOrder?.allDrivers.map(d => [d.driverId, d]) ?? [])
     const blocks = manualBlockIds()
-    const accepted = (s: Shift) => callUp?.acceptedByDateShift?.[`${day}|${s}`] ?? []
+    // Quem tem rota no turno: aceitou no Call Up OU está atribuído nas rotas salvas (app/SPX/Sheets)
+    const accepted = (s: Shift) => [
+      ...(callUp?.acceptedByDateShift?.[`${day}|${s}`] ?? []),
+      ...(routeStore.get(day, s) ?? []).filter(r => r.status === 'ATRIBUIDA' && r.assignedDriverId).map(r => r.assignedDriverId!),
+    ]
     const prevShifts: Shift[] = shift === 'PM2' ? ['AM', 'PM1'] : shift === 'PM1' ? ['AM'] : []
     const vOrder = (v: string | null) => { if (!v) return 5; const s = v.toUpperCase(); return s === 'VAN' ? 0 : s === 'FIORINO' ? 1 : s === 'MOTO' ? 2 : s === 'PASSEIO' ? 3 : 4 }
     return workPref.drivers

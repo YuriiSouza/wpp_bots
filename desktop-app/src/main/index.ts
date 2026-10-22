@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, clipboard } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, clipboard, net } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import electronUpdater from 'electron-updater'
@@ -80,18 +80,18 @@ ipcMain.handle('spx-post', async (_event, { url, headers, body }: { url: string;
 
 // IPC: GET autenticado no SPX (ex.: detalhe da AT). Devolve status + corpo; 15 s de limite.
 ipcMain.handle('spx-get', async (_event, { url, headers }: { url: string; headers: Record<string, string> }) => {
-  return new Promise<{ status: number; body: string }>((resolve, reject) => {
-    const parsed = new URL(url)
-    const req = https.request({ hostname: parsed.hostname, port: 443, path: parsed.pathname + parsed.search, method: 'GET', headers }, res => {
-      const chunks: Buffer[] = []
-      res.on('data', chunk => chunks.push(chunk))
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
-    })
-    req.setTimeout(15000, () => req.destroy(new Error('timeout')))
-    req.on('error', err => reject(err))
-    req.end()
-  })
+  // Usa a pilha de rede do Chromium (a mesma do navegador): o antirrobô do SPX recusa (403, erro 90309999)
+  // conexões que não parecem de navegador, como as do módulo https do Node.
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 15000)
+  try {
+    const res = await net.fetch(url, { method: 'GET', headers, signal: ctrl.signal })
+    return { status: res.status, body: await res.text() }
+  } finally {
+    clearTimeout(timer)
+  }
 })
+
 
 // IPC: tira um "print" de uma área da janela e põe na área de transferência (para colar no WhatsApp)
 ipcMain.handle('copy-region-image', async (event, rect: { x: number; y: number; width: number; height: number }) => {

@@ -74,6 +74,7 @@ export default function Rotatividade({ data, registry, dsDrivers, callUp, forwar
   const [onlyUnexplained, setOnlyUnexplained] = useState(false)
   const [vehicleSel, setVehicleSel] = useState<string>('')
   const [detail, setDetail] = useState<Row | null>(null)
+  const [search, setSearch] = useState('')
   // Período da análise: todos os motoristas são comparados dentro da mesma janela
   const allDates = useMemo(() => [...new Set(Object.keys(callUp?.acceptedByDateShift ?? {}).map(k => k.split('|')[0]))].sort(), [callUp])
   const lastDate = allDates[allDates.length - 1] ?? ''
@@ -202,7 +203,10 @@ export default function Rotatividade({ data, registry, dsDrivers, callUp, forwar
 
   const muito = a.rows.filter(r => r.level === 'muito')
   const pouco = a.rows.filter(r => r.level === 'pouco')
-  const show = (l: Row[]) => l.filter(r => (!onlyUnexplained || !r.explained) && (!vehicleSel || r.vehicle === vehicleSel))
+  const rq = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const matchQ = (r: Row) => !rq || r.driverId.includes(rq) || r.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(rq)
+  const show = (l: Row[]) => l.filter(r => (!onlyUnexplained || !r.explained) && (!vehicleSel || r.vehicle === vehicleSel) && matchQ(r))
+  const normalMatches = rq ? a.rows.filter(r => r.level === 'normal' && matchQ(r) && (!vehicleSel || r.vehicle === vehicleSel)) : []
   const unexplained = [...muito, ...pouco].filter(r => !r.explained).length
   const maxDay = Math.max(1, ...a.dates.map(d => a.routesByDate.get(d) ?? 0))
   const maxVeh = Math.max(a.expectedRoutes, ...a.byVehicle.map(g => g.avg), 1)
@@ -352,6 +356,9 @@ export default function Rotatividade({ data, registry, dsDrivers, callUp, forwar
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Buscar motorista (nome ou ID)"
+          style={{ background: '#0f1117', border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: '6px 12px', fontSize: 12, outline: 'none', width: 240 }} />
+        {search && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 12 }}>✕</button>}
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.sub, cursor: 'pointer' }}>
           <input type="checkbox" checked={onlyUnexplained} onChange={e => setOnlyUnexplained(e.target.checked)} /> Só quem está fora da curva <b style={{ color: C.bad }}>sem motivo aparente</b>
         </label>
@@ -362,6 +369,7 @@ export default function Rotatividade({ data, registry, dsDrivers, callUp, forwar
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(380px, 100%), 1fr))', gap: 14 }}>
         {list(`🔁 Rodam muito (${show(muito).length})`, 'Motivos esperados: Fiorino (prioridade), DS alto, score alto, veículo com muita rota', C.orange, show(muito))}
         {list(`💤 Rodam pouco (${show(pouco).length})`, 'Motivos esperados: novato, bloqueio, DS baixo, recusa, no-show, veículo com pouca rota', C.blue, show(pouco))}
+        {rq && !onlyUnexplained && list(`➖ Dentro da média (${normalMatches.length})`, 'Motoristas da busca que rodam perto da média', C.sub, normalMatches)}
       </div>
     </div>
   )

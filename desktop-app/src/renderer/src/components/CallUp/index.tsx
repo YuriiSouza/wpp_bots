@@ -1,7 +1,7 @@
 import { useMemo, useState, useRef, useCallback, useEffect, Component } from 'react'
 import { coversCluster } from '../../lib/clusterMatch'
 import type { ReactNode } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { LineChart, Line, BarChart, Bar, ScatterChart, Scatter, ZAxis, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import type { CallUpAnalysis, FirstCallAnalysis } from '../../lib/callUpParser'
 import type { Shift } from '../../lib/globalConfig'
 import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
@@ -607,11 +607,12 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
               />
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
+          {/* Mesmo eixo de datas: em cima o % de aceite, embaixo quantas rotas foram chamadas no dia */}
+          <ResponsiveContainer width="100%" height={170}>
+            <LineChart data={chartData} syncId="callup-dia" margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={d => d.slice(5)} />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={v => `${v}%`} width={36} />
+              <XAxis dataKey="date" tick={false} height={4} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={v => `${v}%`} width={40} />
               <Tooltip
                 contentStyle={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, fontSize: 12 }}
                 formatter={(v: number, _: string, p: { payload: { accepted: number; total: number } }) => [`${v}% (${p.payload.accepted}/${p.payload.total})`, '% aceite 1ª chamada']}
@@ -620,6 +621,72 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
               <Line type="monotone" dataKey="acceptanceRate" stroke={shiftFilter !== 'all' ? SHIFT_COLOR[shiftFilter] : '#60a5fa'} strokeWidth={2} dot={{ r: 3, fill: shiftFilter !== 'all' ? SHIFT_COLOR[shiftFilter] : '#60a5fa' }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
+          <p style={{ margin: '6px 0 2px 40px', fontSize: 10, color: '#8892a4', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em' }}>Rotas chamadas no dia</p>
+          <ResponsiveContainer width="100%" height={90}>
+            <BarChart data={chartData} syncId="callup-dia" margin={{ top: 2, right: 16, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={d => d.slice(5)} />
+              <YAxis tick={{ fontSize: 10, fill: '#8892a4' }} width={40} allowDecimals={false} />
+              <Tooltip contentStyle={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, fontSize: 12 }} cursor={{ fill: 'rgba(148,163,184,.08)' }}
+                formatter={(v: number) => [v, 'rotas chamadas']} labelFormatter={l => `Data: ${l}`} />
+              <Bar dataKey="total" fill="#64748b" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+
+          {/* Cruzamento: rotas do dia × % de aceite */}
+          {chartData.length >= 3 && (() => {
+            const pts = chartData.map(d => ({ x: d.total, y: d.acceptanceRate, date: d.date }))
+            const n = pts.length
+            const mx = pts.reduce((a, p) => a + p.x, 0) / n, my = pts.reduce((a, p) => a + p.y, 0) / n
+            const sxy = pts.reduce((a, p) => a + (p.x - mx) * (p.y - my), 0)
+            const sxx = pts.reduce((a, p) => a + (p.x - mx) ** 2, 0), syy = pts.reduce((a, p) => a + (p.y - my) ** 2, 0)
+            const r = sxx && syy ? sxy / Math.sqrt(sxx * syy) : 0
+            const slope = sxx ? sxy / sxx : 0
+            const xs = pts.map(p => p.x), minX = Math.min(...xs), maxX = Math.max(...xs)
+            const per10 = slope * 10
+            const strength = Math.abs(r) >= 0.6 ? 'forte' : Math.abs(r) >= 0.3 ? 'moderada' : 'fraca'
+            // Dias com mais rotas × dias com menos (metade de cima × de baixo)
+            const sorted = [...pts].sort((a, b) => a.x - b.x)
+            const half = Math.floor(n / 2)
+            const lowAvg = sorted.slice(0, half).reduce((a, p) => a + p.y, 0) / Math.max(1, half)
+            const highAvg = sorted.slice(n - half).reduce((a, p) => a + p.y, 0) / Math.max(1, half)
+            return (
+              <div style={{ marginTop: 14, borderTop: '1px solid #1e2130', paddingTop: 12, display: 'grid', gridTemplateColumns: 'minmax(0, 3fr) minmax(220px, 2fr)', gap: 16, alignItems: 'center' }}>
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>Rotas do dia × % de aceite <span style={{ fontWeight: 400, color: '#64748b' }}>· cada ponto é um dia</span></p>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <ScatterChart margin={{ top: 6, right: 16, left: 0, bottom: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" />
+                      <XAxis type="number" dataKey="x" name="Rotas" domain={['dataMin - 5', 'dataMax + 5']} tick={{ fontSize: 10, fill: '#8892a4' }} label={{ value: 'rotas chamadas no dia', position: 'insideBottom', offset: -6, fontSize: 10, fill: '#64748b' }} />
+                      <YAxis type="number" dataKey="y" name="% aceite" domain={[0, 100]} tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={v => `${v}%`} width={40} />
+                      <ZAxis range={[60, 60]} />
+                      <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, fontSize: 12 }}
+                        formatter={(v: number, name: string) => [name === '% aceite' ? `${v}%` : v, name]}
+                        labelFormatter={() => ''} />
+                      <ReferenceLine segment={[{ x: minX, y: my + slope * (minX - mx) }, { x: maxX, y: my + slope * (maxX - mx) }]} stroke="#a78bfa" strokeDasharray="5 4" ifOverflow="extendDomain" />
+                      <Scatter data={pts} fill={shiftFilter !== 'all' ? SHIFT_COLOR[shiftFilter] : '#60a5fa'} />
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, padding: '10px 12px' }}>
+                    <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Relação</p>
+                    <p style={{ margin: '4px 0 0', fontSize: 15, fontWeight: 800, color: Math.abs(r) < 0.3 ? '#94a3b8' : r < 0 ? '#f87171' : '#4ade80' }}>
+                      {Math.abs(r) < 0.3 ? 'Quase nenhuma' : `${r < 0 ? 'Negativa' : 'Positiva'} ${strength}`}
+                    </p>
+                    <p style={{ margin: '2px 0 0', fontSize: 11, color: '#94a3b8' }}>correlação {r.toFixed(2).replace('.', ',')} em {n} dias</p>
+                  </div>
+                  <div style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#cbd5e1', lineHeight: 1.5 }}>
+                    {Math.abs(r) < 0.3
+                      ? <>O volume de rotas do dia <b>quase não muda</b> a taxa de aceite.</>
+                      : <>A cada <b>+10 rotas</b> no dia, o aceite {per10 < 0 ? 'cai' : 'sobe'} cerca de <b>{Math.abs(per10).toFixed(1).replace('.', ',')} pontos</b>.</>}
+                    <br />
+                    <span style={{ color: '#94a3b8' }}>Dias com menos rotas: <b style={{ color: '#e2e8f0' }}>{Math.round(lowAvg)}%</b> · com mais rotas: <b style={{ color: '#e2e8f0' }}>{Math.round(highAvg)}%</b></span>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
 

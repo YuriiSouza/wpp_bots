@@ -26,6 +26,10 @@ function headers(creds: Record<string, string>, withSap: boolean): Record<string
     'referer': 'https://spx.shopee.com.br/',
     'user-agent': creds['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'x-csrftoken': creds['x-csrftoken'] ?? '',
+    // Mesmos cabeçalhos que o navegador manda numa chamada do próprio site
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
     ...(withSap && creds['x-sap-ri'] ? { 'x-sap-ri': creds['x-sap-ri'] } : {}),
     ...(withSap && creds['x-sap-sec'] ? { 'x-sap-sec': creds['x-sap-sec'] } : {}),
   }

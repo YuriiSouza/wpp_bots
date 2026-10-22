@@ -81,6 +81,7 @@ export default function NovatosAnalise({ registry, onGoUploads }: { registry: St
   const [detail, setDetail] = useState<Novato | null>(null)
   const [shiftSel, setShiftSel] = useState('')
   const [sort, setSort] = useState<'first' | 'ds' | 'routes'>('first')
+  const [search, setSearch] = useState('')
   const [copied, setCopied] = useState(false)
 
   const shifts = useMemo(() => [...new Set(all.map(r => r.shift).filter(Boolean))].sort(), [all])
@@ -153,7 +154,9 @@ export default function NovatosAnalise({ registry, onGoUploads }: { registry: St
     return { points: sums.map((x, i) => ({ i: i + 1, v: x.n >= 2 ? x.s / x.n : null, n: x.n })), veteran: avg(vet) }
   }, [novatos, all, from, to])
 
-  const sorted = [...novatos].sort((a, b) =>
+  const nq = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const matches = (n: Novato) => !nq || n.driverId.includes(nq) || n.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(nq) || n.firstCluster.toLowerCase().includes(nq)
+  const sorted = novatos.filter(matches).sort((a, b) =>
     sort === 'ds' ? (b.ds ?? -1) - (a.ds ?? -1) : sort === 'routes' ? b.routes.length - a.routes.length : b.firstDate.localeCompare(a.firstDate))
 
   const dsAll = avg(novatos.flatMap(n => n.routes.map(routeDs).filter((v): v is number => v !== null)))
@@ -291,9 +294,11 @@ export default function NovatosAnalise({ registry, onGoUploads }: { registry: St
         </div>
 
         {/* Lista */}
-        <Panel title={`Quem são os novatos (${novatos.length})`} sub="Clique num motorista para abrir a ficha completa"
+        <Panel title={`Quem são os novatos (${nq ? `${sorted.length} de ${novatos.length}` : novatos.length})`} sub="Clique num motorista para abrir a ficha completa"
           right={
-            <div style={{ display: 'flex', gap: 4 }}>
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Nome, ID ou cluster"
+                style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '4px 10px', fontSize: 12, outline: 'none', width: 200, marginRight: 6 }} />
               {([['first', 'Mais recentes'], ['ds', 'Maior DS'], ['routes', 'Mais rotas']] as const).map(([k, l]) => (
                 <button key={k} onClick={() => setSort(k)} style={{ background: sort === k ? 'rgba(124,58,237,.2)' : 'transparent', color: sort === k ? '#c4b5fd' : C.muted, border: `1px solid ${sort === k ? '#7c3aed' : C.border}`, borderRadius: 6, padding: '3px 9px', fontSize: 11, cursor: 'pointer' }}>{l}</button>
               ))}

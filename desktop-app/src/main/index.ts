@@ -46,37 +46,21 @@ function createWindow(): void {
 
 // IPC handler: proxy HTTP POST para o SPX (sem restrições CORS do renderer)
 ipcMain.handle('spx-post', async (_event, { url, headers, body }: { url: string; headers: Record<string, string>; body: string }) => {
-  return new Promise<string>((resolve, reject) => {
-    const parsed = new URL(url)
-    const bodyBuf = Buffer.from(body, 'utf8')
-    const options = {
-      hostname: parsed.hostname,
-      port: 443,
-      path: parsed.pathname + parsed.search,
-      method: 'POST',
-      headers: {
-        ...headers,
-        'content-length': bodyBuf.byteLength,
-      },
-    }
-    console.log('[spx-post] →', options.hostname, options.path)
-    const req = https.request(options, res => {
-      const chunks: Buffer[] = []
-      res.on('data', chunk => chunks.push(chunk))
-      res.on('end', () => {
-        const data = Buffer.concat(chunks).toString('utf8')
-        console.log('[spx-post] ← status', res.statusCode, 'len', data.length)
-        resolve(data)
-      })
-    })
-    req.on('error', err => {
-      console.error('[spx-post] error', err.message)
-      reject(err)
-    })
-    req.write(bodyBuf)
-    req.end()
-  })
+  // Pilha de rede do Chromium (igual ao navegador): o antirrobô do SPX recusa com 90309999
+  // parte das chamadas feitas pelo módulo https do Node.
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 30000)
+  try {
+    console.log('[spx-post] →', new URL(url).pathname)
+    const res = await net.fetch(url, { method: 'POST', headers, body, signal: ctrl.signal })
+    const data = await res.text()
+    console.log('[spx-post] ← status', res.status, 'len', data.length)
+    return data
+  } finally {
+    clearTimeout(timer)
+  }
 })
+
 
 // IPC: GET autenticado no SPX (ex.: detalhe da AT). Devolve status + corpo; 15 s de limite.
 ipcMain.handle('spx-get', async (_event, { url, headers }: { url: string; headers: Record<string, string> }) => {

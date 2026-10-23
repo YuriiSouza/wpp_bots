@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import { parseSpxCurl, curlProblem } from '../../lib/spxCurl'
+import { findSwaps, VehicleSwapModal, type SwapPair } from './VehicleSwap'
 import { coversCluster, splitClusters } from '../../lib/clusterMatch'
 import type { StoredDriver } from '../../lib/localStore'
 import type { DriverResult } from '../../lib/types'
@@ -48,49 +49,56 @@ function saveSpxCreds(creds: Record<string, string>) {
   localStorage.setItem(SPX_CREDS_KEY, JSON.stringify(creds))
 }
 
+// Espaça as gravações no SPX: rajadas seguidas disparam o antirrobô (erro 90309999)
+let lastSpxWrite = 0
+const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
+const isAntiBot = (data: Record<string, unknown> | null, raw: string) =>
+  String(data?.error ?? data?.retcode ?? '') === '90309999' || /90309999/.test(raw)
+
 async function spxReassign(driverId: string, atId: string): Promise<{ ok: boolean; message: string }> {
   const creds = getSpxCreds()
   if (!creds) return { ok: false, message: 'Credenciais SPX não configuradas.' }
   const driverIdNum = parseInt(driverId, 10)
   if (isNaN(driverIdNum)) return { ok: false, message: `Driver ID inválido: ${driverId}` }
-  try {
-    const url = 'https://spx.shopee.com.br/spx_delivery/admin/assignment/assignment_task/reassign'
+  const url = 'https://spx.shopee.com.br/spx_delivery/admin/assignment/assignment_task/reassign'
+  const body = JSON.stringify({ driver_id: driverIdNum, assignment_task_id: atId, assign_driver_across_station: false, driver_vehicle_id: '' })
+  let lastMsg = 'Erro desconhecido do SPX'
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    // 1ª tentativa com as assinaturas x-sap do cURL; se o antirrobô barrar, tenta sem elas e com mais intervalo
+    const withSap = attempt === 1 || attempt === 3
     const headers: Record<string, string> = {
       'accept': 'application/json, text/plain, */*',
-      'accept-language': 'en-US,en;q=0.9,pt;q=0.8',
+      'accept-language': creds['accept-language'] || 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
       'app': 'FMS Portal',
       'content-type': 'application/json;charset=UTF-8',
       'cookie': creds['cookie'] ?? '',
       'device-id': creds['device-id'] ?? '',
       'origin': 'https://spx.shopee.com.br',
       'referer': 'https://spx.shopee.com.br/',
-      'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'user-agent': creds['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'sec-fetch-dest': 'empty', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-origin',
       'x-csrftoken': creds['x-csrftoken'] ?? '',
-      'x-sap-ri': creds['x-sap-ri'] ?? '',
-      'x-sap-sec': creds['x-sap-sec'] ?? '',
+      ...(withSap && creds['x-sap-ri'] ? { 'x-sap-ri': creds['x-sap-ri'] } : {}),
+      ...(withSap && creds['x-sap-sec'] ? { 'x-sap-sec': creds['x-sap-sec'] } : {}),
     }
-    const body = JSON.stringify({
-      driver_id: driverIdNum,
-      assignment_task_id: atId,
-      assign_driver_across_station: false,
-      driver_vehicle_id: '',
-    })
-    const ipc = (window as unknown as { electron?: { ipcRenderer?: { invoke: (ch: string, ...a: unknown[]) => Promise<unknown> } } }).electron?.ipcRenderer
-    let rawJson: string
-    if (ipc) {
-      rawJson = await ipc.invoke('spx-post', { url, headers, body }) as string
-    } else {
-      const res = await fetch(url, { method: 'POST', headers, body })
-      rawJson = await res.text()
+    const wait = lastSpxWrite + 700 - Date.now()
+    if (wait > 0) await sleepMs(wait)
+    lastSpxWrite = Date.now()
+    try {
+      const rawJson = await window.electron.ipcRenderer.invoke('spx-post', { url, headers, body }) as string
+      let data: Record<string, unknown> | null = null
+      try { data = JSON.parse(rawJson) } catch { /* resposta não-JSON */ }
+      const ok = data?.retcode === 0 || data?.code === 0 || data?.success === true
+      if (ok) return { ok: true, message: attempt > 1 ? `Atribuído no SPX (na ${attempt}ª tentativa).` : 'Atribuído no SPX.' }
+      lastMsg = data ? String(data.message || data.msg || data.error || `retcode ${data.retcode}`) : `resposta inválida: ${rawJson.slice(0, 80)}`
+      if (!isAntiBot(data, rawJson)) return { ok: false, message: lastMsg }
+      lastMsg = `${lastMsg} (antirrobô do SPX)`
+    } catch (err: unknown) {
+      lastMsg = err instanceof Error ? err.message : 'Erro ao chamar SPX'
     }
-    const data = JSON.parse(rawJson) as Record<string, unknown>
-    const ok = data?.retcode === 0 || data?.code === 0 || data?.success === true
-    const errMsg = String(data?.message || data?.msg || data?.error || 'Erro desconhecido do SPX')
-    return { ok, message: ok ? 'Atribuído no SPX.' : errMsg }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Erro ao chamar SPX'
-    return { ok: false, message: msg }
+    await sleepMs(1500 * attempt)
   }
+  return { ok: false, message: `${lastMsg} — tentei 4 vezes; tente de novo em instantes ou cole um cURL novo` }
 }
 
 const normCluster = (c: string) => c.trim().toUpperCase().replace(/\s+/g, '')
@@ -1707,6 +1715,26 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   // ── Report modal ──────────────────────────────────────────────────────────
   const [reportModal, setReportModal] = useState(false)
   const [novatoReportOpen, setNovatoReportOpen] = useState(false)
+  // Trocas Fiorino ↔ Passeio na mesma região (rota volumosa com Passeio × rota menor com Fiorino)
+  const [swapOpen, setSwapOpen] = useState(false)
+  const [swapBannerKey, setSwapBannerKey] = useState('')
+  const swaps = useMemo(() => findSwaps(routes, registry, workPref), [routes, registry, workPref])
+  const handleSwap = async (p: SwapPair): Promise<{ ok: boolean; msg: string }> => {
+    let msg = 'trocado no app'
+    if (spxConfigured) {
+      const a = await spxReassign(p.fiorino.id, p.big.atId)
+      if (!a.ok) return { ok: false, msg: `${p.big.atId}: ${a.message}` }
+      const b = await spxReassign(p.passeio.id, p.small.atId)
+      if (!b.ok) return { ok: false, msg: `${p.big.atId} trocada, mas ${p.small.atId} falhou: ${b.message} — atribua manualmente` }
+      msg = 'trocado no SPX'
+    }
+    const current = routeStore.get(selectedDay, selectedShift) ?? routes
+    setRoutes(current.map(r =>
+      r.id === p.big.id ? { ...r, assignedDriverId: p.fiorino.id, assignedDriverName: p.fiorino.name, status: 'ATRIBUIDA' as const }
+      : r.id === p.small.id ? { ...r, assignedDriverId: p.passeio.id, assignedDriverName: p.passeio.name, status: 'ATRIBUIDA' as const }
+      : r))
+    return { ok: true, msg }
+  }
   const [reportHub, setReportHub] = useState(() => getGlobalConfig().hubName || '')
   const [reportCopied, setReportCopied] = useState(false)
   // Snapshot dos valores de atribuição no momento em que o report é aberto
@@ -1918,6 +1946,9 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
             </p>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <Btn variant="outline" onClick={() => setSwapOpen(true)}
+              style={{ fontSize: 12, color: swaps.length ? '#fbbf24' : '#8892a4', borderColor: swaps.length ? 'rgba(251,191,36,.45)' : '#2d3048' }}
+            >🔁 Trocas Fiorino ↔ Passeio{swaps.length ? ` (${swaps.length})` : ''}</Btn>
             <Btn
               variant="outline"
               onClick={() => { setReportSnapshot(buildReportSnapshot()); setReportCopied(false); setReportModal(true) }}
@@ -1993,6 +2024,17 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
           </div>
         ))}
       </div>
+
+      {/* Aviso automático: há trocas Fiorino ↔ Passeio a fazer */}
+      {swaps.length > 0 && swapBannerKey !== `${selectedDay}|${selectedShift}|${swaps.length}` && (
+        <div style={{ margin: '10px 20px 0', background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.35)', borderRadius: 8, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', flexShrink: 0 }}>
+          <span style={{ fontSize: 13, color: '#fbbf24', fontWeight: 700 }}>🔁 {swaps.length} troca{swaps.length !== 1 ? 's' : ''} sugerida{swaps.length !== 1 ? 's' : ''}</span>
+          <span style={{ fontSize: 12, color: '#cbd5e1' }}>rota volumosa saindo com Passeio enquanto uma Fiorino está numa rota menor da mesma região.</span>
+          <span style={{ flex: 1 }} />
+          <Btn onClick={() => setSwapOpen(true)} style={{ fontSize: 12 }}>Ver trocas</Btn>
+          <button onClick={() => setSwapBannerKey(`${selectedDay}|${selectedShift}|${swaps.length}`)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 14 }}>×</button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', borderBottom: '1px solid #2d3048', flexShrink: 0, paddingLeft: 20 }}>
@@ -2474,6 +2516,8 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     </div>
 
     <NovatoReportModal open={novatoReportOpen} onClose={() => setNovatoReportOpen(false)} day={selectedDay} shift={selectedShift} hub={reportHub} />
+
+    <VehicleSwapModal open={swapOpen} onClose={() => setSwapOpen(false)} pairs={swaps} onApply={handleSwap} spxConfigured={spxConfigured} />
 
     {/* Batch assign modal */}
     <BatchAssignModal open={batchModal} onClose={() => setBatchModal(false)} onApply={handleBatchAssign} spxConfigured={spxConfigured} />

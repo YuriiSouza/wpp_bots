@@ -1,6 +1,6 @@
 {
   "name": "spx-analytics",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "description": "SPX/Shopee Express Delivery Analytics Desktop App",
   "main": "./out/main/index.js",
   "type": "module",

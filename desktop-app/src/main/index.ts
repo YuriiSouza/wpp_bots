@@ -45,36 +45,58 @@ function createWindow(): void {
 }
 
 // IPC handler: proxy HTTP POST para o SPX (sem restrições CORS do renderer)
-ipcMain.handle('spx-post', async (_event, { url, headers, body }: { url: string; headers: Record<string, string>; body: string }) => {
-  // Pilha de rede do Chromium (igual ao navegador): o antirrobô do SPX recusa com 90309999
-  // parte das chamadas feitas pelo módulo https do Node.
+// O Chromium recusa (net::ERR_INVALID_ARGUMENT) cabeçalhos que só o próprio navegador pode definir
+const FORBIDDEN = /^(sec-|host$|connection$|content-length$|accept-encoding$|keep-alive$|transfer-encoding$|upgrade$|via$|te$|trailer$|expect$|proxy-|origin$)/i
+const chromiumHeaders = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).filter(([k, v]) => v !== '' && !FORBIDDEN.test(k)))
+
+// Plano B: o módulo https do Node, caso a pilha do Chromium recuse a requisição
+function nodeRequest(url: string, method: 'GET' | 'POST', headers: Record<string, string>, body?: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url)
+    const buf = body ? Buffer.from(body, 'utf8') : null
+    const req = https.request({ hostname: parsed.hostname, port: 443, path: parsed.pathname + parsed.search, method, headers: buf ? { ...headers, 'content-length': buf.byteLength } : headers }, res => {
+      const chunks: Buffer[] = []
+      res.on('data', c => chunks.push(c))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+    })
+    req.setTimeout(30000, () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+    if (buf) req.write(buf)
+    req.end()
+  })
+}
+
+async function spxRequest(url: string, method: 'GET' | 'POST', headers: Record<string, string>, body?: string, timeoutMs = 30000) {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 30000)
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    console.log('[spx-post] →', new URL(url).pathname)
-    const res = await net.fetch(url, { method: 'POST', headers, body, signal: ctrl.signal })
-    const data = await res.text()
-    console.log('[spx-post] ← status', res.status, 'len', data.length)
-    return data
+    const res = await net.fetch(url, { method, headers: chromiumHeaders(headers), body, signal: ctrl.signal })
+    return { status: res.status, body: await res.text() }
+  } catch (e) {
+    if (ctrl.signal.aborted) throw new Error('timeout')
+    console.warn('[spx] net.fetch falhou, usando https do Node:', e instanceof Error ? e.message : e)
+    return nodeRequest(url, method, headers, body)
   } finally {
     clearTimeout(timer)
   }
+}
+
+ipcMain.handle('spx-post', async (_event, { url, headers, body }: { url: string; headers: Record<string, string>; body: string }) => {
+  // Pilha de rede do Chromium (igual ao navegador): o antirrobô do SPX recusa com 90309999
+  // parte das chamadas feitas pelo módulo https do Node.
+  console.log('[spx-post] →', new URL(url).pathname)
+  const res = await spxRequest(url, 'POST', headers, body)
+  console.log('[spx-post] ← status', res.status, 'len', res.body.length)
+  return res.body
 })
+
 
 
 // IPC: GET autenticado no SPX (ex.: detalhe da AT). Devolve status + corpo; 15 s de limite.
 ipcMain.handle('spx-get', async (_event, { url, headers }: { url: string; headers: Record<string, string> }) => {
-  // Usa a pilha de rede do Chromium (a mesma do navegador): o antirrobô do SPX recusa (403, erro 90309999)
-  // conexões que não parecem de navegador, como as do módulo https do Node.
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 15000)
-  try {
-    const res = await net.fetch(url, { method: 'GET', headers, signal: ctrl.signal })
-    return { status: res.status, body: await res.text() }
-  } finally {
-    clearTimeout(timer)
-  }
+  return spxRequest(url, 'GET', headers, undefined, 15000)
 })
+
 
 
 // IPC: tira um "print" de uma área da janela e põe na área de transferência (para colar no WhatsApp)

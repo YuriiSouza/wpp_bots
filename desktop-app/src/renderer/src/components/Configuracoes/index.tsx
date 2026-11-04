@@ -3,6 +3,7 @@ import { getGlobalConfig, saveGlobalConfig, DEFAULT_CONFIG, type GlobalConfig, t
 import { pickFolder } from '../../lib/fileFinder'
 import { getAppVersion } from '../../lib/updateChecker'
 import { getSheetsConfig, saveSheetsConfig, pushToSheets, pullFromSheets, testSheetsConnection, type SheetsConfig } from '../../lib/sheetsSync'
+import { refreshFiorinoIds } from '../../lib/fiorinoOverride'
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
 const SHIFT_LABEL: Record<Shift, string> = { AM: 'AM (manhã)', PM1: 'PM1 (tarde)', PM2: 'PM2 (noite)' }
@@ -87,7 +88,8 @@ export default function Configuracoes() {
     try {
       const r = await window.auth.signIn()
       setAuth({ signedIn: r.signedIn, email: r.email })
-      if (!r.signedIn && r.error) setSheetsTest({ ok: false, msg: 'Login falhou: ' + r.error })
+      if (r.signedIn) refreshFiorinoIds().catch(() => { /* sem acesso à planilha de validação */ })
+      else if (r.error) setSheetsTest({ ok: false, msg: 'Login falhou: ' + r.error })
     } finally {
       setAuthBusy(false)
     }

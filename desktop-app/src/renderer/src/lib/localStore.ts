@@ -2,6 +2,7 @@
  * Local persistence for the desktop app.
  * Uses localStorage — Electron has no 5MB browser limit here.
  */
+import { overrideVehicle } from './fiorinoOverride'
 
 export interface StoredDriver {
   id: string
@@ -47,7 +48,9 @@ export const localStore = {
   getDrivers(): StoredDriver[] {
     try {
       const raw = localStorage.getItem(DRIVERS_KEY)
-      return raw ? (JSON.parse(raw) as StoredDriver[]) : []
+      const list = raw ? (JSON.parse(raw) as StoredDriver[]) : []
+      // Motoristas da planilha de validação contam como Fiorino, mesmo cadastrados como Passeio.
+      return list.map(d => ({ ...d, vehicleType: overrideVehicle(d.id, d.vehicleType) }))
     } catch {
       return []
     }

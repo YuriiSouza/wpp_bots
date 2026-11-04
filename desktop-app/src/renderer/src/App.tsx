@@ -17,6 +17,7 @@ import Configuracoes from './components/Configuracoes'
 import NovatosAnalise from './components/NovatosAnalise'
 import { saveRouteHistory } from './lib/routeHistory'
 import { getAppVersion } from './lib/updateChecker'
+import { refreshFiorinoIds } from './lib/fiorinoOverride'
 
 import { localStore } from './lib/localStore'
 import { parseDriverCsv } from './lib/driverParser'
@@ -251,6 +252,8 @@ export default function App() {
   // Versão real do app (package.json), mostrada no rodapé do menu
   const [appVersion, setAppVersion] = useState('')
   useEffect(() => { getAppVersion().then(setAppVersion).catch(() => { /* */ }) }, [])
+  // Atualiza a lista de motoristas Fiorino (planilha de validação). Sem login/acesso, mantém a última.
+  useEffect(() => { refreshFiorinoIds().catch(() => { /* mantém a última lista conhecida */ }) }, [])
 
   // Menu lateral recolhível (lembra a escolha)
   const [navCollapsed, setNavCollapsed] = useState(() => { try { return localStorage.getItem('ui:nav-collapsed') === '1' } catch { return false } })

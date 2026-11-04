@@ -22,8 +22,8 @@ const vehicleOf = (v?: string | null) => {
   if (s.includes('passeio') || s.includes('carro')) return 'PASSEIO'
   return null
 }
-/** Mesma regra da Visão Geral: volume acima de 700 L ou mais de 1 GG pede Fiorino. */
-export const needsFiorino = (r: LocalRoute) => (r.volume ?? 0) > 700 || (r.gg ?? 0) > 1
+/** Usa o "Tipo de veículo" do relatório de Roteirização por Turno (não calcula por volume/GG). */
+export const needsFiorino = (r: LocalRoute) => vehicleOf(r.scheduledVehicle) === 'FIORINO'
 const isMotoRoute = (r: LocalRoute) => vehicleOf(r.scheduledVehicle) === 'MOTO' || vehicleOf(r.requiredVehicleType) === 'MOTO'
 const norm = (c: string) => c.trim().toUpperCase().replace(/\s+/g, '')
 

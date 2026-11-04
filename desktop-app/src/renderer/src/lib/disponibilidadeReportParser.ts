@@ -1,3 +1,5 @@
+import { overrideVehicle } from './fiorinoOverride'
+
 export type DriverStatus = 'DISPONÍVEL' | 'DOBRA' | 'INDISPONÍVEL' | 'BLOQUEADO' | 'URGENTE' | 'OUTRO'
 export type Rodizio = 'BAIXA' | 'MÉDIA' | 'ALTA' | 'DESCONHECIDO'
 export type DsProgression = 'Melhorando' | 'Estagnado' | 'Piorando' | 'Sem dados'
@@ -88,7 +90,7 @@ export function parseDisponibilidadeTsv(text: string, fileName = 'colagem'): Dis
       id,
       atSugerida: cols[1]?.trim() || null,
       nome: cols[2]?.trim() || id,
-      tipoVeiculo: cols[3]?.trim() || null,
+      tipoVeiculo: overrideVehicle(id, cols[3]?.trim()) || null,
       status: normalizeStatus(cols[4] ?? ''),
       rodizio: normalizeRodizio(cols[5] ?? ''),
       ultimaViagem: cols[6]?.trim() || null,

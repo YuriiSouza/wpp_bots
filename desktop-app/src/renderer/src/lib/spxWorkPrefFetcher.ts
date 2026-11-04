@@ -1,4 +1,5 @@
 import type { WorkPreferenceData, DriverAvailability, DaySchedule } from './workPreferenceParser'
+import { overrideVehicle } from './fiorinoOverride'
 
 const PAGE_SIZE = 500
 
@@ -147,7 +148,7 @@ export function spxDriversToWorkPref(
       driverId,
       driverName: d.driver_name_new,
       clusters: d.cluster_name_list ?? clusterMap.get(driverId) ?? [],
-      vehicleType: d.driver_vehicle_type_name,
+      vehicleType: overrideVehicle(driverId, d.driver_vehicle_type_name),
       noShowTime: d.no_show_times,
       isNewDriver: d.is_new_own_fleet_driver,
       schedule,

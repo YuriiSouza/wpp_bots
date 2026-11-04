@@ -39,12 +39,9 @@ function normalizeVehicle(v?: string | null): string | null {
   return s.toUpperCase()
 }
 
+// Usa o "Tipo de veículo" do relatório de Roteirização por Turno (sem calcular por volume/GG).
 function vehicleRequired(route: LocalRoute): string {
-  const vol = route.volume ?? 0
-  const gg = route.gg ?? 0
-  if (vol > 700 || gg > 1) return 'FIORINO'
-  if (normalizeVehicle(route.scheduledVehicle) === 'MOTO') return 'MOTO'
-  return 'PASSEIO'
+  return normalizeVehicle(route.scheduledVehicle) || 'PASSEIO'
 }
 
 function Chip({ label, color = '#94a3b8', bg = 'rgba(100,116,139,.1)', small }: { label: string; color?: string; bg?: string; small?: boolean }) {

@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { overrideVehicle } from './fiorinoOverride'
 
 export type AvailabilityStatus = 'available' | 'not_available' | 'pending' | 'no_schedule'
 
@@ -133,7 +134,7 @@ export function parseWorkPreferenceXlsx(arrayBuffer: ArrayBuffer, fileName: stri
       driverId,
       driverName,
       clusters,
-      vehicleType,
+      vehicleType: overrideVehicle(driverId, vehicleType),
       noShowTime,
       isNewDriver,
       schedule,

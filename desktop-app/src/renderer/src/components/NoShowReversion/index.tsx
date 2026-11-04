@@ -11,7 +11,7 @@ import { parseRoutesTsv, type LocalRoute } from '../../lib/noshowRouteParser'
 import { firstCallDay, isAcceptedInCallUp } from '../../lib/callUpParser'
 import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '../../lib/threePlParser'
 import type { Shift } from '../../lib/globalConfig'
-import { getGlobalConfig, saveGlobalConfig } from '../../lib/globalConfig'
+import { getGlobalConfig, saveGlobalConfig, driverMatchesShift } from '../../lib/globalConfig'
 import { routeStore, migrateOldRoutes } from '../../lib/routeStore'
 import { noShowQueueStore, type QueueDriver } from '../../lib/noShowQueueStore'
 import { calculatePriorityScore, daysSinceLastRoute, declineRatePercent } from '../../lib/priorityScore'
@@ -1324,7 +1324,18 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     // No-show vem do campo "No Show Time" do relatório de disponibilidade
     const workPrefNoShow = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d.noShowTime ?? 0]))
 
-    return queue.map(q => {
+    // A fila salva pode ter vindo de outro dia (ex.: sincronizada pela planilha): só entra quem está
+    // disponível NESTE dia e turno na disponibilidade. Quem não está na planilha (incluído à mão) continua.
+    const cfg = getGlobalConfig()
+    const wpById = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d]))
+    const availableNow = (id: string) => {
+      const wd = wpById.get(id)
+      if (!wd) return true
+      const sched = wd.schedule[selectedDay]
+      return !!sched && sched.status === 'available' && driverMatchesShift(sched.slots, selectedShift, cfg)
+    }
+
+    return queue.filter(q => availableNow(q.driverId)).map(q => {
       const reg = registryMap.get(q.driverId)
       const ds = dsMap.get(q.driverId)
       const cu = callUpDriverMap.get(q.driverId)
@@ -1367,7 +1378,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       if (a.isBlocked !== b.isBlocked) return a.isBlocked ? 1 : -1
       return b.priorityScore - a.priorityScore
     })
-  }, [queue, registry, dsDrivers, forwardOrder, manualBlocks, callUp, workPref])
+  }, [queue, registry, dsDrivers, forwardOrder, manualBlocks, callUp, workPref, selectedDay, selectedShift])
 
   // Rotas do turno atual que foram recusadas no Call Up
   const declinedAtIds = useMemo(() => {

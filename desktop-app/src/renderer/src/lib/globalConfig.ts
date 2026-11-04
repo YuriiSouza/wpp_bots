@@ -60,7 +60,8 @@ export function saveGlobalConfig(config: GlobalConfig) {
 
 export function driverMatchesShift(slots: string[], shift: Shift, config: GlobalConfig): boolean {
   const patterns = config.shifts[shift].patterns
-  return slots.some(slot => patterns.some(p => slot.includes(p)))
+  // Compara só o horário de INÍCIO da janela: "11:15-15:00" é PM1, mesmo terminando às 15:00 (padrão do PM2)
+  return slots.some(slot => { const start = slot.split('-')[0].trim(); return patterns.some(p => start.startsWith(p)) })
 }
 
 export function calcRodizio(lastTripDate: string | null | undefined, config: GlobalConfig): 'BAIXA' | 'MÉDIA' | 'ALTA' {

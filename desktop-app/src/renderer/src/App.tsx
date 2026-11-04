@@ -367,7 +367,7 @@ export default function App() {
 
         {section === 'callup' && (
           callUp
-            ? <CallUp data={callUp} workPref={workPref} registry={localStore.getDrivers()} driverMeta={(() => {
+            ? <CallUp data={callUp} workPref={workPref} registry={localStore.getDrivers()} selectedDay={selectedDay} selectedShift={selectedShift} driverMeta={(() => {
                 const m = new Map<string, { vehicleType: string; ds: number | null }>()
                 for (const d of (workPref?.drivers ?? [])) m.set(d.driverId, { vehicleType: d.vehicleType, ds: null })
                 for (const d of (dsState.phase === 'done' ? dsState.result.drivers : [])) {

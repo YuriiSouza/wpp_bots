@@ -200,16 +200,17 @@ async function ensureSheetTab(spreadsheetId: string, tabName: string, token: str
     JSON.stringify({ requests: [{ addSheet: { properties: { title: tabName } } }] }), token)
 }
 
-ipcMain.handle('sheets-request', async (_event, { url, method, body }: {
+ipcMain.handle('sheets-request', async (_event, { url, method, body, readOnly }: {
   url: string
   method: 'GET' | 'POST' | 'PUT'
   body: unknown
+  readOnly?: boolean // planilhas de terceiros: nunca cria guia
 }) => {
   const token = await getValidAccessToken()
 
   // Auto-create app-data tab when writing/reading values
   const tabMatch = url.match(/\/spreadsheets\/([^/]+)\/values\/([^?:/]+)/)
-  if (tabMatch) {
+  if (tabMatch && !readOnly) {
     const [, sid, tabRaw] = tabMatch
     const tabName = decodeURIComponent(tabRaw).replace(/:.*$/, '') // strip :clear etc
     try { await ensureSheetTab(sid, tabName, token) } catch {}

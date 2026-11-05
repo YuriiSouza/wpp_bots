@@ -8,6 +8,7 @@ import type { ForwardOrderAnalysis } from '../../lib/forwardOrderParser'
 import type { CallUpAnalysis } from '../../lib/callUpParser'
 import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
 import { parseRoutesTsv, type LocalRoute } from '../../lib/noshowRouteParser'
+import { fetchRoutingSheet, getRoutingLink, getLastRoutingLink, saveRoutingLink, saveCtPackages } from '../../lib/planilhas'
 import { firstCallDay, isAcceptedInCallUp } from '../../lib/callUpParser'
 import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '../../lib/threePlParser'
 import type { Shift } from '../../lib/globalConfig'
@@ -262,6 +263,29 @@ function RoutePasteScreen({ onLoad, defaultDate, defaultShift }: { onLoad: (rout
   const [text, setText] = useState('')
   const [pasteDate, setPasteDate] = useState(defaultDate)
   const [pasteShift, setPasteShift] = useState<Shift>(defaultShift)
+  const [link, setLink] = useState(() => getRoutingLink(defaultDate, defaultShift) || getLastRoutingLink())
+  const [sheetState, setSheetState] = useState<{ loading: boolean; msg: string; ok?: boolean }>({ loading: false, msg: '' })
+
+  const loadFromSheet = async () => {
+    if (!link.trim()) return
+    setSheetState({ loading: true, msg: 'Lendo a planilha…' })
+    try {
+      const d = await fetchRoutingSheet(link.trim())
+      if (!d.routes.length) throw new Error('Nenhuma rota encontrada na guia Plano de expedição')
+      saveRoutingLink(pasteDate, pasteShift, link.trim())
+      saveCtPackages(pasteDate, pasteShift, d.packages)
+      // Mantém o que já foi atribuído no app para as ATs que já estavam salvas
+      const prev = new Map((routeStore.get(pasteDate, pasteShift) ?? []).map(r => [r.atId, r]))
+      const merged = d.routes.map(r => {
+        const p = prev.get(r.atId)
+        return p && p.status === 'ATRIBUIDA' && p.assignedDriverId ? { ...r, status: p.status, assignedDriverId: p.assignedDriverId, assignedDriverName: p.assignedDriverName } : r
+      })
+      setSheetState({ loading: false, ok: true, msg: `✓ ${d.routes.length} rotas e ${d.packages.length} pacotes${d.tabs.cts ? '' : ' (guia de CTs não encontrada)'}` })
+      onLoad(merged, pasteDate, pasteShift)
+    } catch (e) {
+      setSheetState({ loading: false, ok: false, msg: e instanceof Error ? e.message : String(e) })
+    }
+  }
 
   const preview = useMemo(() => {
     if (!text.trim()) return []
@@ -271,9 +295,9 @@ function RoutePasteScreen({ onLoad, defaultDate, defaultShift }: { onLoad: (rout
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', gap: 16 }}>
       <div style={{ width: '100%', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>Colar rotas do SPX</h3>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>Carregar roteirização</h3>
         <p style={{ margin: 0, fontSize: 12, color: '#8892a4' }}>
-          Abra o planejamento de rotas no SPX, selecione toda a tabela e cole aqui (Ctrl+A → Ctrl+C na tabela).
+          Cole o link da planilha de roteirização (o app lê as guias direto) ou, se preferir, cole o conteúdo da guia Plano de expedição.
         </p>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -291,13 +315,22 @@ function RoutePasteScreen({ onLoad, defaultDate, defaultShift }: { onLoad: (rout
             </div>
           </div>
         </div>
+        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ fontSize: 10, color: '#8892a4', fontWeight: 600 }}>🔗 LINK DA PLANILHA DE ROTEIRIZAÇÃO (guias Plano de expedição + Calculation Tasks)</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={link} onChange={e => setLink(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." style={{ flex: 1, fontFamily: 'monospace', fontSize: 12 }} />
+            <Btn disabled={!link.trim() || sheetState.loading} onClick={() => void loadFromSheet()}>{sheetState.loading ? '⏳ Lendo…' : `Buscar — ${pasteShift} · ${pasteDate}`}</Btn>
+          </div>
+          {sheetState.msg && <p style={{ margin: 0, fontSize: 12, color: sheetState.ok === false ? '#f87171' : sheetState.ok ? '#4ade80' : '#fbbf24' }}>{sheetState.msg}</p>}
+          <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>Só o link fica salvo (por dia e turno). Rotas já atribuídas no app são mantidas ao buscar de novo.</p>
+        </div>
+        <p style={{ margin: 0, fontSize: 11, color: '#64748b', textAlign: 'center' }}>— ou cole o conteúdo da guia —</p>
         <textarea
           value={text}
           onChange={e => setText(e.target.value)}
           placeholder={'Rota\tAT / TO\tGaiola\t...\n001\tAT2026...\tA-1\t...'}
           rows={10}
           style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', padding: '12px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
-          autoFocus
         />
         {preview.length > 0 && (
           <p style={{ margin: 0, fontSize: 12, color: '#4ade80' }}>
@@ -374,7 +407,7 @@ function HeaderMenu({ spxConfigured, onSpx, onPaste, onAddRoute, onBatch, onCopy
       >⋯</button>
       {open && (
         <div style={{ position: 'absolute', right: 0, top: '110%', background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '4px', zIndex: 100, minWidth: 210, boxShadow: '0 8px 24px rgba(0,0,0,.5)' }}>
-          {item('📋', 'Nova colagem', onPaste)}
+          {item('📋', 'Buscar / colar roteirização', onPaste)}
           {item('＋', 'Reatribuir rota (AT)', onAddRoute, '#4ade80')}
           {item('📥', 'Atribuir lote', onBatch, '#60a5fa')}
           <div style={{ height: 1, background: '#2d3048', margin: '4px 8px' }} />
@@ -1510,17 +1543,35 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const alreadyRoutedDrivers = orderedDrivers.filter(d => alreadyRoutedIds.has(d.driverId))
 
   // ── Fiorino tab ───────────────────────────────────────────────────────────
-  const [fioMode, setFioMode] = useState<'strict' | 'maximize'>('strict')
+  const [fioMode, setFioMode] = useState<'strict' | 'maximize' | 'amOnly'>('strict')
+  // Ajustes manuais: Fiorinos tiradas do plano e motorista escolhido à mão por rota ('' = deixar sem Fiorino)
+  const [fioExcluded, setFioExcluded] = useState<Set<string>>(new Set())
+  const [fioManual, setFioManual] = useState<Map<string, string>>(new Map())
+  useEffect(() => { setFioExcluded(new Set()); setFioManual(new Map()) }, [selectedDay, selectedShift])
+
+  // Fiorinos disponíveis no dia SÓ para o AM (sem disponibilidade em PM1/PM2)
+  const amOnlyIds = useMemo(() => {
+    const cfg = getGlobalConfig()
+    const ids = new Set<string>()
+    for (const d of workPref?.drivers ?? []) {
+      const s = d.schedule[selectedDay]
+      if (!s || s.status !== 'available') continue
+      if (driverMatchesShift(s.slots, 'AM', cfg) && !driverMatchesShift(s.slots, 'PM1', cfg) && !driverMatchesShift(s.slots, 'PM2', cfg)) ids.add(d.driverId)
+    }
+    return ids
+  }, [workPref, selectedDay])
 
   const fiorino = useMemo(() => {
     // Motoristas Fiorino disponíveis: ordenados por score desc, tiebreaker dias sem rota desc
-    const fioDrivers = orderedDrivers.filter(d =>
+    const allFio = orderedDrivers.filter(d =>
       normalizeVehicle(d.vehicleType) === 'FIORINO' &&
       !d.isBlocked &&
-      !alreadyRoutedIds.has(d.driverId)
+      !alreadyRoutedIds.has(d.driverId) &&
+      (fioMode !== 'amOnly' || amOnlyIds.has(d.driverId))
     ).sort((a, b) =>
       b.priorityScore !== a.priorityScore ? b.priorityScore - a.priorityScore : b.daysSinceRoute - a.daysSinceRoute
     )
+    const fioDrivers = allFio.filter(d => !fioExcluded.has(d.driverId))
 
     // Rotas que exigem Fiorino (GG ≥ 2 E volume ≥ 800)
     const strictRoutes = routes.filter(r =>
@@ -1553,28 +1604,36 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       return result
     }
 
-    // Modo strict: apenas rotas com GG≥2 e volume≥800
-    const strictAssignments = buildAssignments(strictRoutes, fioDrivers)
+    // Escolhas manuais valem primeiro; o automático completa com quem sobrou
+    const byId = new Map(fioDrivers.map(d => [d.driverId, d]))
+    const manualFixed = new Map<string, LocalDriver>()
+    for (const [atId, id] of fioManual) { const d = byId.get(id); if (id && d) manualFixed.set(atId, d) }
+    const manualUsed = new Set([...manualFixed.values()].map(d => d.driverId))
+    const autoPool = fioDrivers.filter(d => !manualUsed.has(d.driverId))
+    const autoRoutes = (list: LocalRoute[]) => list.filter(r => !fioManual.has(r.atId))
 
-    // Modo maximize: primeiro atribui rotas obrigatórias, depois usa Fiorinos restantes em qualquer rota
+    const strictAssignments = new Map<string, LocalDriver>(manualFixed)
+    for (const [k, v] of buildAssignments(autoRoutes(strictRoutes), autoPool)) strictAssignments.set(k, v)
+
+    // Maximize (e Só AM): primeiro as obrigatórias, depois as Fiorinos restantes em qualquer rota
     const maximizeAssignments = (() => {
       const result = new Map<string, LocalDriver>(strictAssignments)
       const usedIds = new Set([...result.values()].map(d => d.driverId))
       const remainingDrivers = fioDrivers.filter(d => !usedIds.has(d.driverId))
-      const remainingRoutes = allAvailableRoutes.filter(r => !result.has(r.atId))
-      const extra = buildAssignments(remainingRoutes, remainingDrivers)
-      for (const [atId, driver] of extra) result.set(atId, driver)
+      const remainingRoutes = autoRoutes(allAvailableRoutes).filter(r => !result.has(r.atId))
+      for (const [atId, driver] of buildAssignments(remainingRoutes, remainingDrivers)) result.set(atId, driver)
       return result
     })()
 
     const assignments = fioMode === 'strict' ? strictAssignments : maximizeAssignments
-    const eligibleRoutes = fioMode === 'strict' ? strictRoutes : allAvailableRoutes.filter(r => assignments.has(r.atId) || strictRoutes.some(s => s.atId === r.atId))
-
-    return { eligibleRoutes: fioMode === 'strict' ? strictRoutes : allAvailableRoutes, strictRoutes, fioDrivers, assignments, strictAssignments, maximizeAssignments }
-  }, [routes, orderedDrivers, alreadyRoutedIds, ignoredAtIds, fioMode])
+    return { eligibleRoutes: fioMode === 'strict' ? strictRoutes : allAvailableRoutes, strictRoutes, fioDrivers, allFio, assignments, strictAssignments, maximizeAssignments }
+  }, [routes, orderedDrivers, alreadyRoutedIds, ignoredAtIds, fioMode, amOnlyIds, fioExcluded, fioManual])
 
   const [fioAssigning, setFioAssigning] = useState(false)
-  const [fioResults, setFioResults] = useState<{ atId: string; driverId: string; spxOk?: boolean; spxMsg?: string }[] | null>(null)
+  const [fioResults, setFioResults] = useState<{ atId: string; driverId: string; name: string; spxOk?: boolean; spxMsg?: string }[] | null>(null)
+  const [fioStopped, setFioStopped] = useState('')
+  // Última leva aplicada no app, para poder desfazer
+  const [fioLastBatch, setFioLastBatch] = useState<{ atIds: string[]; queue: QueueDriver[] } | null>(null)
   const [fioSearch, setFioSearch] = useState('')
 
   const filteredFioRoutes = (fioMode === 'strict' ? fiorino.strictRoutes : fiorino.eligibleRoutes).filter(r => {
@@ -1582,12 +1641,26 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     return !q || r.atId.toLowerCase().includes(q) || r.cluster.toLowerCase().includes(q)
   })
 
+  const setManual = (atId: string, driverId: string | null) => setFioManual(prev => {
+    const next = new Map(prev)
+    if (driverId === null) next.delete(atId)
+    else {
+      // o mesmo motorista não pode ficar em duas rotas
+      if (driverId) for (const [k, v] of next) if (v === driverId) next.delete(k)
+      next.set(atId, driverId)
+    }
+    return next
+  })
+  const toggleExcluded = (id: string) => setFioExcluded(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+
   const handleFioAssign = async () => {
     if (fioAssigning || fiorino.assignments.size === 0) return
     setFioAssigning(true)
     setFioResults(null)
-    const results: { atId: string; driverId: string; spxOk?: boolean; spxMsg?: string }[] = []
-    const assignedIds: string[] = []
+    setFioStopped('')
+    const results: { atId: string; driverId: string; name: string; spxOk?: boolean; spxMsg?: string }[] = []
+    const applied = new Map<string, LocalDriver>()
+    let failStreak = 0
     for (const [atId, driver] of fiorino.assignments) {
       let spxOk: boolean | undefined
       let spxMsg: string | undefined
@@ -1596,22 +1669,52 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         spxOk = res.ok
         spxMsg = res.message
       }
-      results.push({ atId, driverId: driver.driverId, spxOk, spxMsg })
-      assignedIds.push(driver.driverId)
+      results.push({ atId, driverId: driver.driverId, name: driver.name, spxOk, spxMsg })
+      setFioResults([...results])
+      if (spxOk === false) {
+        // Falhou no SPX: a rota continua disponível e o motorista continua na fila para tentar de novo
+        failStreak++
+        const sessionLike = /login|sess|expir|token|csrf|401|403|cookie|credencia|curl/i.test(spxMsg ?? '')
+        if (sessionLike || failStreak >= 2) {
+          setFioStopped(`Parei para não perder o resto: ${spxMsg}. Atualize o cURL do SPX e clique em Atribuir de novo — só o que faltou será enviado.`)
+          break
+        }
+        continue
+      }
+      failStreak = 0
+      applied.set(atId, driver)
       setRoutesState(prev => prev.map(r => r.atId === atId
         ? { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: driver.driverId, assignedDriverName: driver.name }
         : r
       ))
     }
-    // Persist
-    setRoutes(routes.map(r => {
-      const driver = fiorino.assignments.get(r.atId)
-      if (driver) return { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: driver.driverId, assignedDriverName: driver.name }
-      return r
-    }))
-    removeFromQueue(assignedIds)
-    setFioResults(results)
+    if (applied.size) {
+      const current = routeStore.get(selectedDay, selectedShift) ?? routes
+      setRoutes(current.map(r => {
+        const driver = applied.get(r.atId)
+        return driver ? { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: driver.driverId, assignedDriverName: driver.name } : r
+      }))
+      const ids = new Set([...applied.values()].map(d => d.driverId))
+      setFioLastBatch({ atIds: [...applied.keys()], queue: queue.filter(q => ids.has(q.driverId)) })
+      removeFromQueue([...ids])
+      setFioManual(prev => { const n = new Map(prev); for (const k of applied.keys()) n.delete(k); return n })
+    }
     setFioAssigning(false)
+  }
+
+  // Desfaz no app a última leva (rotas voltam a disponível e motoristas voltam à fila). No SPX não desfaz.
+  const handleFioUndo = () => {
+    if (!fioLastBatch) return
+    const set = new Set(fioLastBatch.atIds)
+    const current = routeStore.get(selectedDay, selectedShift) ?? routes
+    setRoutes(current.map(r => set.has(r.atId) ? { ...r, status: 'DISPONIVEL' as const, assignedDriverId: null, assignedDriverName: null } : r))
+    const q = noShowQueueStore.get(selectedShift)
+    const have = new Set(q.map(d => d.driverId))
+    const restored = [...q, ...fioLastBatch.queue.filter(d => !have.has(d.driverId))]
+    noShowQueueStore.set(selectedShift, restored)
+    setQueue(restored)
+    setFioLastBatch(null)
+    setFioResults(null)
   }
 
   // Sub-abas internas do "First Convocation"
@@ -2363,11 +2466,19 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                   >
                     🚀 Maximizar convocações
                   </button>
+                  <button
+                    onClick={() => setFioMode('amOnly')}
+                    style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'amOnly' ? '#d97706' : 'transparent', color: fioMode === 'amOnly' ? '#fff' : '#8892a4', cursor: 'pointer' }}
+                  >
+                    🌅 Só Fiorinos exclusivas do AM
+                  </button>
                 </div>
                 <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
                   {fioMode === 'strict'
                     ? 'Fiorino apenas em rotas com GG ≥ 2 e volume ≥ 800'
-                    : 'Fiorino em rotas obrigatórias + qualquer rota disponível para aproveitar o restante da fila'}
+                    : fioMode === 'maximize'
+                      ? 'Fiorino em rotas obrigatórias + qualquer rota disponível para aproveitar o restante da fila'
+                      : `Só Fiorinos disponíveis no dia apenas para o AM (quem tem PM1/PM2 fica de fora): obrigatórias primeiro, depois qualquer rota${selectedShift !== 'AM' ? ' — atenção: o turno selecionado não é o AM' : ''}`}
                 </p>
               </div>
             </div>
@@ -2376,10 +2487,11 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
             <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
               {[
                 { label: 'Rotas obrigatórias (GG≥2 vol≥800)', value: fiorino.strictRoutes.length, color: '#fbbf24' },
-                ...(fioMode === 'maximize' ? [{ label: 'Rotas extras (qualquer)', value: fiorino.assignments.size - fiorino.strictAssignments.size, color: '#60a5fa' }] : []),
+                ...(fioMode !== 'strict' ? [{ label: 'Rotas extras (qualquer)', value: fiorino.assignments.size - fiorino.strictAssignments.size, color: '#60a5fa' }] : []),
                 { label: 'Motoristas Fiorino', value: fiorino.fioDrivers.length, color: '#4ade80' },
                 { label: 'Atribuições previstas', value: fiorino.assignments.size, color: '#a78bfa' },
                 { label: 'Fiorinos sem rota', value: fiorino.fioDrivers.length - fiorino.assignments.size, color: '#f87171' },
+                ...(fioExcluded.size ? [{ label: 'Tiradas do plano', value: fioExcluded.size, color: '#94a3b8' }] : []),
               ].map(s => (
                 <div key={s.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, padding: '6px 12px', minWidth: 80 }}>
                   <p style={{ margin: 0, fontSize: 10, color: '#8892a4' }}>{s.label}</p>
@@ -2388,14 +2500,31 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
               ))}
             </div>
 
+            {(fioManual.size > 0 || fioExcluded.size > 0) && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, fontSize: 11, color: '#fbbf24' }}>
+                ✎ {fioManual.size} ajuste(s) manual(is) · {fioExcluded.size} Fiorina(s) tirada(s) do plano
+                <button onClick={() => { setFioManual(new Map()); setFioExcluded(new Set()) }} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer' }}>Limpar ajustes</button>
+              </div>
+            )}
+
             {/* Fiorino Results */}
-            {fioResults && (
-              <div style={{ marginBottom: 12, background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, padding: 12 }}>
-                <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>Resultado da atribuição Fiorino:</p>
-                {fioResults.map(r => (
+            {(fioResults || fioLastBatch) && (
+              <div style={{ marginBottom: 12, background: '#0f1117', border: `1px solid ${fioStopped ? 'rgba(248,113,113,.5)' : '#2d3048'}`, borderRadius: 8, padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                  <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>
+                    Resultado da atribuição Fiorino{fioResults ? `: ${fioResults.filter(r => r.spxOk !== false).length} ok · ${fioResults.filter(r => r.spxOk === false).length} falharam` : ''}
+                  </p>
+                  {fioLastBatch && !fioAssigning && (
+                    <button onClick={handleFioUndo} title="Volta as rotas para disponível e os motoristas para a fila (não desfaz no SPX)"
+                      style={{ background: 'transparent', border: '1px solid #2d3048', color: '#cbd5e1', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>↩ Desfazer no app ({fioLastBatch.atIds.length})</button>
+                  )}
+                </div>
+                {fioStopped && <p style={{ margin: '0 0 6px', fontSize: 11, color: '#f87171' }}>⛔ {fioStopped}</p>}
+                {fioResults?.some(r => r.spxOk === false) && !fioStopped && <p style={{ margin: '0 0 6px', fontSize: 11, color: '#fbbf24' }}>As que falharam continuam na lista abaixo — clique em Atribuir de novo para reenviar só elas.</p>}
+                {fioResults?.map(r => (
                   <p key={r.atId} style={{ margin: '2px 0', fontSize: 11 }}>
                     <span style={{ fontFamily: 'monospace', color: '#94a3b8' }}>{r.atId}</span>
-                    {' → '}
+                    {' → '}<span style={{ color: '#cbd5e1' }}>{r.name}</span>{' · '}
                     <span style={{ color: r.spxOk === false ? '#f87171' : '#4ade80' }}>
                       {r.spxOk === undefined ? '✓ Local' : r.spxOk ? `✓ SPX: ${r.spxMsg}` : `✗ SPX: ${r.spxMsg}`}
                     </span>
@@ -2436,12 +2565,23 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                       <td style={{ ...TD, color: '#64748b', fontFamily: 'monospace' }}>{idx + 1}</td>
                       <td style={TD}>
                         <span style={{ fontFamily: 'monospace', fontWeight: 600, color: isObrigatory ? '#fbbf24' : '#60a5fa' }}>{route.atId}</span>
-                        {fioMode === 'maximize' && !isObrigatory && <span style={{ marginLeft: 6, fontSize: 9, background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 3, padding: '1px 5px' }}>extra</span>}
+                        {fioMode !== 'strict' && !isObrigatory && <span style={{ marginLeft: 6, fontSize: 9, background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 3, padding: '1px 5px' }}>extra</span>}
                       </td>
                       <td style={TD}><span style={{ color: '#e2e8f0' }}>{route.cluster}</span></td>
                       <td style={{ ...TD, textAlign: 'center' }}><span style={{ fontWeight: 700, color: '#4ade80' }}>{route.gg ?? '—'}</span></td>
                       <td style={{ ...TD, textAlign: 'center' }}><span style={{ fontWeight: 700, color: '#60a5fa' }}>{route.volume?.toLocaleString('pt-BR') ?? '—'}</span></td>
                       <td style={TD}>
+                        <select value={fioManual.has(route.atId) ? (fioManual.get(route.atId) || '__none') : '__auto'}
+                          onChange={e => setManual(route.atId, e.target.value === '__auto' ? null : e.target.value === '__none' ? '' : e.target.value)}
+                          title="Trocar a Fiorino desta rota"
+                          style={{ background: '#0f1117', border: `1px solid ${fioManual.has(route.atId) ? '#fbbf24' : '#2d3048'}`, color: '#cbd5e1', borderRadius: 6, padding: '2px 4px', fontSize: 11, maxWidth: 200, marginBottom: 3 }}>
+                          <option value="__auto">Automático{!fioManual.has(route.atId) && assigned ? ` (${assigned.name})` : ''}</option>
+                          <option value="__none">— Sem Fiorino —</option>
+                          {fiorino.fioDrivers.filter(d => coversCluster(d.clusters, route.cluster)).map(d => <option key={d.driverId} value={d.driverId}>{d.name}</option>)}
+                          {fiorino.fioDrivers.some(d => !coversCluster(d.clusters, route.cluster)) && <optgroup label="Fora do cluster">
+                            {fiorino.fioDrivers.filter(d => !coversCluster(d.clusters, route.cluster)).map(d => <option key={d.driverId} value={d.driverId}>{d.name}</option>)}
+                          </optgroup>}
+                        </select>
                         {assigned ? (
                           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                             <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{assigned.name}</span>
@@ -2463,23 +2603,24 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
             </table>
 
             {/* Fiorino driver pool */}
-            <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Pool de motoristas Fiorino disponíveis ({fiorino.fioDrivers.length})</p>
+            <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Pool de motoristas Fiorino disponíveis ({fiorino.fioDrivers.length}{fioExcluded.size ? ` + ${fioExcluded.size} tirada(s)` : ''}) <span style={{ fontWeight: 400, color: '#64748b' }}>— use “Tirar” para deixar uma Fiorino fora do plano</span></p>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #2d3048' }}>
-                  {['#', 'Motorista', 'DS', 'Score', 'Dias s/ rota', 'Clusters', 'Atribuição prevista'].map(h => (
+                  {['#', 'Motorista', 'DS', 'Score', 'Dias s/ rota', 'Clusters', 'Atribuição prevista', ''].map(h => (
                     <th key={h} style={TH}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {fiorino.fioDrivers.length === 0 ? (
-                  <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: '#8892a4' }}>Nenhum motorista Fiorino na fila para este turno.</td></tr>
-                ) : fiorino.fioDrivers.map((driver, idx) => {
+                {fiorino.allFio.length === 0 ? (
+                  <tr><td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: '#8892a4' }}>Nenhum motorista Fiorino na fila para este turno.</td></tr>
+                ) : fiorino.allFio.map((driver, idx) => {
                   const dsMeta = getDsMeta(driver.dsReal)
                   const assignedRoute = [...fiorino.assignments.entries()].find(([, d]) => d.driverId === driver.driverId)?.[0]
+                  const excluded = fioExcluded.has(driver.driverId)
                   return (
-                    <tr key={driver.driverId} style={{ borderBottom: '1px solid #1e2130', background: assignedRoute ? 'rgba(245,158,11,.02)' : 'transparent' }}>
+                    <tr key={driver.driverId} style={{ borderBottom: '1px solid #1e2130', background: assignedRoute ? 'rgba(245,158,11,.02)' : 'transparent', opacity: excluded ? 0.45 : 1 }}>
                       <td style={{ ...TD, color: '#64748b', fontFamily: 'monospace' }}>{idx + 1}</td>
                       <td style={TD}>
                         <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{driver.name}</span>
@@ -2497,7 +2638,13 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                       <td style={TD}>
                         {assignedRoute
                           ? <Chip label={assignedRoute} color="#fbbf24" bg="rgba(245,158,11,.1)" small />
-                          : <span style={{ color: '#64748b', fontSize: 11 }}>Sem rota elegível no cluster</span>}
+                          : <span style={{ color: '#64748b', fontSize: 11 }}>{excluded ? 'Fora do plano' : 'Sem rota elegível no cluster'}</span>}
+                      </td>
+                      <td style={TD}>
+                        <button onClick={() => toggleExcluded(driver.driverId)}
+                          style={{ background: 'transparent', border: '1px solid #2d3048', color: excluded ? '#4ade80' : '#f87171', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer' }}>
+                          {excluded ? '↩ Voltar' : '✕ Tirar'}
+                        </button>
                       </td>
                     </tr>
                   )

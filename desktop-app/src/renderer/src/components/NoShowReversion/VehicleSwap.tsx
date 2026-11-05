@@ -10,8 +10,8 @@ import { splitClusters } from '../../lib/clusterMatch'
 export interface SwapPair {
   big: LocalRoute    // precisa de Fiorino, hoje com Passeio
   small: LocalRoute  // não precisa, hoje com Fiorino
-  passeio: { id: string; name: string }
-  fiorino: { id: string; name: string }
+  passeio: { id: string; name: string; phone: string }
+  fiorino: { id: string; name: string; phone: string }
   sameCluster: boolean
 }
 
@@ -32,6 +32,7 @@ export function findSwaps(routes: LocalRoute[], registry: StoredDriver[], workPr
   const wpMap = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d]))
   // Vale o veículo do cadastro do motorista
   const vOf = (id: string) => vehicleOf(regMap.get(id)?.vehicleType || wpMap.get(id)?.vehicleType)
+  const phoneOf = (id: string) => (regMap.get(id)?.phoneNumber ?? '').replace(/\D/g, '')
   const assigned = routes.filter(r => r.status === 'ATRIBUIDA' && r.assignedDriverId)
   const bigs = assigned.filter(r => needsFiorino(r) && vOf(r.assignedDriverId!) === 'PASSEIO')
     .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
@@ -53,8 +54,8 @@ export function findSwaps(routes: LocalRoute[], registry: StoredDriver[], workPr
     used.add(pick.s.id)
     pairs.push({
       big, small: pick.s, sameCluster: pick.same,
-      passeio: { id: big.assignedDriverId!, name: big.assignedDriverName || big.assignedDriverId! },
-      fiorino: { id: pick.s.assignedDriverId!, name: pick.s.assignedDriverName || pick.s.assignedDriverId! },
+      passeio: { id: big.assignedDriverId!, name: big.assignedDriverName || big.assignedDriverId!, phone: phoneOf(big.assignedDriverId!) },
+      fiorino: { id: pick.s.assignedDriverId!, name: pick.s.assignedDriverName || pick.s.assignedDriverId!, phone: phoneOf(pick.s.assignedDriverId!) },
     })
   }
   return pairs
@@ -67,7 +68,8 @@ export function VehicleSwapModal({ pairs, open, onClose, onApply, spxConfigured 
   onApply: (p: SwapPair) => Promise<Result>
 }) {
   const [results, setResults] = useState<Record<string, Result | 'running'>>({})
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState('')
+  const [done, setDone] = useState<SwapPair[]>([])
   const key = (p: SwapPair) => `${p.big.id}|${p.small.id}`
   const pending = useMemo(() => pairs.filter(p => !results[key(p)]), [pairs, results])
   if (!open) return null
@@ -76,13 +78,18 @@ export function VehicleSwapModal({ pairs, open, onClose, onApply, spxConfigured 
     setResults(r => ({ ...r, [key(p)]: 'running' }))
     const res = await onApply(p)
     setResults(r => ({ ...r, [key(p)]: res }))
+    if (res.ok) setDone(d => d.some(x => key(x) === key(p)) ? d : [...d, p])
   }
   const runAll = async () => { for (const p of pending) await run(p) }
-  const copy = async () => {
-    const lines = pairs.map(p => `🔁 ${p.big.cluster}: ${p.big.atId} (${p.big.volume ?? '—'} L) → ${p.fiorino.name} (Fiorino) | ${p.small.atId} (${p.small.volume ?? '—'} L) → ${p.passeio.name} (Passeio)`)
-    await navigator.clipboard.writeText(['Trocas Fiorino ↔ Passeio', '', ...lines].join('\n'))
-    setCopied(true); setTimeout(() => setCopied(false), 2000)
+  const copyText = async (k: string, text: string) => {
+    if (!text) return
+    await navigator.clipboard.writeText(text)
+    setCopied(k); setTimeout(() => setCopied(''), 2000)
   }
+  const listText = (list: SwapPair[]) => ['Trocas Fiorino ↔ Passeio', '', ...list.map(p => `🔁 ${p.big.cluster}: ${p.big.atId} (${p.big.volume ?? '—'} L) → ${p.fiorino.name} (Fiorino) | ${p.small.atId} (${p.small.volume ?? '—'} L) → ${p.passeio.name} (Passeio)`)].join('\n')
+  const ats = pending.flatMap(p => [p.big.atId, p.small.atId]).join('\n')
+  const drivers = done.flatMap(p => [p.fiorino, p.passeio])
+  const btn: React.CSSProperties = { background: 'transparent', color: '#cbd5e1', border: '1px solid #2d3048', borderRadius: 7, padding: '7px 14px', fontSize: 12, cursor: 'pointer' }
 
   const card = (r: LocalRoute, tag: string, color: string) => (
     <div style={{ flex: 1, minWidth: 0, background: '#0f1117', border: `1px solid ${color}40`, borderRadius: 8, padding: '7px 10px' }}>
@@ -131,8 +138,36 @@ export function VehicleSwapModal({ pairs, open, onClose, onApply, spxConfigured 
               style={{ background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: pending.length ? 'pointer' : 'default', opacity: pending.length ? 1 : .5 }}>
               🔁 Fazer todas as trocas ({pending.length})
             </button>
-            <button onClick={() => void copy()} style={{ background: 'transparent', color: '#cbd5e1', border: '1px solid #2d3048', borderRadius: 7, padding: '7px 14px', fontSize: 12, cursor: 'pointer' }}>{copied ? '✓ Copiado' : '📋 Copiar lista'}</button>
+            <button onClick={() => void copyText('ats', ats)} disabled={!pending.length} title="ATs das trocas ainda não feitas (uma por linha)" style={{ ...btn, opacity: pending.length ? 1 : .5 }}>{copied === 'ats' ? '✓ Copiado' : `🧾 Copiar ATs (${pending.length * 2})`}</button>
+            <button onClick={() => void copyText('lista', listText(pairs))} style={btn}>{copied === 'lista' ? '✓ Copiado' : '📋 Copiar lista'}</button>
             {!spxConfigured && <span style={{ fontSize: 11, color: '#fbbf24' }}>Sem sessão do SPX: a troca fica só no app. Cole o cURL para gravar no SPX.</span>}
+          </div>
+        )}
+
+        {done.length > 0 && (
+          <div style={{ borderTop: '1px solid #2d3048', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#4ade80' }}>✓ Trocas feitas ({done.length})</p>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ color: '#8892a4', textAlign: 'left' }}>{['Motorista', 'ID', 'Telefone', 'Nova rota'].map(h => <th key={h} style={{ padding: '4px 6px', fontWeight: 600, fontSize: 11 }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {done.flatMap(p => [
+                  { d: p.fiorino, tag: '🚐', r: p.big },
+                  { d: p.passeio, tag: '🚗', r: p.small },
+                ]).map(({ d, tag, r }) => (
+                  <tr key={d.id + r.atId} style={{ borderTop: '1px solid #1e2130', color: '#e2e8f0' }}>
+                    <td style={{ padding: '4px 6px' }}>{tag} {d.name}</td>
+                    <td style={{ padding: '4px 6px', fontFamily: 'monospace', color: '#94a3b8' }}>{d.id}</td>
+                    <td style={{ padding: '4px 6px', fontFamily: 'monospace', color: d.phone ? '#cbd5e1' : '#64748b' }}>{d.phone || 'sem telefone'}</td>
+                    <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{r.atId} <span style={{ color: '#64748b' }}>· {r.gaiola ?? '—'} · {r.volume ?? '—'} L</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button onClick={() => void copyText('phones', drivers.map(d => d.phone).filter(Boolean).join('\n'))} style={btn}>{copied === 'phones' ? '✓ Copiado' : `📞 Copiar telefones (${drivers.filter(d => d.phone).length})`}</button>
+              <button onClick={() => void copyText('ids', drivers.map(d => d.id).join('\n'))} style={btn}>{copied === 'ids' ? '✓ Copiado' : `🆔 Copiar IDs (${drivers.length})`}</button>
+              <button onClick={() => void copyText('feitas', listText(done))} style={btn}>{copied === 'feitas' ? '✓ Copiado' : '📋 Copiar trocas feitas'}</button>
+            </div>
           </div>
         )}
       </div>

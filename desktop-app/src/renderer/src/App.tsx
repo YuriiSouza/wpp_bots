@@ -9,6 +9,9 @@ import Disponibilidade from './components/Disponibilidade'
 import CallUp from './components/CallUp'
 import ForwardOrder from './components/ForwardOrder'
 import VisaoGeral from './components/VisaoGeral'
+import RotaDetalhe from './components/RotaDetalhe'
+import Eha from './components/Eha'
+import Volumosos from './components/Volumosos'
 import NoShowReversion from './components/NoShowReversion'
 import Carregamento from './components/Carregamento'
 import Blocklist from './components/Blocklist'
@@ -59,7 +62,7 @@ type DSState =
   | { phase: 'done'; result: AnalysisResult; fileName: string }
   | { phase: 'error'; message: string }
 
-type Section = 'uploads' | 'ds' | 'novatos' | 'motoristas' | 'disponibilidade' | 'callup' | 'pacotes' | 'perfil' | 'noshow' | 'carregamento' | 'blocklist' | 'config'
+type Section = 'uploads' | 'ds' | 'novatos' | 'motoristas' | 'disponibilidade' | 'callup' | 'pacotes' | 'perfil' | 'noshow' | 'carregamento' | 'rotas' | 'eha' | 'volumosos' | 'blocklist' | 'config'
 
 interface NavItem { id: Section; icon: string; label: string; group?: string }
 
@@ -72,6 +75,9 @@ const NAV: NavItem[] = [
   { id: 'callup',        icon: '📞', label: 'Call Up',        group: 'Operação' },
   { id: 'pacotes',       icon: '📦', label: 'Pacotes',        group: 'Operação' },
   { id: 'perfil',        icon: '🔍', label: 'Visão Geral',    group: 'Operação' },
+  { id: 'rotas',         icon: '🧭', label: 'Detalhe da rota', group: 'Operação' },
+  { id: 'eha',           icon: '♻',  label: 'EHA (não coube)', group: 'Operação' },
+  { id: 'volumosos',     icon: '🧱', label: 'Volumosos',      group: 'Operação' },
   { id: 'noshow',        icon: '🔄', label: 'Atribuição', group: 'Operação' },
   { id: 'carregamento',  icon: '⏱', label: 'Carregamento',   group: 'Operação' },
   { id: 'blocklist',    icon: '⊘',  label: 'Bloqueados',      group: 'Operação' },
@@ -95,6 +101,7 @@ function loadHeader(): { day: string; shift: Shift } {
 
 export default function App() {
   const [section, setSection] = useState<Section>('uploads')
+  const [focusAt, setFocusAt] = useState<string | undefined>()
   const [dsState, setDsState] = useState<DSState>(() => {
     const saved = loadDsResult()
     return saved ? { phase: 'done', ...saved } : { phase: 'idle' }
@@ -402,8 +409,15 @@ export default function App() {
             dsDrivers={dsState.phase === 'done' ? dsState.result.drivers : []}
             selectedDay={selectedDay}
             selectedShift={selectedShift}
+            onOpenRoute={(at: string) => { setFocusAt(at); setSection('rotas') }}
           />
         )}
+
+        {section === 'rotas' && <RotaDetalhe registry={localStore.getDrivers()} selectedDay={selectedDay} selectedShift={selectedShift} focusAt={focusAt} />}
+
+        {section === 'volumosos' && <Volumosos key={`${selectedDay}|${selectedShift}`} registry={localStore.getDrivers()} selectedDay={selectedDay} selectedShift={selectedShift} />}
+
+        {section === 'eha' && <Eha selectedDay={selectedDay} selectedShift={selectedShift} onOpenRoute={(at: string) => { setFocusAt(at); setSection('rotas') }} />}
 
         {section === 'noshow' && (
           <NoShowReversion

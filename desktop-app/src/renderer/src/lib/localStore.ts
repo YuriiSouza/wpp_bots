@@ -2,7 +2,7 @@
  * Local persistence for the desktop app.
  * Uses localStorage — Electron has no 5MB browser limit here.
  */
-import { overrideVehicle } from './fiorinoOverride'
+let driversCache: { raw: string | null; fio: string | null; list: StoredDriver[] } | null = null
 
 export interface StoredDriver {
   id: string
@@ -48,9 +48,16 @@ export const localStore = {
   getDrivers(): StoredDriver[] {
     try {
       const raw = localStorage.getItem(DRIVERS_KEY)
-      const list = raw ? (JSON.parse(raw) as StoredDriver[]) : []
+      const fio = localStorage.getItem('spx:fiorino-driver-ids')
+      // Cache: o App chama isto a cada renderização; sem cache, o JSON era relido (e a lista de
+      // Fiorinos relida para cada motorista), travando telas como a de Novatos.
+      if (driversCache && driversCache.raw === raw && driversCache.fio === fio) return driversCache.list
+      const parsed = raw ? (JSON.parse(raw) as StoredDriver[]) : []
+      const fioIds = new Set<string>(fio ? JSON.parse(fio) as string[] : [])
       // Motoristas da planilha de validação contam como Fiorino, mesmo cadastrados como Passeio.
-      return list.map(d => ({ ...d, vehicleType: overrideVehicle(d.id, d.vehicleType) }))
+      const list = parsed.map(d => (fioIds.has((d.id ?? '').trim()) ? { ...d, vehicleType: 'Fiorino' } : d))
+      driversCache = { raw, fio, list }
+      return list
     } catch {
       return []
     }

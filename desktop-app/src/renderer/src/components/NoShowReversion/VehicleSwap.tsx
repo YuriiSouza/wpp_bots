@@ -105,12 +105,12 @@ export function VehicleSwapModal({ pairs, open, onClose, onApply, spxConfigured 
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
           <div>
             <p style={{ margin: 0, fontSize: 16, fontWeight: 800, color: '#e2e8f0' }}>🔁 Trocas Fiorino ↔ Passeio</p>
-            <p style={{ margin: '3px 0 0', fontSize: 12, color: '#8892a4' }}>Rota volumosa saindo com Passeio e, na mesma região, rota menor saindo com Fiorino. A troca põe a Fiorino na rota que precisa e o Passeio na menor.</p>
+            <p style={{ margin: '3px 0 0', fontSize: 12, color: '#8892a4' }}>Rota de Fiorino (pela roteirização) saindo com Passeio e, na mesma região, rota de Passeio saindo com Fiorino. A troca põe a Fiorino na rota que precisa e o Passeio na outra.</p>
           </div>
           <button onClick={onClose} style={{ alignSelf: 'flex-start', background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 8, width: 30, height: 30, fontSize: 16, cursor: 'pointer' }}>×</button>
         </div>
 
-        {pairs.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: '#4ade80' }}>✓ Nenhuma troca a fazer: as rotas volumosas já estão com Fiorino (ou não há Fiorino em rota menor na mesma região).</p> : pairs.map(p => {
+        {pairs.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: '#4ade80' }}>✓ Nenhuma troca a fazer: as rotas de Fiorino já estão com Fiorino (ou não há Fiorino em rota de Passeio na mesma região).</p> : pairs.map(p => {
           const st = results[key(p)]
           return (
             <div key={key(p)} style={{ border: '1px solid #2d3048', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, opacity: st && st !== 'running' && st.ok ? 0.6 : 1 }}>

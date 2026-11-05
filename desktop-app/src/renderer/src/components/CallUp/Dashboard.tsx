@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Shift } from '../../lib/globalConfig'
+import { DateRangePicker } from './index'
 import { firstCallDay, isAcceptedInCallUp, type CallUpAnalysis, type FirstCallRoute } from '../../lib/callUpParser'
 
 // Dashboard do indicador de Call Up: aceite na 1ª chamada (uma linha por AT, a 1ª chamada dela).
@@ -8,6 +9,8 @@ const C = { bg: '#0f1117', card: '#13151f', border: '#2d3048', line: '#1e2130', 
 const SHIFT_COLOR: Record<Shift, string> = { AM: '#fbbf24', PM1: '#60a5fa', PM2: '#f472b6' }
 const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb']
 const META_KEY = 'ui:callup-meta'
+const MONTHS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+const MONTH = (ym: string) => `${MONTHS[+ym.slice(5, 7) - 1] ?? ym.slice(5, 7)}/${ym.slice(2, 4)}`
 
 const pct = (a: number, b: number) => (b ? (a / b) * 100 : 0)
 const rateColor = (p: number, meta: number) => (p >= meta ? C.green : p >= meta - 10 ? C.amber : C.red)
@@ -67,13 +70,23 @@ function RateBars({ items, meta }: { items: { k: string; n: number; rate: number
 
 export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAnalysis; selectedDay: string }) {
   const all = data.firstCallAnalysis.routes
-  const lastDay = useMemo(() => all.map(firstCallDay).filter(Boolean).sort().at(-1) ?? selectedDay, [all, selectedDay])
-  const [period, setPeriod] = useState<7 | 14 | 30 | 0>(14)
+  const allDates = useMemo(() => [...new Set(all.map(firstCallDay).filter(Boolean))].sort(), [all])
+  const lastAvail = allDates.at(-1) ?? selectedDay
+  // Padrão: mês atual (ou o último mês com dados), igual à aba de 1ª chamada
+  const [range, setRange] = useState(() => {
+    const ym = new Date().toISOString().slice(0, 7)
+    const month = allDates.filter(d => d.startsWith(ym))
+    const m = month.length ? month : allDates.filter(d => d.startsWith(lastAvail.slice(0, 7)))
+    return { from: m[0] ?? '', to: m.at(-1) ?? '' }
+  })
   const [shift, setShift] = useState<'' | Shift>('')
   const [meta, setMetaState] = useState<number>(() => { try { return +(localStorage.getItem(META_KEY) ?? '') || 85 } catch { return 85 } })
   const setMeta = (v: number) => { setMetaState(v); try { localStorage.setItem(META_KEY, String(v)) } catch { /* */ } }
 
-  const from = period ? addDays(lastDay, -(period - 1)) : '0000'
+  const from = range.from || allDates[0] || '0000'
+  const lastDay = range.to || lastAvail
+  const spanDays = Math.max(1, Math.round((Date.parse(`${lastDay}T12:00:00`) - Date.parse(`${from}T12:00:00`)) / 86400000) + 1)
+  const period = range.from ? spanDays : 0
   const prevFrom = period ? addDays(from, -period) : '0000'
   const inShift = (r: FirstCallRoute) => !shift || r.shift === shift
   const cur = useMemo(() => all.filter(r => { const d = firstCallDay(r); return d >= from && d <= lastDay && inShift(r) }), [all, from, lastDay, shift]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -91,11 +104,12 @@ export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAna
     return [...m.entries()].sort((a, b) => a[0] - b[0]).map(([h, l]) => ({ k: `${String(h).padStart(2, '0')}h`, ...stats(l) }))
   }, [cur])
   const byWeekday = useMemo(() => WEEKDAYS.map((w, i) => ({ k: w, ...stats(cur.filter(r => new Date(`${firstCallDay(r)}T12:00:00`).getDay() === i)) })).filter(x => x.n), [cur])
-  const reasons = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const r of cur) if (r.status === 'Declined') { const k = r.declineReason || 'Sem motivo / tempo esgotado'; m.set(k, (m.get(k) ?? 0) + 1) }
-    return [...m.entries()].sort((a, b) => b[1] - a[1])
-  }, [cur])
+  // Análise mensal (todo o histórico, respeitando o turno)
+  const byMonth = useMemo(() => {
+    const m = new Map<string, FirstCallRoute[]>()
+    for (const r of all) { if (!inShift(r)) continue; const k = firstCallDay(r).slice(0, 7); if (!m.has(k)) m.set(k, []); m.get(k)!.push(r) }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, l]) => ({ k, days: new Set(l.map(firstCallDay)).size, ...stats(l) }))
+  }, [all, shift]) // eslint-disable-line react-hooks/exhaustive-deps
   const byCluster = useMemo(() => {
     const m = new Map<string, FirstCallRoute[]>()
     for (const r of cur) { const k = r.cluster || '—'; if (!m.has(k)) m.set(k, []); m.get(k)!.push(r) }
@@ -107,7 +121,6 @@ export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAna
     return [...m.entries()].map(([id, l]) => ({ id, name: l[0].driverName, ...stats(l) }))
   }, [cur])
   const worstDrivers = byDriver.filter(d => d.answered >= 3 && d.dec > 0).sort((a, b) => a.rate - b.rate || b.dec - a.dec).slice(0, 12)
-  const bestDrivers = byDriver.filter(d => d.answered >= 3).sort((a, b) => b.rate - a.rate || b.acc - a.acc).slice(0, 8)
 
   // Gráfico de tendência
   const W = 920, H = 220, padL = 34, padB = 24, padT = 12
@@ -125,9 +138,7 @@ export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAna
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {/* Filtros */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {([7, 14, 30, 0] as const).map(v => <button key={v} onClick={() => setPeriod(v)} style={pill(period === v)}>{v ? `${v} dias` : 'Tudo'}</button>)}
-        </div>
+        <DateRangePicker from={range.from} to={range.to} onChange={(f, t) => setRange({ from: f, to: t })} availableDates={allDates} />
         <div style={{ display: 'flex', gap: 4 }}>
           {(['', 'AM', 'PM1', 'PM2'] as const).map(v => <button key={v || 'all'} onClick={() => setShift(v)} style={{ ...pill(shift === v), color: shift === v ? '#fff' : v ? SHIFT_COLOR[v] : C.sub }}>{v || 'Todos os turnos'}</button>)}
         </div>
@@ -168,18 +179,35 @@ export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAna
           </svg>
         </Panel>
 
+        <Panel title="Análise mensal" sub="Todo o histórico do relatório (respeita o filtro de turno)" span>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(320px, 1.4fr)', gap: 16, alignItems: 'start' }}>
+            <RateBars meta={meta} items={byMonth.map(x => ({ k: MONTH(x.k), n: x.answered, rate: x.rate }))} />
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead><tr>{['Mês', 'Dias', 'Rotas', 'Aceite 1ª', 'Δ mês ant.', 'Recusas', 'Recuperadas', 'Aceite final'].map(h => <th key={h} style={{ textAlign: 'left', padding: '3px 6px', color: C.muted, fontSize: 10, textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {byMonth.map((x, i) => {
+                  const d = i > 0 ? x.rate - byMonth[i - 1].rate : null
+                  return (
+                    <tr key={x.k} style={{ borderTop: `1px solid ${C.line}` }}>
+                      <td style={{ padding: '4px 6px', color: C.text, fontWeight: 700 }}>{MONTH(x.k)}</td>
+                      <td style={{ padding: '4px 6px', color: C.sub }}>{x.days}</td>
+                      <td style={{ padding: '4px 6px', color: C.sub }}>{x.n}</td>
+                      <td style={{ padding: '4px 6px', color: rateColor(x.rate, meta), fontWeight: 800 }}>{x.rate.toFixed(1)}%</td>
+                      <td style={{ padding: '4px 6px', color: d == null ? C.muted : d >= 0 ? C.green : C.red, fontWeight: 700 }}>{d == null ? '—' : `${d >= 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(1)} pp`}</td>
+                      <td style={{ padding: '4px 6px', color: C.red }}>{x.dec}</td>
+                      <td style={{ padding: '4px 6px', color: C.blue }}>{x.recovered}</td>
+                      <td style={{ padding: '4px 6px', color: C.text }}>{x.finalRate.toFixed(1)}%</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+
         <Panel title="Por turno"><RateBars meta={meta} items={byShift.map(x => ({ k: x.k, n: x.answered, rate: x.rate, color: x.color }))} /></Panel>
         <Panel title="Por dia da semana"><RateBars meta={meta} items={byWeekday.map(x => ({ k: x.k, n: x.answered, rate: x.rate }))} /></Panel>
         <Panel title="Por hora do disparo" sub="Quando a chamada foi feita"><RateBars meta={meta} items={byHour.map(x => ({ k: x.k, n: x.answered, rate: x.rate }))} /></Panel>
-        <Panel title={`Motivos de recusa (${s.dec})`}>
-          {reasons.length === 0 ? <p style={{ margin: 0, fontSize: 12, color: C.green }}>Nenhuma recusa no período.</p> : reasons.slice(0, 8).map(([k, v]) => (
-            <div key={k} style={{ display: 'grid', gridTemplateColumns: 'minmax(90px, 1fr) 1.2fr 64px', gap: 8, alignItems: 'center', fontSize: 11 }}>
-              <span style={{ color: C.sub, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={k}>{k}</span>
-              <div style={{ height: 10, background: C.line, borderRadius: 5 }}><div style={{ width: `${(v / reasons[0][1]) * 100}%`, height: '100%', background: C.red, borderRadius: 5 }} /></div>
-              <span style={{ textAlign: 'right', color: C.text, fontWeight: 700 }}>{v} <span style={{ color: C.muted, fontWeight: 400 }}>{pct(v, s.dec).toFixed(0)}%</span></span>
-            </div>
-          ))}
-        </Panel>
         <Panel title="Clusters com menor aceite" sub="Mínimo de 3 respostas"><RateBars meta={meta} items={byCluster.slice(0, 10).map(x => ({ k: x.k, n: x.answered, rate: x.rate }))} /></Panel>
 
         <Panel title="Motoristas que mais recusam na 1ª" sub="Mínimo de 3 respostas no período">
@@ -191,21 +219,6 @@ export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAna
                   <td style={{ padding: '4px 6px', color: C.text }}>{d.name}<span style={{ display: 'block', fontSize: 10, color: C.muted, fontFamily: 'monospace' }}>{d.id}</span></td>
                   <td style={{ padding: '4px 6px', color: C.sub }}>{d.answered}</td>
                   <td style={{ padding: '4px 6px', color: C.red, fontWeight: 700 }}>{d.dec}</td>
-                  <td style={{ padding: '4px 6px', color: rateColor(d.rate, meta), fontWeight: 700 }}>{d.rate.toFixed(0)}%</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Panel>
-        <Panel title="Motoristas mais confiáveis" sub="Maior aceite na 1ª (mínimo de 3 respostas)">
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-            <thead><tr>{['Motorista', 'Chamadas', 'Aceites', 'Aceite 1ª'].map(h => <th key={h} style={{ textAlign: 'left', padding: '3px 6px', color: C.muted, fontSize: 10, textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
-            <tbody>
-              {bestDrivers.map(d => (
-                <tr key={d.id} style={{ borderTop: `1px solid ${C.line}` }}>
-                  <td style={{ padding: '4px 6px', color: C.text }}>{d.name}<span style={{ display: 'block', fontSize: 10, color: C.muted, fontFamily: 'monospace' }}>{d.id}</span></td>
-                  <td style={{ padding: '4px 6px', color: C.sub }}>{d.answered}</td>
-                  <td style={{ padding: '4px 6px', color: C.green, fontWeight: 700 }}>{d.acc}</td>
                   <td style={{ padding: '4px 6px', color: rateColor(d.rate, meta), fontWeight: 700 }}>{d.rate.toFixed(0)}%</td>
                 </tr>
               ))}

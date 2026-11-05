@@ -3,7 +3,6 @@ import RiscoRecusa from './RiscoRecusa'
 import CallUpDashboard from './Dashboard'
 import { coversCluster } from '../../lib/clusterMatch'
 import type { ReactNode } from 'react'
-import { LineChart, Line, BarChart, Bar, ScatterChart, Scatter, ZAxis, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import type { CallUpAnalysis, FirstCallAnalysis } from '../../lib/callUpParser'
 import type { Shift } from '../../lib/globalConfig'
 import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
@@ -25,7 +24,7 @@ class CallUpErrorBoundary extends Component<{ children: ReactNode }, { error: st
 }
 
 // ─── DateRangePicker ──────────────────────────────────────────────────────────
-function DateRangePicker({ from, to, onChange, availableDates }: {
+export function DateRangePicker({ from, to, onChange, availableDates }: {
   from: string; to: string
   onChange: (from: string, to: string) => void
   availableDates: string[]
@@ -417,59 +416,7 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
   const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
   const SHIFT_COLOR: Record<Shift, string> = { AM: '#fbbf24', PM1: '#60a5fa', PM2: '#f472b6' }
 
-  const chartData = useMemo(() => {
-    // If no shift filter, use pre-computed byDate; otherwise rebuild from routes
-    if (shiftFilter === 'all') {
-      return fc.byDate.filter(d => {
-        if (dateFrom && d.date < dateFrom) return false
-        if (dateTo && d.date > dateTo) return false
-        return true
-      })
-    }
-    const byDate = new Map<string, { total: number; accepted: number; declined: number }>()
-    for (const r of fc.routes) {
-      if (r.shift !== shiftFilter) continue
-      if (r.status === 'Cancelled' || r.status === 'Pending') continue
-      const date = r.triggerTime ? r.triggerTime.slice(0, 10).replace(/\//g, '-') : null
-      if (!date) continue
-      if (dateFrom && date < dateFrom) continue
-      if (dateTo && date > dateTo) continue
-      if (!byDate.has(date)) byDate.set(date, { total: 0, accepted: 0, declined: 0 })
-      const d = byDate.get(date)!
-      d.total++
-      if (r.status === 'Accepted') d.accepted++
-      else d.declined++
-    }
-    return [...byDate.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, d]) => ({
-        date,
-        total: d.total,
-        accepted: d.accepted,
-        declined: d.declined,
-        acceptanceRate: d.total > 0 ? Math.round((d.accepted / d.total) * 1000) / 10 : 0,
-      }))
-  }, [fc.byDate, fc.routes, dateFrom, dateTo, shiftFilter])
 
-  // KPIs dos 4 cards — dinâmicos com o período (data) e o turno selecionados
-  const kpi = useMemo(() => {
-    let accepted = 0, declined = 0, pending = 0
-    for (const r of fc.routes) {
-      if (shiftFilter !== 'all' && r.shift !== shiftFilter) continue
-      if (dateFrom || dateTo) {
-        const d = r.triggerTime ? r.triggerTime.slice(0, 10).replace(/\//g, '-') : null
-        if (!d) continue
-        if (dateFrom && d < dateFrom) continue
-        if (dateTo && d > dateTo) continue
-      }
-      if (r.status === 'Accepted') accepted++
-      else if (r.status === 'Declined') declined++
-      else if (r.status === 'Pending') pending++
-    }
-    // A taxa considera só chamadas respondidas; as pendentes ficam à parte.
-    const total = accepted + declined
-    return { total, accepted, declined, pending, rate: total > 0 ? Math.round((accepted / total) * 1000) / 10 : 0 }
-  }, [fc.routes, shiftFilter, dateFrom, dateTo])
 
   const workPrefClusters = useMemo(() => {
     const m = new Map<string, string[]>()
@@ -548,7 +495,6 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
   }, [fc.routes])
 
   const rateColor = (r: number) => r >= 70 ? '#4ade80' : r >= 40 ? '#fbbf24' : '#f87171'
-  const topReasons = Object.entries(fc.declineReasonSummary).sort((a, b) => b[1] - a[1])
 
   if (!data.firstCallAnalysis) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 12 }}>
@@ -571,154 +517,34 @@ function FirstCallTab({ data, driverMeta, workPref, registry }: { data: CallUpAn
       driverMeta={driverMeta}
     />
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Summary cards + report button */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {[
-            { label: 'ATs respondidas', value: kpi.total, color: '#60a5fa' },
-            { label: '1ª chamada aceita', value: kpi.accepted, color: '#4ade80' },
-            { label: '1ª chamada recusada', value: kpi.declined, color: '#f87171' },
-            ...(kpi.pending > 0 ? [{ label: 'Aguardando resposta', value: kpi.pending, color: '#fbbf24' }] : []),
-            { label: 'Taxa de aceite (1ª chamada)', value: `${kpi.rate}%`, color: rateColor(kpi.rate) },
-          ].map(c => (
-            <div key={c.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '14px 18px', minWidth: 160 }}>
-              <p style={{ margin: 0, fontSize: 10, color: '#8892a4', textTransform: 'uppercase', letterSpacing: '.04em', fontWeight: 600 }}>{c.label}</p>
-              <p style={{ margin: '4px 0 0', fontSize: 26, fontWeight: 700, color: c.color }}>{c.value}</p>
-            </div>
-          ))}
+      {/* Filtros + report */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => setShiftFilter('all')}
+              style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, border: 'none', background: shiftFilter === 'all' ? '#2d3048' : 'transparent', color: shiftFilter === 'all' ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
+              Todos
+            </button>
+            {SHIFTS.map(s => (
+              <button key={s} onClick={() => setShiftFilter(s)}
+                style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, border: 'none', background: shiftFilter === s ? `${SHIFT_COLOR[s]}22` : 'transparent', color: shiftFilter === s ? SHIFT_COLOR[s] : '#8892a4', cursor: 'pointer' }}>
+                {s}
+              </button>
+            ))}
+          </div>
+          <DateRangePicker
+            from={dateFrom} to={dateTo}
+            onChange={(f, t) => { setDateFrom(f); setDateTo(t) }}
+            availableDates={allDates}
+          />
         </div>
         <button onClick={() => setReportOpen(true)} style={{
           background: 'rgba(139,92,246,.15)', border: '1px solid rgba(139,92,246,.35)',
-          color: '#a78bfa', borderRadius: 8, padding: '7px 16px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', alignSelf: 'flex-start'
+          color: '#a78bfa', borderRadius: 8, padding: '7px 16px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap'
         }}>
           📊 Gerar Report{(dateFrom || dateTo || shiftFilter !== 'all' || statusFilter !== 'all') ? ' (filtros ativos)' : ''}
         </button>
       </div>
-
-      {/* Line chart — acceptance rate over time */}
-      {fc.byDate.length > 0 && (
-        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '14px 18px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-            <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>% Aceite na 1ª chamada por dia</p>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, overflow: 'hidden' }}>
-                <button onClick={() => setShiftFilter('all')}
-                  style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, border: 'none', background: shiftFilter === 'all' ? '#2d3048' : 'transparent', color: shiftFilter === 'all' ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
-                  Todos
-                </button>
-                {SHIFTS.map(s => (
-                  <button key={s} onClick={() => setShiftFilter(s)}
-                    style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, border: 'none', background: shiftFilter === s ? `${SHIFT_COLOR[s]}22` : 'transparent', color: shiftFilter === s ? SHIFT_COLOR[s] : '#8892a4', cursor: 'pointer' }}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-              <DateRangePicker
-                from={dateFrom} to={dateTo}
-                onChange={(f, t) => { setDateFrom(f); setDateTo(t) }}
-                availableDates={allDates}
-              />
-            </div>
-          </div>
-          {/* Mesmo eixo de datas: em cima o % de aceite, embaixo quantas rotas foram chamadas no dia */}
-          <ResponsiveContainer width="100%" height={170}>
-            <LineChart data={chartData} syncId="callup-dia" margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" />
-              <XAxis dataKey="date" tick={false} height={4} />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={v => `${v}%`} width={40} />
-              <Tooltip
-                contentStyle={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, fontSize: 12 }}
-                formatter={(v: number, _: string, p: { payload: { accepted: number; total: number } }) => [`${v}% (${p.payload.accepted}/${p.payload.total})`, '% aceite 1ª chamada']}
-                labelFormatter={l => `Data: ${l}`}
-              />
-              <Line type="monotone" dataKey="acceptanceRate" stroke={shiftFilter !== 'all' ? SHIFT_COLOR[shiftFilter] : '#60a5fa'} strokeWidth={2} dot={{ r: 3, fill: shiftFilter !== 'all' ? SHIFT_COLOR[shiftFilter] : '#60a5fa' }} activeDot={{ r: 5 }} />
-            </LineChart>
-          </ResponsiveContainer>
-          <p style={{ margin: '6px 0 2px 40px', fontSize: 10, color: '#8892a4', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em' }}>Rotas chamadas no dia</p>
-          <ResponsiveContainer width="100%" height={90}>
-            <BarChart data={chartData} syncId="callup-dia" margin={{ top: 2, right: 16, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" vertical={false} />
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={d => d.slice(5)} />
-              <YAxis tick={{ fontSize: 10, fill: '#8892a4' }} width={40} allowDecimals={false} />
-              <Tooltip contentStyle={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, fontSize: 12 }} cursor={{ fill: 'rgba(148,163,184,.08)' }}
-                formatter={(v: number) => [v, 'rotas chamadas']} labelFormatter={l => `Data: ${l}`} />
-              <Bar dataKey="total" fill="#64748b" radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-
-          {/* Cruzamento: rotas do dia × % de aceite */}
-          {chartData.length >= 3 && (() => {
-            const pts = chartData.map(d => ({ x: d.total, y: d.acceptanceRate, date: d.date }))
-            const n = pts.length
-            const mx = pts.reduce((a, p) => a + p.x, 0) / n, my = pts.reduce((a, p) => a + p.y, 0) / n
-            const sxy = pts.reduce((a, p) => a + (p.x - mx) * (p.y - my), 0)
-            const sxx = pts.reduce((a, p) => a + (p.x - mx) ** 2, 0), syy = pts.reduce((a, p) => a + (p.y - my) ** 2, 0)
-            const r = sxx && syy ? sxy / Math.sqrt(sxx * syy) : 0
-            const slope = sxx ? sxy / sxx : 0
-            const xs = pts.map(p => p.x), minX = Math.min(...xs), maxX = Math.max(...xs)
-            const per10 = slope * 10
-            const strength = Math.abs(r) >= 0.6 ? 'forte' : Math.abs(r) >= 0.3 ? 'moderada' : 'fraca'
-            // Dias com mais rotas × dias com menos (metade de cima × de baixo)
-            const sorted = [...pts].sort((a, b) => a.x - b.x)
-            const half = Math.floor(n / 2)
-            const lowAvg = sorted.slice(0, half).reduce((a, p) => a + p.y, 0) / Math.max(1, half)
-            const highAvg = sorted.slice(n - half).reduce((a, p) => a + p.y, 0) / Math.max(1, half)
-            return (
-              <div style={{ marginTop: 14, borderTop: '1px solid #1e2130', paddingTop: 12, display: 'grid', gridTemplateColumns: 'minmax(0, 3fr) minmax(220px, 2fr)', gap: 16, alignItems: 'center' }}>
-                <div style={{ minWidth: 0 }}>
-                  <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>Rotas do dia × % de aceite <span style={{ fontWeight: 400, color: '#64748b' }}>· cada ponto é um dia</span></p>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <ScatterChart margin={{ top: 6, right: 16, left: 0, bottom: 10 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#2d3048" />
-                      <XAxis type="number" dataKey="x" name="Rotas" domain={['dataMin - 5', 'dataMax + 5']} tick={{ fontSize: 10, fill: '#8892a4' }} label={{ value: 'rotas chamadas no dia', position: 'insideBottom', offset: -6, fontSize: 10, fill: '#64748b' }} />
-                      <YAxis type="number" dataKey="y" name="% aceite" domain={[0, 100]} tick={{ fontSize: 10, fill: '#8892a4' }} tickFormatter={v => `${v}%`} width={40} />
-                      <ZAxis range={[60, 60]} />
-                      <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, fontSize: 12 }}
-                        formatter={(v: number, name: string) => [name === '% aceite' ? `${v}%` : v, name]}
-                        labelFormatter={() => ''} />
-                      <ReferenceLine segment={[{ x: minX, y: my + slope * (minX - mx) }, { x: maxX, y: my + slope * (maxX - mx) }]} stroke="#a78bfa" strokeDasharray="5 4" ifOverflow="extendDomain" />
-                      <Scatter data={pts} fill={shiftFilter !== 'all' ? SHIFT_COLOR[shiftFilter] : '#60a5fa'} />
-                    </ScatterChart>
-                  </ResponsiveContainer>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <div style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, padding: '10px 12px' }}>
-                    <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Relação</p>
-                    <p style={{ margin: '4px 0 0', fontSize: 15, fontWeight: 800, color: Math.abs(r) < 0.3 ? '#94a3b8' : r < 0 ? '#f87171' : '#4ade80' }}>
-                      {Math.abs(r) < 0.3 ? 'Quase nenhuma' : `${r < 0 ? 'Negativa' : 'Positiva'} ${strength}`}
-                    </p>
-                    <p style={{ margin: '2px 0 0', fontSize: 11, color: '#94a3b8' }}>correlação {r.toFixed(2).replace('.', ',')} em {n} dias</p>
-                  </div>
-                  <div style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#cbd5e1', lineHeight: 1.5 }}>
-                    {Math.abs(r) < 0.3
-                      ? <>O volume de rotas do dia <b>quase não muda</b> a taxa de aceite.</>
-                      : <>A cada <b>+10 rotas</b> no dia, o aceite {per10 < 0 ? 'cai' : 'sobe'} cerca de <b>{Math.abs(per10).toFixed(1).replace('.', ',')} pontos</b>.</>}
-                    <br />
-                    <span style={{ color: '#94a3b8' }}>Dias com menos rotas: <b style={{ color: '#e2e8f0' }}>{Math.round(lowAvg)}%</b> · com mais rotas: <b style={{ color: '#e2e8f0' }}>{Math.round(highAvg)}%</b></span>
-                  </div>
-                </div>
-              </div>
-            )
-          })()}
-        </div>
-      )}
-
-      {/* Decline reasons for first calls */}
-      {topReasons.length > 0 && (
-        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '14px 18px' }}>
-          <p style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, color: '#e2e8f0' }}>Motivos de recusa (1ª chamada)</p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {topReasons.map(([reason, count]) => (
-              <div key={reason} style={{ background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.2)', borderRadius: 7, padding: '5px 12px', display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ fontSize: 12, color: '#f87171', fontWeight: 600 }}>{count}×</span>
-                <span style={{ fontSize: 12, color: '#e2e8f0' }}>{reason}</span>
-                <span style={{ fontSize: 11, color: '#64748b' }}>({fc.declined > 0 ? Math.round(count / fc.declined * 100) : 0}%)</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Toggle: routes vs drivers */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

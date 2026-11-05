@@ -4,7 +4,7 @@ import type { StoredDriver } from '../../lib/localStore'
 import { routeStore } from '../../lib/routeStore'
 import { queueStore } from '../../lib/queueStore'
 import CarregamentoDashboard from './Dashboard'
-import { useUrgentes, UrgentPanel, UrgentBadge, type UrgentInfo } from './Urgentes'
+import { useUrgentes, UrgentBadge, type UrgentInfo } from './Urgentes'
 import { fetchSpxQueue, dockKey, SITUATION_LABEL, type QueueSituation } from '../../lib/spxQueueFetcher'
 import { computeLoadWindowMulti, windowForLetterMulti, extractLetter, minToHHMM, type QueueEntry, type LoadWindowConfig } from '../../lib/queueListParser'
 
@@ -250,14 +250,6 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
         {error && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#f87171' }}>⚠ {error}</p>}
         {!hasValidWindows && queue && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fbbf24' }}>⚠ Defina pelo menos uma janela de carregamento (letra + horário) para calcular os prazos.</p>}
       </div>
-
-      {urgent.byAt.size > 0 || urgent.manual.length > 0 ? (
-        <UrgentPanel day={selectedDay} shift={selectedShift} entries={queue?.entries ?? []} windows={windows} nowMin={nowMin} state={urgent} />
-      ) : (
-        <div style={{ margin: '8px 20px 0', display: 'flex', justifyContent: 'flex-end' }}>
-          <UrgentPanelToggle state={urgent} />
-        </div>
-      )}
 
       {/* Tab bar — só exibe quando há dados */}
       {queue && (
@@ -825,15 +817,3 @@ function MesasView({ entries, phoneMap, day, onRefresh, urgent }: { entries: Que
   )
 }
 
-function UrgentPanelToggle({ state }: { state: ReturnType<typeof useUrgentes> }) {
-  const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
-  if (!open) return <button onClick={() => setOpen(true)} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 6, padding: '3px 9px', fontSize: 11, cursor: 'pointer' }}>🚨 Marcar pacotes urgentes</button>
-  return (
-    <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', width: '100%' }}>
-      <textarea value={text} onChange={e => setText(e.target.value)} rows={3} placeholder="Cole os BRs (ou ATs) que precisam sair hoje, um por linha" style={{ flex: 1, background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', padding: 8 }} />
-      <button onClick={() => { state.setManual([...new Set(text.split(/[\s,;]+/).map(t => t.trim().toUpperCase()).filter(Boolean))]); setOpen(false) }} style={{ background: '#7c3aed', border: 'none', color: '#fff', borderRadius: 6, padding: '5px 10px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Salvar</button>
-      <button onClick={() => setOpen(false)} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
-    </div>
-  )
-}

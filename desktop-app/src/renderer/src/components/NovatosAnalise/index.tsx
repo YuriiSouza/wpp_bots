@@ -83,6 +83,7 @@ export default function NovatosAnalise({ registry, onGoUploads }: { registry: St
   const [sort, setSort] = useState<'first' | 'ds' | 'routes'>('first')
   const [search, setSearch] = useState('')
   const [copied, setCopied] = useState(false)
+  const [shown, setShown] = useState(60)
 
   const shifts = useMemo(() => [...new Set(all.map(r => r.shift).filter(Boolean))].sort(), [all])
   const regMap = useMemo(() => new Map(registry.map(d => [d.id, d])), [registry])
@@ -305,7 +306,7 @@ export default function NovatosAnalise({ registry, onGoUploads }: { registry: St
             </div>
           }>
           {novatos.length === 0 ? <p style={{ margin: 0, fontSize: 12, color: C.muted }}>Nenhum novato no período filtrado.</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${C.border}` }}>
                   {['Motorista', '1ª rota', 'Turno', 'Cluster', 'Rotas', 'DS', 'Início → agora', 'Evolução', 'Situação'].map(h => (
@@ -314,7 +315,7 @@ export default function NovatosAnalise({ registry, onGoUploads }: { registry: St
                 </tr>
               </thead>
               <tbody>
-                {sorted.map(n => {
+                {sorted.slice(0, shown).map(n => {
                   const vals = n.routes.map(routeDs)
                   const delta = n.dsFirst !== null && n.dsLast !== null ? n.dsLast - n.dsFirst : null
                   return (
@@ -350,6 +351,12 @@ export default function NovatosAnalise({ registry, onGoUploads }: { registry: St
                 })}
               </tbody>
             </table>
+            {sorted.length > shown && (
+              <button onClick={() => setShown(v => v + 100)} style={{ marginTop: 8, background: 'transparent', border: `1px solid ${C.border}`, color: C.sub, borderRadius: 7, padding: '6px 14px', fontSize: 12, cursor: 'pointer' }}>
+                Mostrar mais ({sorted.length - shown} restantes)
+              </button>
+            )}
+            </>
           )}
         </Panel>
       </div>

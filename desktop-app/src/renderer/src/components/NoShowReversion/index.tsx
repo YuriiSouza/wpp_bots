@@ -1573,11 +1573,10 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     )
     const fioDrivers = allFio.filter(d => !fioExcluded.has(d.driverId))
 
-    // Rotas que exigem Fiorino (GG ≥ 2 E volume ≥ 800)
+    // Rotas que exigem Fiorino: "Tipo de veículo" da rota na guia Plano de expedição = Fiorino (ou Van)
     const strictRoutes = routes.filter(r =>
       r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId) &&
-      (r.gg ?? 0) >= 2 && (r.volume ?? 0) >= 800 &&
-      normalizeVehicle(r.requiredVehicleType) !== 'MOTO'
+      ['FIORINO', 'VAN'].includes(normalizeVehicle(r.scheduledVehicle ?? r.requiredVehicleType) ?? '')
     )
 
     // Todas as rotas disponíveis (para modo maximize)
@@ -2475,7 +2474,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 </div>
                 <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
                   {fioMode === 'strict'
-                    ? 'Fiorino apenas em rotas com GG ≥ 2 e volume ≥ 800'
+                    ? 'Fiorino apenas nas rotas com tipo de veículo Fiorino na roteirização'
                     : fioMode === 'maximize'
                       ? 'Fiorino em rotas obrigatórias + qualquer rota disponível para aproveitar o restante da fila'
                       : `Só Fiorinos disponíveis no dia apenas para o AM (quem tem PM1/PM2 fica de fora): obrigatórias primeiro, depois qualquer rota${selectedShift !== 'AM' ? ' — atenção: o turno selecionado não é o AM' : ''}`}
@@ -2486,7 +2485,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
             {/* Stats Fiorino */}
             <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
               {[
-                { label: 'Rotas obrigatórias (GG≥2 vol≥800)', value: fiorino.strictRoutes.length, color: '#fbbf24' },
+                { label: 'Rotas de Fiorino (roteirização)', value: fiorino.strictRoutes.length, color: '#fbbf24' },
                 ...(fioMode !== 'strict' ? [{ label: 'Rotas extras (qualquer)', value: fiorino.assignments.size - fiorino.strictAssignments.size, color: '#60a5fa' }] : []),
                 { label: 'Motoristas Fiorino', value: fiorino.fioDrivers.length, color: '#4ade80' },
                 { label: 'Atribuições previstas', value: fiorino.assignments.size, color: '#a78bfa' },
@@ -2553,7 +2552,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 {filteredFioRoutes.length === 0 ? (
                   <tr><td colSpan={8} style={{ padding: '3rem', textAlign: 'center', color: '#8892a4' }}>
                     {fiorino.strictRoutes.length === 0
-                      ? 'Nenhuma rota com GG ≥ 2 e volume ≥ 800 disponível.'
+                      ? 'Nenhuma rota com tipo de veículo Fiorino disponível.'
                       : 'Nenhuma rota encontrada na busca.'}
                   </td></tr>
                 ) : filteredFioRoutes.map((route, idx) => {

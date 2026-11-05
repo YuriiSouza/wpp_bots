@@ -49,7 +49,7 @@ export default function Eha({ selectedDay, selectedShift, onOpenRoute }: { selec
   const [cache, setCache] = useState(() => getEhaCache())
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const [view, setView] = useState<'dashboard' | 'lista'>('dashboard')
+  const [view, setView] = useState<'dashboard' | 'lista'>('lista')
   const [scope, setScope] = useState<'turno' | 'fora' | 'todos'>('turno')
   const [risk, setRisk] = useState<'' | 'alto' | 'moderado'>('')
   const [q, setQ] = useState('')

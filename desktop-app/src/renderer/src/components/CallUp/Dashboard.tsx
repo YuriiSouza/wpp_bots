@@ -12,6 +12,16 @@ const META_KEY = 'ui:callup-meta'
 const MONTHS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
 const MONTH = (ym: string) => `${MONTHS[+ym.slice(5, 7) - 1] ?? ym.slice(5, 7)}/${ym.slice(2, 4)}`
 
+const DIAS = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado']
+/** Número da semana no padrão ISO (semana começa na segunda) */
+const isoWeek = (day: string) => {
+  const d = new Date(`${day}T12:00:00Z`)
+  const wd = (d.getUTCDay() + 6) % 7
+  d.setUTCDate(d.getUTCDate() - wd + 3)
+  const first = new Date(Date.UTC(d.getUTCFullYear(), 0, 4))
+  return 1 + Math.round(((d.getTime() - first.getTime()) / 86400000 - 3 + ((first.getUTCDay() + 6) % 7)) / 7)
+}
+const dmy = (day: string) => `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(0, 4)}`
 const pct = (a: number, b: number) => (b ? (a / b) * 100 : 0)
 const rateColor = (p: number, meta: number) => (p >= meta ? C.green : p >= meta - 10 ? C.amber : C.red)
 const addDays = (day: string, n: number) => { const d = new Date(`${day}T12:00:00`); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
@@ -104,6 +114,20 @@ export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAna
     return [...m.entries()].sort((a, b) => a[0] - b[0]).map(([h, l]) => ({ k: `${String(h).padStart(2, '0')}h`, ...stats(l) }))
   }, [cur])
   const byWeekday = useMemo(() => WEEKDAYS.map((w, i) => ({ k: w, ...stats(cur.filter(r => new Date(`${firstCallDay(r)}T12:00:00`).getDay() === i)) })).filter(x => x.n), [cur])
+  // Call Ups por dia (todas as chamadas do relatório, não só a 1ª; sem as pendentes)
+  const [copiedDaily, setCopiedDaily] = useState(false)
+  const daily = useMemo(() => data.byDate
+    .filter(d => d.date >= from && d.date <= lastDay)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map(d => ({ ...d, week: isoWeek(d.date), dow: DIAS[new Date(`${d.date}T12:00:00`).getDay()], rej: pct(d.declined, d.total) })), [data.byDate, from, lastDay])
+  const dailyTot = daily.reduce((t, d) => ({ total: t.total + d.total, accepted: t.accepted + d.accepted, declined: t.declined + d.declined }), { total: 0, accepted: 0, declined: 0 })
+  const copyDaily = async () => {
+    const head = ['Data', 'Semana', 'Dia', 'Call_Ups_Realizados', 'Call Ups Aceitos', 'Total Rejeites', '% Rejeites'].join('\t')
+    const rows = daily.map(d => [dmy(d.date), d.week, d.dow, d.total, d.accepted, d.declined, `${d.rej.toFixed(1).replace('.', ',')}%`].join('\t'))
+    await navigator.clipboard.writeText([head, ...rows].join('\n'))
+    setCopiedDaily(true); setTimeout(() => setCopiedDaily(false), 2000)
+  }
+
   // Análise mensal (todo o histórico, respeitando o turno)
   const byMonth = useMemo(() => {
     const m = new Map<string, FirstCallRoute[]>()
@@ -177,6 +201,40 @@ export default function CallUpDashboard({ data, selectedDay }: { data: CallUpAna
             <polyline points={pts.map(p2 => `${p2.x},${p2.y}`).join(' ')} fill="none" stroke={C.text} strokeWidth={2} />
             {pts.map((p2, i) => <circle key={i} cx={p2.x} cy={p2.y} r={3.5} fill={rateColor(byDay[i].rate, meta)}><title>{`${ddmm(byDay[i].d)}: ${byDay[i].rate.toFixed(1)}%`}</title></circle>)}
           </svg>
+        </Panel>
+
+        <Panel title="Call Ups por dia" sub="Todas as chamadas do relatório no período (todos os turnos; pendentes não entram). Rejeite = recusa, incluindo tempo esgotado." span>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button onClick={() => void copyDaily()} disabled={!daily.length} style={{ background: 'transparent', border: `1px solid ${C.border}`, color: C.sub, borderRadius: 7, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>{copiedDaily ? '✓ Copiado' : '📋 Copiar tabela (cola no Excel/Sheets)'}</button>
+          </div>
+          <div style={{ maxHeight: 420, overflow: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr>{['Data', 'Semana', 'Dia', 'Call Ups Realizados', 'Call Ups Aceitos', 'Total Rejeites', '% Rejeites'].map((h, k) => <th key={h} style={{ position: 'sticky', top: 0, background: C.card, textAlign: k > 2 ? 'right' : 'left', padding: '5px 8px', color: C.muted, fontSize: 10, textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {daily.map(d => (
+                  <tr key={d.date} style={{ borderTop: `1px solid ${C.line}` }}>
+                    <td style={{ padding: '5px 8px', color: C.text, fontFamily: 'monospace' }}>{dmy(d.date)}</td>
+                    <td style={{ padding: '5px 8px', color: C.sub }}>{d.week}</td>
+                    <td style={{ padding: '5px 8px', color: C.sub }}>{d.dow}</td>
+                    <td style={{ padding: '5px 8px', color: C.text, textAlign: 'right', fontWeight: 700 }}>{d.total}</td>
+                    <td style={{ padding: '5px 8px', color: C.green, textAlign: 'right' }}>{d.accepted}</td>
+                    <td style={{ padding: '5px 8px', color: C.red, textAlign: 'right' }}>{d.declined}</td>
+                    <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: rateColor(100 - d.rej, meta) }}>{d.rej.toFixed(1)}%</td>
+                  </tr>
+                ))}
+                {daily.length > 1 && (
+                  <tr style={{ borderTop: `2px solid ${C.border}` }}>
+                    <td colSpan={3} style={{ padding: '6px 8px', color: C.text, fontWeight: 800 }}>Total do período</td>
+                    <td style={{ padding: '6px 8px', color: C.text, textAlign: 'right', fontWeight: 800 }}>{dailyTot.total}</td>
+                    <td style={{ padding: '6px 8px', color: C.green, textAlign: 'right', fontWeight: 800 }}>{dailyTot.accepted}</td>
+                    <td style={{ padding: '6px 8px', color: C.red, textAlign: 'right', fontWeight: 800 }}>{dailyTot.declined}</td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 800, color: C.text }}>{pct(dailyTot.declined, dailyTot.total).toFixed(1)}%</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {!daily.length && <p style={{ margin: '8px 0 0', fontSize: 12, color: C.muted }}>Sem chamadas no período.</p>}
+          </div>
         </Panel>
 
         <Panel title="Análise mensal" sub="Todo o histórico do relatório (respeita o filtro de turno)" span>

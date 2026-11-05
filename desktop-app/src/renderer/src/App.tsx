@@ -11,6 +11,7 @@ import ForwardOrder from './components/ForwardOrder'
 import VisaoGeral from './components/VisaoGeral'
 import Eha from './components/Eha'
 import Volumosos from './components/Volumosos'
+import { Tour, TourButton } from './components/Tour'
 import NoShowReversion from './components/NoShowReversion'
 import Carregamento from './components/Carregamento'
 import Blocklist from './components/Blocklist'
@@ -102,6 +103,7 @@ export default function App() {
   const [section, setSection] = useState<Section>('uploads')
   const [focusAt, setFocusAt] = useState<string | undefined>()
   const [focusTick, setFocusTick] = useState(0)
+  const [tourOpen, setTourOpen] = useState(false)
   const [dsState, setDsState] = useState<DSState>(() => {
     const saved = loadDsResult()
     return saved ? { phase: 'done', ...saved } : { phase: 'idle' }
@@ -449,6 +451,8 @@ export default function App() {
 
         {section === 'config' && <Configuracoes />}
       </main>
+      {!tourOpen && <TourButton section={section} onStart={() => setTourOpen(true)} />}
+      {tourOpen && <Tour key={section} section={section} onClose={() => setTourOpen(false)} />}
     </div>
   )
 }

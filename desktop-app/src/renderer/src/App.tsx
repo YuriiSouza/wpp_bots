@@ -67,20 +67,20 @@ type Section = 'uploads' | 'ds' | 'novatos' | 'motoristas' | 'disponibilidade' |
 interface NavItem { id: Section; icon: string; label: string; group?: string }
 
 const NAV: NavItem[] = [
-  { id: 'uploads',       icon: '📤', label: 'Uploads' },
-  { id: 'ds',            icon: '📊', label: 'Análise DS',     group: 'Análise' },
-  { id: 'novatos',       icon: '🆕', label: 'Novatos',        group: 'Análise' },
-  { id: 'motoristas',    icon: '👥', label: 'Motoristas',     group: 'Análise' },
-  { id: 'disponibilidade', icon: '📅', label: 'Disponibilidade', group: 'Operação' },
-  { id: 'callup',        icon: '📞', label: 'Call Up',        group: 'Operação' },
-  { id: 'pacotes',       icon: '📦', label: 'Pacotes',        group: 'Operação' },
-  { id: 'perfil',        icon: '🔍', label: 'Visão Geral',    group: 'Operação' },
-  { id: 'eha',           icon: '♻',  label: 'EHA (não coube)', group: 'Operação' },
-  { id: 'volumosos',     icon: '🧱', label: 'Volumosos',      group: 'Operação' },
-  { id: 'noshow',        icon: '🔄', label: 'Atribuição', group: 'Operação' },
-  { id: 'carregamento',  icon: '⏱', label: 'Carregamento',   group: 'Operação' },
-  { id: 'blocklist',    icon: '⊘',  label: 'Bloqueados',      group: 'Operação' },
-  { id: 'config',      icon: '⚙',  label: 'Configurações' },
+  { id: 'uploads',         icon: '📤', label: 'Uploads' },
+  { id: 'ds',              icon: '📊', label: 'Análise DS',      group: 'Análise' },
+  { id: 'novatos',         icon: '🆕', label: 'Novatos',         group: 'Análise' },
+  { id: 'motoristas',      icon: '👥', label: 'Motoristas',      group: 'Análise' },
+  { id: 'perfil',          icon: '🔍', label: 'Visão Geral',     group: 'Convocação' },
+  { id: 'disponibilidade', icon: '📅', label: 'Disponibilidade', group: 'Convocação' },
+  { id: 'callup',          icon: '📞', label: 'Call Up',         group: 'Convocação' },
+  { id: 'noshow',          icon: '🔄', label: 'Atribuição',      group: 'Convocação' },
+  { id: 'carregamento',    icon: '⏱', label: 'Carregamento',    group: 'Expedição' },
+  { id: 'pacotes',         icon: '📦', label: 'Pacotes',         group: 'Expedição' },
+  { id: 'volumosos',       icon: '🧱', label: 'Volumosos',       group: 'Expedição' },
+  { id: 'eha',             icon: '♻',  label: 'EHA (não coube)', group: 'Expedição' },
+  { id: 'blocklist',       icon: '⊘',  label: 'Bloqueados',      group: 'Gestão' },
+  { id: 'config',          icon: '⚙',  label: 'Configurações',   group: 'Gestão' },
 ]
 
 function localDateStr(d = new Date()) {

@@ -4,6 +4,7 @@ import type { StoredDriver } from '../../lib/localStore'
 import { routeStore } from '../../lib/routeStore'
 import { queueStore } from '../../lib/queueStore'
 import CarregamentoDashboard from './Dashboard'
+import { useUrgentes, UrgentPanel, UrgentBadge, type UrgentInfo } from './Urgentes'
 import { fetchSpxQueue, dockKey, SITUATION_LABEL, type QueueSituation } from '../../lib/spxQueueFetcher'
 import { computeLoadWindowMulti, windowForLetterMulti, extractLetter, minToHHMM, type QueueEntry, type LoadWindowConfig } from '../../lib/queueListParser'
 
@@ -155,6 +156,8 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
     return list.sort((a, b) => rank(a.status) - rank(b.status) || (a.arriveByMin ?? 0) - (b.arriveByMin ?? 0))
   }, [expected, arrivedIds, arrivedAts, windows, nowMin])
 
+  const urgent = useUrgentes(selectedDay, selectedShift)
+
   const onTime = rows.filter(r => r.w.status === 'on-time')
   const outOfWindow = rows.filter(r => r.w.status === 'out-of-window')
   const unknownArrived = rows.filter(r => r.w.status === 'unknown')
@@ -248,6 +251,14 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
         {!hasValidWindows && queue && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fbbf24' }}>⚠ Defina pelo menos uma janela de carregamento (letra + horário) para calcular os prazos.</p>}
       </div>
 
+      {urgent.byAt.size > 0 || urgent.manual.length > 0 ? (
+        <UrgentPanel day={selectedDay} shift={selectedShift} entries={queue?.entries ?? []} windows={windows} nowMin={nowMin} state={urgent} />
+      ) : (
+        <div style={{ margin: '8px 20px 0', display: 'flex', justifyContent: 'flex-end' }}>
+          <UrgentPanelToggle state={urgent} />
+        </div>
+      )}
+
       {/* Tab bar — só exibe quando há dados */}
       {queue && (
         <div style={{ display: 'flex', borderBottom: '1px solid #2d3048', flexShrink: 0, paddingLeft: 20 }}>
@@ -264,7 +275,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
           <p style={{ margin: 0, maxWidth: 420 }}>{loading ? 'Buscando a fila no SPX…' : <>Clique em <b>🔄 Atualizar do SPX</b> para buscar a fila deste turno e ver</>} quem chegou no prazo, quem chegou fora da janela, quem está aguardando e quem está atrasado.</p>
         </div>
       ) : activeView === 'mesas' ? (
-        <MesasView entries={queue.entries} phoneMap={phoneMap} day={selectedDay} onRefresh={refreshFromSpx} />
+        <MesasView entries={queue.entries} phoneMap={phoneMap} day={selectedDay} onRefresh={refreshFromSpx} urgent={urgent.byAt} />
       ) : activeView === 'dashboard' ? (
         <CarregamentoDashboard rows={rows} notArrived={notArrived} nowMin={nowMin} phoneMap={phoneMap} />
       ) : (
@@ -382,9 +393,9 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
                 </thead>
                 <tbody>
                   {shownNotArrived.map(n => (
-                    <tr key={n.driverId} style={{ borderBottom: '1px solid #1e2130', background: n.status === 'overdue' ? 'rgba(239,68,68,.05)' : 'transparent' }}>
+                    <tr key={n.driverId} style={{ borderBottom: '1px solid #1e2130', background: urgent.byAt.has(n.atId) ? 'rgba(248,113,113,.10)' : n.status === 'overdue' ? 'rgba(239,68,68,.05)' : 'transparent', boxShadow: urgent.byAt.has(n.atId) ? 'inset 4px 0 0 #f87171' : undefined }}>
                       <td style={TD}>
-                        <span style={{ fontWeight: 500 }}>{n.name || n.driverId}</span>
+                        <span style={{ fontWeight: 500 }}>{n.name || n.driverId}</span> <UrgentBadge info={urgent.byAt.get(n.atId)} />
                         <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{n.driverId}</span>
                       </td>
                       <td style={TD}><span style={{ fontWeight: 700 }}>{n.letter || '—'}</span> <span style={{ color: '#64748b', fontSize: 10 }}>{n.gaiola}</span></td>
@@ -414,9 +425,9 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
             </thead>
             <tbody>
               {shownRows.map(({ e, w }) => (
-                <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent' }}>
+                <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: urgent.byAt.has(e.atId) && e.situation !== 'done' ? 'rgba(248,113,113,.10)' : w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent', boxShadow: urgent.byAt.has(e.atId) ? 'inset 4px 0 0 #f87171' : undefined }}>
                   <td style={TD}>
-                    <span style={{ fontWeight: 500 }}>{e.driverName}</span>
+                    <span style={{ fontWeight: 500 }}>{e.driverName}</span> <UrgentBadge info={urgent.byAt.get(e.atId)} />
                     <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.driverId}</span>
                   </td>
                   <td style={TD}>{e.situation ? <SituationChip s={e.situation} dock={e.dock} /> : '—'}</td>
@@ -600,7 +611,7 @@ function SituationChip({ s, dock }: { s: QueueSituation; dock?: string }) {
 // ─── Mesas: ocupada / chamando motorista / livre ─────────────────────────────
 const DOCK_COUNT_KEY = 'spx:dock-count'
 
-function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[]; phoneMap: Map<string, string>; day: string; onRefresh: () => Promise<void> }) {
+function MesasView({ entries, phoneMap, day, onRefresh, urgent }: { entries: QueueEntry[]; phoneMap: Map<string, string>; day: string; onRefresh: () => Promise<void>; urgent: Map<string, UrgentInfo> }) {
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   useEffect(() => { const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000); return () => clearInterval(t) }, [])
 
@@ -732,8 +743,9 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
             const sty = STYLE[st]
             const d = byDock.get(k)
             const people = st === 'occupied' ? d!.occupied : st === 'calling' ? d!.calling : []
+            const hasUrgent = people.some(e => urgent.has(e.atId))
             return (
-              <div key={k} style={{ background: sty.bg, border: `1px solid ${sty.color}55`, borderTop: `3px solid ${sty.color}`, borderRadius: 10, padding: '10px 12px', minHeight: 92 }}>
+              <div key={k} style={{ background: hasUrgent ? 'rgba(248,113,113,.12)' : sty.bg, border: `${hasUrgent ? 2 : 1}px solid ${hasUrgent ? '#f87171' : `${sty.color}55`}`, borderTop: `3px solid ${hasUrgent ? '#f87171' : sty.color}`, borderRadius: 10, padding: '10px 12px', minHeight: 92, boxShadow: hasUrgent ? '0 0 12px rgba(248,113,113,.35)' : undefined }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
                   <span style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>{k}</span>
                   <span style={{ fontSize: 10, fontWeight: 700, color: sty.color, textTransform: 'uppercase', letterSpacing: '.04em' }}>{st === 'calling' ? '📣 ' : ''}{sty.label}</span>
@@ -756,6 +768,7 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
                   return (
                     <div key={e.driverId + e.atId} style={{ marginTop: 8 }}>
                       <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.driverName}>{e.driverName}</p>
+                      {urgent.has(e.atId) && <div style={{ marginTop: 2 }}><UrgentBadge info={urgent.get(e.atId)} /></div>}
                       <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8892a4', fontFamily: 'monospace' }}>
                         {e.cage || '—'} · {e.orderQty ?? '—'} pct · {e.plate || ''}
                       </p>
@@ -789,11 +802,11 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
         {nextInLine.length === 0 ? <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Ninguém aguardando mesa.</p> : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 520, overflow: 'auto' }}>
             {nextInLine.map((e, i) => (
-              <div key={e.driverId + e.atId} style={{ display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid #1e2130', paddingBottom: 5 }}>
+              <div key={e.driverId + e.atId} style={{ display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid #1e2130', paddingBottom: 5, background: urgent.has(e.atId) ? 'rgba(248,113,113,.10)' : undefined, boxShadow: urgent.has(e.atId) ? 'inset 3px 0 0 #f87171' : undefined }}>
                 <span style={{ width: 20, fontSize: 11, color: '#64748b', textAlign: 'right' }}>{i + 1}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ margin: 0, fontSize: 12, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.driverName}</p>
-                  <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.cage || '—'} · {e.cluster}</p>
+                  <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.cage || '—'} · {e.cluster} {urgent.has(e.atId) && <UrgentBadge info={urgent.get(e.atId)} />}</p>
                 </div>
                 <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: e.overWaitLimit || (e.waitingMin ?? 0) >= 60 ? '#f87171' : (e.waitingMin ?? 0) >= 30 ? '#fbbf24' : '#4ade80' }}>{e.waitingMin ?? '—'}min</span>
               </div>
@@ -808,6 +821,19 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
         )}
       </div>
       )}
+    </div>
+  )
+}
+
+function UrgentPanelToggle({ state }: { state: ReturnType<typeof useUrgentes> }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  if (!open) return <button onClick={() => setOpen(true)} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 6, padding: '3px 9px', fontSize: 11, cursor: 'pointer' }}>🚨 Marcar pacotes urgentes</button>
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', width: '100%' }}>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={3} placeholder="Cole os BRs (ou ATs) que precisam sair hoje, um por linha" style={{ flex: 1, background: '#0f1117', border: '1px solid #2d3048', borderRadius: 7, color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', padding: 8 }} />
+      <button onClick={() => { state.setManual([...new Set(text.split(/[\s,;]+/).map(t => t.trim().toUpperCase()).filter(Boolean))]); setOpen(false) }} style={{ background: '#7c3aed', border: 'none', color: '#fff', borderRadius: 6, padding: '5px 10px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Salvar</button>
+      <button onClick={() => setOpen(false)} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
     </div>
   )
 }

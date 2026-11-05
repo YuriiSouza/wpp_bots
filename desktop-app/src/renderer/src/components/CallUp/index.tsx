@@ -1,5 +1,6 @@
 import { useMemo, useState, useRef, useCallback, useEffect, Component } from 'react'
 import RiscoRecusa from './RiscoRecusa'
+import CallUpDashboard from './Dashboard'
 import { coversCluster } from '../../lib/clusterMatch'
 import type { ReactNode } from 'react'
 import { LineChart, Line, BarChart, Bar, ScatterChart, Scatter, ZAxis, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
@@ -164,7 +165,7 @@ interface Props {
 }
 
 export default function CallUp({ data, driverMeta, workPref, registry, selectedDay, selectedShift }: Props) {
-  const [tab, setTab] = useState<'primeira' | 'risco'>('primeira')
+  const [tab, setTab] = useState<'dashboard' | 'primeira' | 'risco'>('dashboard')
   return (
     <CallUpErrorBoundary>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -175,12 +176,14 @@ export default function CallUp({ data, driverMeta, workPref, registry, selectedD
           </p>
         </div>
         <div style={{ display: 'flex', borderBottom: '1px solid #2d3048', flexShrink: 0, paddingLeft: 20 }}>
-          {([['primeira', '📞 1ª chamada'], ['risco', `🎯 Risco de recusa · ${selectedShift}`]] as const).map(([k, l]) => (
+          {([['dashboard', '📊 Dashboard'], ['primeira', '📞 1ª chamada'], ['risco', `🎯 Risco de recusa · ${selectedShift}`]] as const).map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: tab === k ? '2px solid #7c3aed' : '2px solid transparent', background: 'transparent', color: tab === k ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>{l}</button>
           ))}
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
-          {tab === 'primeira'
+          {tab === 'dashboard'
+            ? <CallUpDashboard data={data} selectedDay={selectedDay} />
+            : tab === 'primeira'
             ? <FirstCallTab data={data} driverMeta={driverMeta} workPref={workPref} registry={registry} />
             : <RiscoRecusa data={data} workPref={workPref} registry={registry} selectedDay={selectedDay} selectedShift={selectedShift} />}
         </div>

@@ -68,39 +68,72 @@ const countBy = <T,>(list: T[], key: (x: T) => string) => {
   return [...m.entries()].sort((a, b) => b[1] - a[1])
 }
 
-/** Mapa simples das paradas na ordem de entrega (sem internet: só os pontos). */
+/** Mapa (OpenStreetMap) com as paradas na ordem de entrega. */
+const TILE = 256
+const lon2x = (lon: number, z: number) => ((lon + 180) / 360) * TILE * 2 ** z
+const lat2y = (lat: number, z: number) => { const r = (lat * Math.PI) / 180; return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * TILE * 2 ** z }
+
 function StopMap({ pk, eha }: { pk: CtPackage[]; eha: Map<string, EhaRow> }) {
   const stops = useMemo(() => {
-    const m = new Map<number, { lat: number; lon: number; n: number; eha: boolean; seq: number }>()
+    const m = new Map<number, { lat: number; lon: number; n: number; eha: boolean; seq: number; addr: string }>()
     for (const p of pk) {
-      if (p.lat == null || p.lon == null) continue
+      if (p.lat == null || p.lon == null || Math.abs(p.lat) > 90 || Math.abs(p.lon) > 180) continue
       const k = p.stop ?? p.seq ?? 0
       const cur = m.get(k)
-      if (cur) { cur.n++; cur.eha = cur.eha || eha.has(p.tn) } else m.set(k, { lat: p.lat, lon: p.lon, n: 1, eha: eha.has(p.tn), seq: k })
+      if (cur) { cur.n++; cur.eha = cur.eha || eha.has(p.tn) } else m.set(k, { lat: p.lat, lon: p.lon, n: 1, eha: eha.has(p.tn), seq: k, addr: `${p.address} — ${p.neighborhood}` })
     }
     return [...m.values()].sort((a, b) => a.seq - b.seq)
   }, [pk, eha])
-  if (stops.length < 2) return <p style={{ margin: 0, fontSize: 12, color: C.muted }}>Sem coordenadas suficientes.</p>
-  const W = 520, H = 300, pad = 14
+  const [extraZoom, setExtraZoom] = useState(0)
+  if (stops.length < 1) return <p style={{ margin: 0, fontSize: 12, color: C.muted }}>Sem coordenadas.</p>
+  const W = 640, H = 380, pad = 30
   const lats = stops.map(s => s.lat), lons = stops.map(s => s.lon)
   const [minLa, maxLa, minLo, maxLo] = [Math.min(...lats), Math.max(...lats), Math.min(...lons), Math.max(...lons)]
-  const sx = (W - 2 * pad) / Math.max(1e-6, maxLo - minLo), sy = (H - 2 * pad) / Math.max(1e-6, maxLa - minLa)
-  const sc = Math.min(sx, sy)
-  const x = (lo: number) => pad + (lo - minLo) * sc + ((W - 2 * pad) - (maxLo - minLo) * sc) / 2
-  const y = (la: number) => H - pad - (la - minLa) * sc - ((H - 2 * pad) - (maxLa - minLa) * sc) / 2
+  let z = 17
+  while (z > 3 && (lon2x(maxLo, z) - lon2x(minLo, z) > W - 2 * pad || lat2y(minLa, z) - lat2y(maxLa, z) > H - 2 * pad)) z--
+  z = Math.max(3, Math.min(18, z + extraZoom))
+  const cx = (lon2x(minLo, z) + lon2x(maxLo, z)) / 2, cy = (lat2y(minLa, z) + lat2y(maxLa, z)) / 2
+  const ox = cx - W / 2, oy = cy - H / 2
+  const tiles: { x: number; y: number }[] = []
+  for (let tx = Math.floor(ox / TILE); tx <= Math.floor((ox + W) / TILE); tx++)
+    for (let ty = Math.floor(oy / TILE); ty <= Math.floor((oy + H) / TILE); ty++) tiles.push({ x: tx, y: ty })
+  const px = (s: { lat: number; lon: number }) => ({ x: lon2x(s.lon, z) - ox, y: lat2y(s.lat, z) - oy })
+  const btn: React.CSSProperties = { width: 26, height: 26, background: '#fff', border: '1px solid #999', borderRadius: 4, cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#333', lineHeight: 1 }
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', background: C.bg, borderRadius: 8 }}>
-      <polyline points={stops.map(s => `${x(s.lon)},${y(s.lat)}`).join(' ')} fill="none" stroke="#334155" strokeWidth={1.2} />
-      {stops.map((s, i) => (
-        <circle key={i} cx={x(s.lon)} cy={y(s.lat)} r={Math.min(7, 2.5 + s.n * 0.6)} fill={s.eha ? C.red : i === 0 ? C.green : C.blue} fillOpacity={0.85}>
-          <title>{`Parada ${s.seq} · ${s.n} pacote(s)${s.eha ? ' · tem pacote com EHA' : ''}`}</title>
-        </circle>
-      ))}
-    </svg>
+    <div style={{ position: 'relative', width: '100%', aspectRatio: `${W} / ${H}`, overflow: 'hidden', borderRadius: 8, background: '#dfe6ea' }}>
+      <div style={{ position: 'absolute', inset: 0, transformOrigin: '0 0' }}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+          {tiles.map(t => {
+            const n = 2 ** z
+            const wx = ((t.x % n) + n) % n
+            if (t.y < 0 || t.y >= n) return null
+            return <image key={`${t.x}-${t.y}`} href={`https://tile.openstreetmap.org/${z}/${wx}/${t.y}.png`} x={t.x * TILE - ox} y={t.y * TILE - oy} width={TILE} height={TILE} />
+          })}
+          <polyline points={stops.map(s => { const p = px(s); return `${p.x},${p.y}` }).join(' ')} fill="none" stroke="#2563eb" strokeWidth={2.5} strokeOpacity={0.75} strokeLinejoin="round" />
+          {stops.map((s, i) => {
+            const p = px(s)
+            const fill = s.eha ? '#dc2626' : i === 0 ? '#16a34a' : '#1d4ed8'
+            return (
+              <g key={i}>
+                <circle cx={p.x} cy={p.y} r={8} fill={fill} stroke="#fff" strokeWidth={1.5}>
+                  <title>{`Parada ${s.seq} · ${s.n} pacote(s)${s.eha ? ' · tem pacote com EHA' : ''}\n${s.addr}`}</title>
+                </circle>
+                <text x={p.x} y={p.y + 3} textAnchor="middle" fontSize={8} fontWeight={700} fill="#fff" style={{ pointerEvents: 'none' }}>{s.seq}</text>
+              </g>
+            )
+          })}
+        </svg>
+      </div>
+      <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <button style={btn} onClick={() => setExtraZoom(v => Math.min(v + 1, 4))}>+</button>
+        <button style={btn} onClick={() => setExtraZoom(v => Math.max(v - 1, -4))}>−</button>
+      </div>
+      <span style={{ position: 'absolute', bottom: 2, right: 6, fontSize: 9, color: '#333', background: 'rgba(255,255,255,.7)', padding: '0 4px' }}>© OpenStreetMap</span>
+    </div>
   )
 }
 
-export default function RotaDetalhe({ registry, selectedDay, selectedShift, focusAt }: { registry: StoredDriver[]; selectedDay: string; selectedShift: Shift; focusAt?: string }) {
+export default function RotaDetalhe({ registry, selectedDay, selectedShift, focusAt, onBack }: { registry: StoredDriver[]; selectedDay: string; selectedShift: Shift; focusAt?: string; onBack?: () => void }) {
   const routes = useMemo(() => [...(routeStore.get(selectedDay, selectedShift) ?? [])].sort((a, b) => compareGaiola(a.gaiola, b.gaiola)), [selectedDay, selectedShift])
   const packages = useMemo(() => getCtPackages(selectedDay, selectedShift), [selectedDay, selectedShift])
   const ehaMap = useMemo(() => new Map((getEhaCache()?.rows ?? []).map(r => [r.tn, r])), [])
@@ -187,6 +220,9 @@ export default function RotaDetalhe({ registry, selectedDay, selectedShift, focu
         const pkShown = pk.filter(p => !s || p.tn.toLowerCase().includes(s) || p.neighborhood.toLowerCase().includes(s) || p.address.toLowerCase().includes(s) || p.zip.includes(s))
         return (
           <div style={{ flex: 1, overflow: 'auto', padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {onBack && (
+              <button onClick={onBack} style={{ alignSelf: 'flex-start', background: 'transparent', border: `1px solid ${C.border}`, color: C.text, borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>← Voltar para a Visão Geral</button>
+            )}
             {/* Cabeçalho */}
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
               <div>
@@ -228,7 +264,7 @@ export default function RotaDetalhe({ registry, selectedDay, selectedShift, focu
             ) : (
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1.3fr) minmax(260px, 1fr)', gap: 12 }}>
-                  <Panel title="Mapa das paradas" sub="Ordem de entrega · verde = 1ª parada · vermelho = parada com pacote que já teve EHA">
+                  <Panel title="Mapa das paradas" sub="Número = ordem de entrega · verde = 1ª parada · vermelho = parada com pacote que já teve EHA">
                     <StopMap pk={pk} eha={ehaMap} />
                   </Panel>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

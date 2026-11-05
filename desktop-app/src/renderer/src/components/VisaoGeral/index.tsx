@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { StoredDriver } from '../../lib/localStore'
 import type { DriverResult } from '../../lib/types'
 import type { LocalRoute } from '../../lib/noshowRouteParser'
 import type { Shift } from '../../lib/globalConfig'
 import { routeStore } from '../../lib/routeStore'
 import { getCtPackages, getEhaCache } from '../../lib/planilhas'
+import RotaDetalhe from '../RotaDetalhe'
 
 // "A-34" → { letter: "A", num: 34 }; null/empty → sorts last
 function compareGaiola(a: string | null, b: string | null): number {
@@ -25,7 +26,8 @@ interface Props {
   dsDrivers: DriverResult[]
   selectedDay: string
   selectedShift: Shift
-  onOpenRoute?: (atId: string) => void
+  focusAt?: string
+  focusTick?: number
 }
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
@@ -380,11 +382,15 @@ function RouteDashboard({ rows, onOpenTable }: { rows: Row[]; onOpenTable: (sear
   )
 }
 
-export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedShift, onOpenRoute }: Props) {
+export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedShift, focusAt, focusTick }: Props) {
+  // Detalhe da rota abre aqui dentro (clicando na linha da tabela) e volta com o botão
+  const [openAt, setOpenAt] = useState<string | null>(focusAt ?? null)
+  useEffect(() => { if (focusAt) setOpenAt(focusAt) }, [focusAt, focusTick])
+  const onOpenRoute = (at: string) => setOpenAt(at)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'DISPONIVEL' | 'ATRIBUIDA'>('all')
   const [copied, setCopied] = useState(false)
-  const [view, setView] = useState<'dashboard' | 'tabela'>('dashboard')
+  const [view, setView] = useState<'dashboard' | 'tabela'>('tabela')
 
   const routes = useMemo(() => routeStore.get(selectedDay, selectedShift) ?? [], [selectedDay, selectedShift])
 
@@ -444,6 +450,8 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
     acertos: enriched.filter(r => r.acertividade === true).length,
     totalAcertividade: enriched.filter(r => r.acertividade !== null).length,
   }), [enriched])
+
+  if (openAt) return <RotaDetalhe registry={registry} selectedDay={selectedDay} selectedShift={selectedShift} focusAt={openAt} onBack={() => setOpenAt(null)} />
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -555,8 +563,8 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
                   const heavy = (r.volume ?? 0) > 700 || (r.gg ?? 0) > 1
                   const phone = r.phone?.replace(/\D/g, '') ?? ''
                   return (
-                    <tr key={r.id} onClick={() => onOpenRoute?.(r.atId)} title="Abrir detalhe da rota"
-                      style={{ borderBottom: '1px solid #1e2130', cursor: onOpenRoute ? 'pointer' : 'default', background: r.status === 'ATRIBUIDA' ? 'rgba(34,197,94,.02)' : r.isInterior ? 'rgba(245,158,11,.02)' : 'transparent' }}>
+                    <tr key={r.id} onClick={() => onOpenRoute(r.atId)} title="Abrir detalhe da rota"
+                      style={{ borderBottom: '1px solid #1e2130', cursor: 'pointer', background: r.status === 'ATRIBUIDA' ? 'rgba(34,197,94,.02)' : r.isInterior ? 'rgba(245,158,11,.02)' : 'transparent' }}>
                       <td style={{ ...TD, fontSize: 14, fontWeight: 800, color: '#e2e8f0' }}>{r.gaiola || '—'}</td>
                       <td style={TD}>
                         <div style={{ fontFamily: 'monospace', fontWeight: 600, color: '#cbd5e1', fontSize: 11 }}>{r.atId}</div>
@@ -598,7 +606,7 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
                           ? <Chip label="Atribuída" color="#4ade80" bg="rgba(34,197,94,.1)" small />
                           : <Chip label="Disponível" color="#60a5fa" bg="rgba(59,130,246,.08)" small />}
                       </td>
-                      <td style={{ ...TD, color: '#64748b' }}>{onOpenRoute ? '›' : ''}</td>
+                      <td style={{ ...TD, color: '#64748b' }}>›</td>
                     </tr>
                   )
                 })}

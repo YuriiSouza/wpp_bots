@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type { Shift } from '../../lib/globalConfig'
 import { getGlobalConfig } from '../../lib/globalConfig'
 import { routeStore } from '../../lib/routeStore'
+import EhaDashboard from './Dashboard'
 import { fetchEhaBase, getEhaCache, saveEhaCache, getCtPackages, type EhaRow, type CtPackage } from '../../lib/planilhas'
 
 // Pacotes que receberam "EHA - Não Coube no Veículo" em dias/turnos anteriores (base atualizada a cada 4h),
@@ -48,6 +49,7 @@ export default function Eha({ selectedDay, selectedShift, onOpenRoute }: { selec
   const [cache, setCache] = useState(() => getEhaCache())
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
+  const [view, setView] = useState<'dashboard' | 'lista'>('dashboard')
   const [scope, setScope] = useState<'turno' | 'fora' | 'todos'>('turno')
   const [risk, setRisk] = useState<'' | 'alto' | 'moderado'>('')
   const [q, setQ] = useState('')
@@ -128,7 +130,12 @@ export default function Eha({ selectedDay, selectedShift, onOpenRoute }: { selec
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {!packages.length && <span style={{ fontSize: 11, color: C.amber }}>Sem pacotes do turno: busque a roteirização pelo link para cruzar com as rotas.</span>}
+          <div style={{ display: 'flex', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 7, overflow: 'hidden' }}>
+            {([['dashboard', '📊 Dashboard'], ['lista', '☰ Pacotes do turno']] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setView(k)} style={{ background: view === k ? 'rgba(99,102,241,.2)' : 'transparent', color: view === k ? '#a5b4fc' : C.muted, border: 'none', padding: '5px 14px', fontSize: 12, fontWeight: view === k ? 700 : 400, cursor: 'pointer' }}>{l}</button>
+            ))}
+          </div>
+          {view === 'lista' && !packages.length && <span style={{ fontSize: 11, color: C.amber }}>Sem pacotes do turno: busque a roteirização pelo link para cruzar com as rotas.</span>}
           <button onClick={() => void refresh()} disabled={loading || !cfg.ehaSheetUrl} style={{ ...btn, background: '#7c3aed', border: 'none', color: '#fff', fontWeight: 700, opacity: loading || !cfg.ehaSheetUrl ? .5 : 1 }}>{loading ? '⏳ Lendo…' : '🔄 Atualizar base'}</button>
         </div>
       </div>
@@ -137,7 +144,8 @@ export default function Eha({ selectedDay, selectedShift, onOpenRoute }: { selec
         {!cfg.ehaSheetUrl && <p style={{ margin: 0, fontSize: 13, color: C.amber }}>Configure o link da planilha de EHA e o station name em ⚙ Configurações › Base de EHA.</p>}
         {err && <p style={{ margin: 0, fontSize: 12, color: C.red }}>✕ {err}</p>}
 
-        {cache && (
+        {cache && view === 'dashboard' && <EhaDashboard cache={cache} />}
+        {cache && view === 'lista' && (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
               <Kpi label="Pacotes com EHA no hub" value={rows.length} sub={`de ${fmt(cache.totalBase)} na base geral`} color={C.violet} onClick={() => { setScope('todos'); setRisk('') }} active={scope === 'todos' && !risk} />

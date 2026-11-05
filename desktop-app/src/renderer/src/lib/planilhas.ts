@@ -214,7 +214,9 @@ export interface EhaRow {
   risco: string   // Vermelho / Amarelo / ...
 }
 
-export async function fetchEhaBase(url: string, station: string): Promise<{ rows: EhaRow[]; totalBase: number; fetchedAt: string }> {
+export interface EhaPeer { station: string; lastEha: string }
+
+export async function fetchEhaBase(url: string, station: string): Promise<{ rows: EhaRow[]; totalBase: number; fetchedAt: string; subRegional: string; peers: EhaPeer[] }> {
   const id = extractSheetId(url)
   if (!id) throw new Error('Link da planilha de EHA não configurado')
   const tabs = await listTabs(id)
@@ -237,13 +239,46 @@ export async function fetchEhaBase(url: string, station: string): Promise<{ rows
       station: st, regional: g(r, I.rg), subRegional: g(r, I.sr), classificacao: g(r, I.cl), risco: g(r, I.rk),
     })
   }
-  return { rows: out, totalBase: all.length, fetchedAt: new Date().toISOString() }
+  // Outras stations da mesma sub-regional (para comparar no dashboard)
+  const subRegional = out.find(r => r.subRegional)?.subRegional ?? ''
+  const peers: EhaPeer[] = subRegional
+    ? all.filter(r => norm(g(r, I.sr)) === norm(subRegional)).map(r => ({ station: g(r, I.st), lastEha: g(r, I.d) }))
+    : []
+  return { rows: out, totalBase: all.length, fetchedAt: new Date().toISOString(), subRegional, peers }
 }
 
 const EHA_KEY = 'local:eha-base'
-export function saveEhaCache(d: { rows: EhaRow[]; totalBase: number; fetchedAt: string; station: string }) {
+export interface EhaCache { rows: EhaRow[]; totalBase: number; fetchedAt: string; station: string; subRegional?: string; peers?: EhaPeer[] }
+export function saveEhaCache(d: EhaCache) {
   try { localStorage.setItem(EHA_KEY, JSON.stringify(d)) } catch { /* */ }
 }
-export function getEhaCache(): { rows: EhaRow[]; totalBase: number; fetchedAt: string; station: string } | null {
+export function getEhaCache(): EhaCache | null {
   try { return JSON.parse(localStorage.getItem(EHA_KEY) ?? 'null') } catch { return null }
+}
+
+// ── Classificação do pacote (mesma fórmula da planilha) ─────────────────────
+export type Classe = 'PP' | 'P' | 'M' | 'G' | 'GG'
+export const CLASSES: Classe[] = ['PP', 'P', 'M', 'G', 'GG']
+
+/** Categoria do SPX primeiro; sem ela, decide por dimensões (cm) e peso (valor sem o ponto, como na planilha). */
+export function classifyPackage(p: Pick<CtPackage, 'category' | 'dims' | 'weightG'>): Classe {
+  switch ((p.category ?? '').trim().toUpperCase()) {
+    case 'BULKY': return 'GG'
+    case 'L': return 'G'
+    case 'M': return 'M'
+    case 'S': return 'P'
+    case 'ES': return 'PP'
+  }
+  const [a, b, c] = p.dims.map(x => x ?? 0)
+  const w = p.weightG ?? 0
+  const valid = !(a === 0 && b === 0 && c === 0) && !(a === 1 && b === 1 && c === 1) && !(a === 10 && b === 10 && c === 10)
+  const vol = a * b * c, mx = Math.max(a, b, c), mn = Math.min(a, b, c), mid = a + b + c - mx - mn
+  if (valid && vol >= 40000) return 'GG'
+  if (valid && vol <= 2000 && mx <= 10 && mn <= 2 && mid <= 10 && w < 2000) return 'PP'
+  if (valid && vol <= 2000 && mx <= 20 && mn <= 10 && mid <= 15 && w < 2000) return 'P'
+  if (mx <= 40 && w <= 5000) return 'M'
+  if (mx > 100) return 'GG'
+  if (w > 15000) return 'GG'
+  if (mx <= 100) return 'G'
+  return 'GG'
 }

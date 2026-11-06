@@ -926,6 +926,157 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
 }
 
 // ─── 3PL Panel (transportadoras) ───────────────────────────────────────────────
+// ─── Rotas sem motorista: atribuição manual, rota a rota ─────────────────────
+type ManualPick = { driverId: string; name: string; vehicleType: string | null; clusters: string[]; isBlocked: boolean; blockReason: string | null; inQueue: boolean; score: number | null }
+type ManualLog = { atId: string; cluster: string; driverId: string; name: string; ok: boolean; msg: string }
+
+function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, dobraIds, spxConfigured, onAssign }: {
+  routes: LocalRoute[]
+  queueDrivers: LocalDriver[]
+  registry: StoredDriver[]
+  alreadyRoutedIds: Set<string>
+  dobraIds: Set<string>
+  spxConfigured: boolean
+  onAssign: (route: LocalRoute, d: { driverId: string; name: string }) => Promise<{ ok: boolean; msg: string }>
+}) {
+  const [routeQ, setRouteQ] = useState('')
+  const [driverQ, setDriverQ] = useState('')
+  const [selId, setSelId] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [log, setLog] = useState<ManualLog[]>([])
+  const [copied, setCopied] = useState(false)
+
+  const semMotorista = useMemo(() => {
+    const q = routeQ.trim().toLowerCase()
+    return routes.filter(r => r.status !== 'ATRIBUIDA')
+      .filter(r => !q || r.atId.toLowerCase().includes(q) || r.cluster.toLowerCase().includes(q) || (r.gaiola ?? '').toLowerCase().includes(q))
+      .sort((a, b) => (a.gaiola ?? '').localeCompare(b.gaiola ?? '', 'pt', { numeric: true }))
+  }, [routes, routeQ])
+  const sel = semMotorista.find(r => r.id === selId) ?? semMotorista[0] ?? null
+  const routeVehicle = sel ? (sel.scheduledVehicle ?? sel.requiredVehicleType) : null
+
+  const pool = useMemo((): ManualPick[] => {
+    const m = new Map<string, ManualPick>()
+    for (const d of queueDrivers) m.set(d.driverId, { driverId: d.driverId, name: d.name, vehicleType: d.vehicleType, clusters: d.clusters, isBlocked: d.isBlocked, blockReason: d.blockReason, inQueue: true, score: d.priorityScore })
+    for (const d of registry) if (!m.has(d.id)) m.set(d.id, { driverId: d.id, name: d.name, vehicleType: d.vehicleType || null, clusters: [], isBlocked: false, blockReason: null, inQueue: false, score: null })
+    return [...m.values()].filter(d => !alreadyRoutedIds.has(d.driverId))
+  }, [queueDrivers, registry, alreadyRoutedIds])
+
+  const candidates = useMemo(() => {
+    if (!sel) return []
+    const q = driverQ.trim().toLowerCase()
+    const list = q
+      ? pool.filter(d => d.name.toLowerCase().includes(q) || d.driverId.includes(q))   // busca: qualquer motorista do cadastro
+      : pool.filter(d => d.inQueue && !d.isBlocked && vehicleAllowed(d.vehicleType, routeVehicle)) // sugestão: fila do turno
+    const rank = (d: ManualPick) => (d.isBlocked ? 4 : 0) + (vehicleAllowed(d.vehicleType, routeVehicle) ? 0 : 2) + (inDriverRegion(d.clusters, sel.cluster) ? 0 : 1)
+    return [...list].sort((a, b) => rank(a) - rank(b) || (b.score ?? -1) - (a.score ?? -1)).slice(0, 40)
+  }, [pool, sel, driverQ, routeVehicle])
+
+  const assign = async (d: ManualPick) => {
+    if (!sel || busy) return
+    if (d.isBlocked && !confirm(`${d.name} está bloqueado (${d.blockReason ?? 'sem motivo'}). Atribuir mesmo assim?`)) return
+    setBusy(true)
+    const res = await onAssign(sel, d)
+    setLog(prev => [{ atId: sel.atId, cluster: sel.cluster, driverId: d.driverId, name: d.name, ok: res.ok, msg: res.msg }, ...prev])
+    setBusy(false)
+    if (res.ok) { setSelId(null); setDriverQ('') }
+  }
+
+  const copyLog = async () => {
+    const ok = log.filter(l => l.ok)
+    await navigator.clipboard.writeText(ok.map(l => `${l.atId}\t${l.cluster}\t${l.driverId}\t${l.name}`).join('\n'))
+    setCopied(true); setTimeout(() => setCopied(false), 1500)
+  }
+
+  const box: React.CSSProperties = { background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: 12 }
+  return (
+    <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <p style={{ margin: 0, fontSize: 12, color: '#8892a4' }}>
+        Rotas do turno que estão sem motorista. Escolha a rota, depois o motorista: as sugestões vêm da fila do turno (veículo compatível, região dele primeiro); digitando no campo, busca em todo o cadastro.
+        {!spxConfigured && <span style={{ color: '#fbbf24' }}> · SPX não configurado: a atribuição fica só no app.</span>}
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.3fr)', gap: 12, alignItems: 'start' }}>
+        <div style={box}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Rotas sem motorista ({semMotorista.length})</span>
+          </div>
+          <input placeholder="Buscar AT, cluster ou gaiola..." value={routeQ} onChange={e => setRouteQ(e.target.value)}
+            style={{ width: '100%', boxSizing: 'border-box', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 6, padding: '6px 10px', color: '#e2e8f0', fontSize: 12, marginBottom: 8 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 520, overflow: 'auto' }}>
+            {semMotorista.length === 0 && <p style={{ fontSize: 12, color: '#4ade80', margin: 8 }}>✓ Todas as rotas do turno têm motorista.</p>}
+            {semMotorista.map(r => {
+              const on = sel?.id === r.id
+              return (
+                <button key={r.id} onClick={() => { setSelId(r.id); setDriverQ('') }}
+                  style={{ textAlign: 'left', background: on ? 'rgba(124,58,237,.18)' : 'transparent', border: `1px solid ${on ? '#7c3aed' : '#23263a'}`, borderRadius: 7, padding: '7px 10px', cursor: 'pointer', color: '#e2e8f0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{r.gaiola ?? '—'} · {r.cluster}</span>
+                    <span style={{ fontSize: 11, color: '#8892a4' }}>{r.scheduledVehicle ?? r.requiredVehicleType ?? '—'}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: '#8892a4', marginTop: 2 }}>
+                    {r.atId}{r.paradas != null ? ` · ${r.paradas} paradas` : ''}{r.km != null ? ` · ${r.km} km` : ''}
+                    {r.assignedDriverName ? <span style={{ color: '#f87171' }}> · recusada por {r.assignedDriverName}</span> : null}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div style={box}>
+          {!sel ? <p style={{ fontSize: 12, color: '#8892a4', margin: 0 }}>Nenhuma rota selecionada.</p> : (
+            <>
+              <div style={{ marginBottom: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Motorista para {sel.gaiola ?? sel.atId}</span>
+                <span style={{ fontSize: 11, color: '#8892a4' }}> · {sel.cluster} · {routeVehicle ?? 'veículo não informado'}</span>
+              </div>
+              <input placeholder="Buscar motorista por nome ou ID..." value={driverQ} onChange={e => setDriverQ(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 6, padding: '6px 10px', color: '#e2e8f0', fontSize: 12, marginBottom: 8 }} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 480, overflow: 'auto' }}>
+                {candidates.length === 0 && <p style={{ fontSize: 12, color: '#8892a4', margin: 8 }}>{driverQ ? 'Nenhum motorista encontrado (quem já tem rota no turno não aparece).' : 'Ninguém compatível na fila do turno. Busque pelo nome ou ID.'}</p>}
+                {candidates.map(d => {
+                  const vOk = vehicleAllowed(d.vehicleType, routeVehicle)
+                  const reg = inDriverRegion(d.clusters, sel.cluster)
+                  return (
+                    <div key={d.driverId} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid #23263a', borderRadius: 7, padding: '6px 10px' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}>
+                          <Chip small label={d.driverId} />
+                          <Chip small label={d.vehicleType ?? 'veículo ?'} color={vOk ? '#94a3b8' : '#f87171'} bg={vOk ? undefined : 'rgba(248,113,113,.12)'} />
+                          {d.inQueue ? <Chip small label="na fila" color="#4ade80" bg="rgba(74,222,128,.1)" /> : <Chip small label="fora da fila" color="#fbbf24" bg="rgba(251,191,36,.1)" />}
+                          {d.inQueue && !reg && <Chip small label="fora da região" color="#fbbf24" bg="rgba(251,191,36,.1)" />}
+                          {dobraIds.has(d.driverId) && <Chip small label="dobra" color="#60a5fa" bg="rgba(96,165,250,.1)" />}
+                          {d.isBlocked && <Chip small label={`bloqueado${d.blockReason ? ': ' + d.blockReason : ''}`} color="#f87171" bg="rgba(248,113,113,.12)" />}
+                        </div>
+                      </div>
+                      <Btn onClick={() => void assign(d)} disabled={busy}>{busy ? '⏳' : 'Atribuir'}</Btn>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {log.length > 0 && (
+        <div style={box}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Atribuições feitas aqui ({log.filter(l => l.ok).length})</span>
+            <Btn variant="outline" onClick={() => void copyLog()} style={{ fontSize: 11 }}>{copied ? '✓ Copiado' : '📋 Copiar lista'}</Btn>
+          </div>
+          {log.map((l, k) => (
+            <div key={k} style={{ fontSize: 12, color: l.ok ? '#cbd5e1' : '#f87171', padding: '3px 0' }}>
+              {l.ok ? '✓' : '✕'} {l.atId} · {l.cluster} → {l.name} ({l.driverId}){l.msg ? ` · ${l.msg}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ThreePlPanel({ routes, selectedShift, agencies, excludedRouteIds, assignments, setAssignments }: {
   routes: LocalRoute[]
   selectedShift: Shift
@@ -1253,7 +1404,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     routeStore.saveOverrides(selectedDay, selectedShift, [...m.entries()])
   }
 
-  const [activeTab, setActiveTab] = useState<'routes' | 'drivers' | 'fiorino'>('routes')
+  const [activeTab, setActiveTab] = useState<'routes' | 'drivers' | 'fiorino' | 'semmoto'>('routes')
   const [routeSearch, setRouteSearch] = useState('')
   const [driverSearch, setDriverSearch] = useState('')
   const ignoredKey = `spx:noshow-ignored:${selectedDay}:${selectedShift}`
@@ -1968,6 +2119,20 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     setIsAssigning(false)
   }
 
+  // Atribuição manual (aba Sem motorista): com SPX configurado, só aplica se o SPX aceitar
+  const handleManualAssign = async (route: LocalRoute, d: { driverId: string; name: string }) => {
+    let msg = ''
+    if (spxConfigured) {
+      const res = await spxReassign(d.driverId, route.atId)
+      if (!res.ok) return { ok: false, msg: res.message }
+      msg = 'SPX ok'
+    } else msg = 'só no app (SPX não configurado)'
+    const current = routeStore.get(selectedDay, selectedShift) ?? routes
+    setRoutes(current.map(r => r.atId === route.atId ? { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: d.driverId, assignedDriverName: d.name } : r))
+    removeFromQueue(d.driverId)
+    return { ok: true, msg }
+  }
+
   // Só as rotas com novato escolhido na sub-aba Novatos
   const novatoAssignments = useMemo(() => new Map([...overrides].filter(([, d]) => d.isNewDriver)), [overrides])
 
@@ -2079,7 +2244,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 disabled={isAssigning || novatoAssignments.size === 0}
                 style={{ background: '#8b5cf6' }}
               >{isAssigning ? '⏳ Atribuindo...' : `🆕 Atribuir novatos (${novatoAssignments.size})`}</Btn>
-            ) : activeTab === 'fiorino' && fcSection === '3pl' ? null : (
+            ) : (activeTab === 'fiorino' && fcSection === '3pl') || activeTab === 'semmoto' ? null : (
               <Btn
                 onClick={() => void handleConfirmAssign()}
                 disabled={isAssigning || effectiveAssignments.size === 0}
@@ -2157,6 +2322,9 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         <button onClick={() => setActiveTab('drivers')} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: activeTab === 'drivers' ? '2px solid #7c3aed' : '2px solid transparent', background: 'transparent', color: activeTab === 'drivers' ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
           Fila de motoristas ({queueDrivers.length}{alreadyRoutedDrivers.length > 0 ? ` · ${alreadyRoutedDrivers.length} já em rota` : ''})
         </button>
+        <button onClick={() => setActiveTab('semmoto')} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: activeTab === 'semmoto' ? '2px solid #7c3aed' : '2px solid transparent', background: 'transparent', color: activeTab === 'semmoto' ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
+          👤 Sem motorista ({routes.filter(r => r.status !== 'ATRIBUIDA').length})
+        </button>
         <button onClick={() => setActiveTab('fiorino')} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: activeTab === 'fiorino' ? '2px solid #f59e0b' : '2px solid transparent', background: 'transparent', color: activeTab === 'fiorino' ? '#fbbf24' : '#8892a4', cursor: 'pointer' }}>
           🚐 First Convocation ({fiorino.strictRoutes.length} obrig. · {fiorino.fioDrivers.length} moto.)
         </button>
@@ -2164,7 +2332,11 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
       {/* Content */}
       <div style={{ flex: 1, overflow: 'auto' }}>
-        {activeTab !== 'fiorino' && (
+        {activeTab === 'semmoto' && (
+          <SemMotoristaPanel routes={routes} queueDrivers={availableDrivers} registry={registry} alreadyRoutedIds={alreadyRoutedIds} dobraIds={dobraIds}
+            spxConfigured={spxConfigured} onAssign={handleManualAssign} />
+        )}
+        {activeTab !== 'fiorino' && activeTab !== 'semmoto' && (
         <div style={{ padding: '8px 20px', display: 'flex', gap: 8, alignItems: 'center' }}>
           <input
             placeholder={activeTab === 'routes' ? '🔍  Buscar AT ID ou cluster...' : '🔍  Buscar motorista...'}

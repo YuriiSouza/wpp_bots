@@ -83,6 +83,7 @@ export const TOURS: Record<string, TourDef> = {
       { title: 'Atribuir e reatribuir', text: 'Aqui as rotas ganham motorista. O app sugere quem colocar, pela fila priorizada, e grava direto no SPX. Antes, cole a sessão do SPX no menu ⋯ › SPX.' },
       { title: 'Resumo do turno', target: 'Recusadas', card: true, text: 'Rotas recusadas, para reverter, revertidas, motoristas livres, já em rota, bloqueados e a previsão.' },
       { title: 'Rotas recusadas', target: 'Rotas recusadas (', text: 'As rotas que voltaram do Call Up. Escolha o motorista para cada uma (ou use a sugestão) e clique em Atribuir.' },
+      { title: 'Sem motorista', target: '👤 Sem motorista', text: 'Todas as rotas do turno que ainda não têm motorista. Escolha a rota, depois o motorista (sugestões da fila ou busca por nome/ID no cadastro) e clique em Atribuir: grava no SPX na hora.' },
       { title: 'Fila de motoristas', target: 'Fila de motoristas (', text: 'Quem está livre no turno, ordenado pelo score (DS, recusas e no-show). Bloqueados não entram.' },
       { title: 'First Convocation', target: '🚐 First Convocation', text: 'Fiorinos nas rotas de Fiorino da roteirização (3 modos, com ajuste manual), novatos na região deles e rotas de 3PL.' },
       { title: 'Trocas e report', target: '🔁 Trocas Fiorino', text: 'Trocas sugeridas entre Fiorino e Passeio na mesma região. Ao lado, o Gerar Report monta o resumo do turno para o grupo.' },

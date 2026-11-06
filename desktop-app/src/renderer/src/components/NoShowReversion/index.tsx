@@ -945,13 +945,27 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<ManualLog[]>([])
   const [copied, setCopied] = useState(false)
+  const [picks, setPicks] = useState<Map<string, ManualPick>>(new Map())   // escolhas à mão (substituem a sugestão)
+  const [skipped, setSkipped] = useState<Set<string>>(new Set())          // rotas que não devem ser atribuídas agora
+  const [stopMsg, setStopMsg] = useState<string | null>(null)
+
+  const allSem = useMemo(() => routes.filter(r => r.status !== 'ATRIBUIDA'), [routes])
+  // Sugestão automática: mesma regra das rotas recusadas (região de disponibilidade + veículo + score),
+  // rotas com menos candidatos primeiro. Escolhas manuais entram como fixas.
+  const plan = useMemo(() => {
+    const eligible = queueDrivers.filter(d => !d.isBlocked && !alreadyRoutedIds.has(d.driverId))
+    const fixed = new Map<string, LocalDriver>()
+    for (const [rid, p] of picks) fixed.set(rid, { driverId: p.driverId, name: p.name, vehicleType: p.vehicleType, clusters: p.clusters, isNewDriver: false, isBlocked: p.isBlocked, blockReason: p.blockReason, blockType: null, pendingPackages: 0, dsReal: null, dsStatus: null, priorityScore: p.score ?? 0, daysSinceRoute: 0 })
+    const m = computeEffective(allSem.filter(r => !skipped.has(r.id)).map(r => ({ ...r, status: 'DISPONIVEL' as const })), eligible, new Map([...fixed].filter(([rid]) => !skipped.has(rid))))
+    return m
+  }, [allSem, queueDrivers, alreadyRoutedIds, picks, skipped])
 
   const semMotorista = useMemo(() => {
     const q = routeQ.trim().toLowerCase()
-    return routes.filter(r => r.status !== 'ATRIBUIDA')
+    return allSem
       .filter(r => !q || r.atId.toLowerCase().includes(q) || r.cluster.toLowerCase().includes(q) || (r.gaiola ?? '').toLowerCase().includes(q))
       .sort((a, b) => (a.gaiola ?? '').localeCompare(b.gaiola ?? '', 'pt', { numeric: true }))
-  }, [routes, routeQ])
+  }, [allSem, routeQ])
   const sel = semMotorista.find(r => r.id === selId) ?? semMotorista[0] ?? null
   const routeVehicle = sel ? (sel.scheduledVehicle ?? sel.requiredVehicleType) : null
 
@@ -972,14 +986,32 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
     return [...list].sort((a, b) => rank(a) - rank(b) || (b.score ?? -1) - (a.score ?? -1)).slice(0, 40)
   }, [pool, sel, driverQ, routeVehicle])
 
-  const assign = async (d: ManualPick) => {
-    if (!sel || busy) return
-    if (d.isBlocked && !confirm(`${d.name} está bloqueado (${d.blockReason ?? 'sem motivo'}). Atribuir mesmo assim?`)) return
-    setBusy(true)
-    const res = await onAssign(sel, d)
-    setLog(prev => [{ atId: sel.atId, cluster: sel.cluster, driverId: d.driverId, name: d.name, ok: res.ok, msg: res.msg }, ...prev])
+  const choose = (d: ManualPick) => {
+    if (!sel) return
+    if (d.isBlocked && !confirm(`${d.name} está bloqueado (${d.blockReason ?? 'sem motivo'}). Escolher mesmo assim?`)) return
+    setPicks(prev => { const n = new Map(prev); for (const [k, v] of n) if (v.driverId === d.driverId) n.delete(k); n.set(sel.id, d); return n })
+    setSkipped(prev => { const n = new Set(prev); n.delete(sel.id); return n })
+    setDriverQ('')
+  }
+
+  const assignAll = async () => {
+    if (busy) return
+    const todo = allSem.filter(r => plan.has(r.id))
+    if (!todo.length) return
+    setBusy(true); setStopMsg(null)
+    let fails = 0
+    for (const r of todo) {
+      const d = plan.get(r.id)!
+      const res = await onAssign(r, d)
+      setLog(prev => [{ atId: r.atId, cluster: r.cluster, driverId: d.driverId, name: d.name, ok: res.ok, msg: res.msg }, ...prev])
+      if (res.ok) { fails = 0; setPicks(prev => { const n = new Map(prev); n.delete(r.id); return n }); continue }
+      fails++
+      if (/login|sess|expir|token|csrf|401|403|cookie|credencia|curl/i.test(res.msg) || fails >= 2) {
+        setStopMsg(`Parei para não perder o resto: ${res.msg}. Atualize o cURL do SPX e clique de novo — só o que faltou será enviado.`)
+        break
+      }
+    }
     setBusy(false)
-    if (res.ok) { setSelId(null); setDriverQ('') }
   }
 
   const copyLog = async () => {
@@ -992,14 +1024,16 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
   return (
     <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <p style={{ margin: 0, fontSize: 12, color: '#8892a4' }}>
-        Rotas do turno que estão sem motorista. Escolha a rota, depois o motorista: as sugestões vêm da fila do turno (veículo compatível, região dele primeiro); digitando no campo, busca em todo o cadastro.
+        Rotas do turno que estão sem motorista. O app já sugere um motorista para cada uma, com a mesma regra das rotas recusadas: fila do turno, região de disponibilidade e veículo compatível. Para trocar, selecione a rota e escolha outro (ou busque no cadastro). Depois, Atribuir todas grava no SPX.
         {!spxConfigured && <span style={{ color: '#fbbf24' }}> · SPX não configurado: a atribuição fica só no app.</span>}
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.3fr)', gap: 12, alignItems: 'start' }}>
         <div style={box}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Rotas sem motorista ({semMotorista.length})</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Rotas sem motorista ({allSem.length}) · {plan.size} com sugestão</span>
+            <Btn onClick={() => void assignAll()} disabled={busy || plan.size === 0}>{busy ? '⏳ Atribuindo...' : `✦ Atribuir todas (${plan.size})`}</Btn>
           </div>
+          {stopMsg && <p style={{ margin: '0 0 8px', fontSize: 12, color: '#f87171' }}>{stopMsg}</p>}
           <input placeholder="Buscar AT, cluster ou gaiola..." value={routeQ} onChange={e => setRouteQ(e.target.value)}
             style={{ width: '100%', boxSizing: 'border-box', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 6, padding: '6px 10px', color: '#e2e8f0', fontSize: 12, marginBottom: 8 }} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 520, overflow: 'auto' }}>
@@ -1017,6 +1051,11 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
                     {r.atId}{r.paradas != null ? ` · ${r.paradas} paradas` : ''}{r.km != null ? ` · ${r.km} km` : ''}
                     {r.assignedDriverName ? <span style={{ color: '#f87171' }}> · recusada por {r.assignedDriverName}</span> : null}
                   </div>
+                  <div style={{ fontSize: 11, marginTop: 3 }}>
+                    {skipped.has(r.id) ? <span style={{ color: '#64748b' }}>⏸ não atribuir agora</span>
+                      : plan.get(r.id) ? <span style={{ color: picks.has(r.id) ? '#a78bfa' : '#4ade80' }}>→ {plan.get(r.id)!.name}{picks.has(r.id) ? ' (escolhido)' : ''}</span>
+                      : <span style={{ color: '#fbbf24' }}>sem motorista disponível na região</span>}
+                  </div>
                 </button>
               )
             })}
@@ -1029,6 +1068,11 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
               <div style={{ marginBottom: 8 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Motorista para {sel.gaiola ?? sel.atId}</span>
                 <span style={{ fontSize: 11, color: '#8892a4' }}> · {sel.cluster} · {routeVehicle ?? 'veículo não informado'}</span>
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: '#cbd5e1' }}>Vai para: <b>{skipped.has(sel.id) ? '—' : plan.get(sel.id)?.name ?? 'ninguém na região'}</b></span>
+                  {picks.has(sel.id) && <Btn variant="ghost" onClick={() => setPicks(prev => { const n = new Map(prev); n.delete(sel.id); return n })} style={{ fontSize: 11 }}>↺ Voltar à sugestão</Btn>}
+                  <Btn variant="ghost" onClick={() => setSkipped(prev => { const n = new Set(prev); if (n.has(sel.id)) n.delete(sel.id); else n.add(sel.id); return n })} style={{ fontSize: 11 }}>{skipped.has(sel.id) ? '▶ Incluir de novo' : '⏸ Não atribuir agora'}</Btn>
+                </div>
               </div>
               <input placeholder="Buscar motorista por nome ou ID..." value={driverQ} onChange={e => setDriverQ(e.target.value)}
                 style={{ width: '100%', boxSizing: 'border-box', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 6, padding: '6px 10px', color: '#e2e8f0', fontSize: 12, marginBottom: 8 }} />
@@ -1050,7 +1094,7 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
                           {d.isBlocked && <Chip small label={`bloqueado${d.blockReason ? ': ' + d.blockReason : ''}`} color="#f87171" bg="rgba(248,113,113,.12)" />}
                         </div>
                       </div>
-                      <Btn onClick={() => void assign(d)} disabled={busy}>{busy ? '⏳' : 'Atribuir'}</Btn>
+                      <Btn variant={plan.get(sel.id)?.driverId === d.driverId ? 'default' : 'outline'} onClick={() => choose(d)} disabled={busy}>{plan.get(sel.id)?.driverId === d.driverId ? '✓ Escolhido' : 'Escolher'}</Btn>
                     </div>
                   )
                 })}

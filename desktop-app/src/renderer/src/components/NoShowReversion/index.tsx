@@ -1738,7 +1738,12 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const alreadyRoutedDrivers = orderedDrivers.filter(d => alreadyRoutedIds.has(d.driverId))
 
   // ── Fiorino tab ───────────────────────────────────────────────────────────
-  const [fioMode, setFioMode] = useState<'strict' | 'maximize' | 'amOnly'>('strict')
+  // AM: obrigatórias / maximizar / só AM. PM1 e PM2: só disponíveis (sem dobra) ou possibilitar dobras.
+  const [fioMode, setFioMode] = useState<'strict' | 'maximize' | 'amOnly' | 'pmAvail' | 'pmDobra'>(selectedShift === 'AM' ? 'strict' : 'pmAvail')
+  useEffect(() => {
+    const isAm = selectedShift === 'AM'
+    setFioMode(m => isAm ? (m === 'pmAvail' || m === 'pmDobra' ? 'strict' : m) : (m === 'pmAvail' || m === 'pmDobra' ? m : 'pmAvail'))
+  }, [selectedShift])
   // Ajustes manuais: Fiorinos tiradas do plano e motorista escolhido à mão por rota ('' = deixar sem Fiorino)
   const [fioExcluded, setFioExcluded] = useState<Set<string>>(new Set())
   const [fioManual, setFioManual] = useState<Map<string, string>>(new Map())
@@ -1762,7 +1767,8 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       normalizeVehicle(d.vehicleType) === 'FIORINO' &&
       !d.isBlocked &&
       !alreadyRoutedIds.has(d.driverId) &&
-      (fioMode !== 'amOnly' || amOnlyIds.has(d.driverId))
+      (fioMode !== 'amOnly' || amOnlyIds.has(d.driverId)) &&
+      (fioMode !== 'pmAvail' || !dobraIds.has(d.driverId))
     ).sort((a, b) =>
       b.priorityScore !== a.priorityScore ? b.priorityScore - a.priorityScore : b.daysSinceRoute - a.daysSinceRoute
     )
@@ -1821,7 +1827,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
     const assignments = fioMode === 'strict' ? strictAssignments : maximizeAssignments
     return { eligibleRoutes: fioMode === 'strict' ? strictRoutes : allAvailableRoutes, strictRoutes, fioDrivers, allFio, assignments, strictAssignments, maximizeAssignments }
-  }, [routes, orderedDrivers, alreadyRoutedIds, ignoredAtIds, fioMode, amOnlyIds, fioExcluded, fioManual])
+  }, [routes, orderedDrivers, alreadyRoutedIds, dobraIds, ignoredAtIds, fioMode, amOnlyIds, fioExcluded, fioManual])
 
   const [fioAssigning, setFioAssigning] = useState(false)
   const [fioResults, setFioResults] = useState<{ atId: string; driverId: string; name: string; spxOk?: boolean; spxMsg?: string }[] | null>(null)
@@ -2669,6 +2675,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 {/* Toggle de modo */}
                 <div style={{ display: 'flex', background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, overflow: 'hidden' }}>
+                  {selectedShift === 'AM' ? <>
                   <button
                     onClick={() => setFioMode('strict')}
                     style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'strict' ? '#d97706' : 'transparent', color: fioMode === 'strict' ? '#fff' : '#8892a4', cursor: 'pointer' }}
@@ -2687,12 +2694,30 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                   >
                     🌅 Só Fiorinos exclusivas do AM
                   </button>
+                  </> : <>
+                  <button
+                    onClick={() => setFioMode('pmAvail')}
+                    style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'pmAvail' ? '#d97706' : 'transparent', color: fioMode === 'pmAvail' ? '#fff' : '#8892a4', cursor: 'pointer' }}
+                  >
+                    ✅ Só disponíveis do {selectedShift}
+                  </button>
+                  <button
+                    onClick={() => setFioMode('pmDobra')}
+                    style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'pmDobra' ? '#d97706' : 'transparent', color: fioMode === 'pmDobra' ? '#fff' : '#8892a4', cursor: 'pointer' }}
+                  >
+                    🔁 Possibilitar dobras
+                  </button>
+                  </>}
                 </div>
                 <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
                   {fioMode === 'strict'
                     ? 'Fiorino apenas nas rotas com tipo de veículo Fiorino na roteirização'
                     : fioMode === 'maximize'
                       ? 'Fiorino em rotas obrigatórias + qualquer rota disponível para aproveitar o restante da fila'
+                      : fioMode === 'pmAvail'
+                      ? `Só Fiorinos com status Disponível no ${selectedShift} (quem já tem rota em outro turno — dobra — fica de fora): obrigatórias primeiro, depois qualquer rota`
+                      : fioMode === 'pmDobra'
+                      ? `Todas as Fiorinos disponíveis no ${selectedShift}, incluindo as de dobra: obrigatórias primeiro, depois qualquer rota`
                       : `Só Fiorinos disponíveis no dia apenas para o AM (quem tem PM1/PM2 fica de fora): obrigatórias primeiro, depois qualquer rota${selectedShift !== 'AM' ? ' — atenção: o turno selecionado não é o AM' : ''}`}
                 </p>
               </div>

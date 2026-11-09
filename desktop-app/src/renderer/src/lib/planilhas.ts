@@ -40,8 +40,9 @@ function findTab(tabs: string[], wanted: string[]): string | null {
   return null
 }
 
-async function readTab(id: string, title: string): Promise<string[][]> {
-  const res = await sheetsGet<{ values?: string[][] }>(`https://sheets.googleapis.com/v4/spreadsheets/${id}/values/${encodeURIComponent(`'${title.replace(/'/g, "''")}'`)}`)
+async function readTab(id: string, title: string, raw = false): Promise<string[][]> {
+  // raw: valores sem formatação (número puro, ex. -16.3649754), sem depender do separador do locale da planilha
+  const res = await sheetsGet<{ values?: string[][] }>(`https://sheets.googleapis.com/v4/spreadsheets/${id}/values/${encodeURIComponent(`'${title.replace(/'/g, "''")}'`)}${raw ? '?valueRenderOption=UNFORMATTED_VALUE' : ''}`)
   return (res.values ?? []).map(r => r.map(c => String(c ?? '')))
 }
 
@@ -142,15 +143,41 @@ export async function fetchRoutingSheet(url: string): Promise<RoutingSheetData> 
         vol: c('Order Volume'), kg: c('Weight (kg)'), cage: c('Corridor Cage'), veh: c('Planned Vehicle Type'), rota: c('Rota'),
         dur: c('Duração em segundos'), wave: c('Onda de roteirização'), km: c('Distância total da rota km'), cep: c('Cabeça de CEP'),
       }
+      // Latitude/Longitude: aceita variações do nome da coluna e uma coluna única "lat, lon"
+      const hdr = rows[ch.idx].map(norm)
+      const findCol = (names: string[], frag: RegExp) => {
+        for (const n of names) { const i = hdr.indexOf(norm(n)); if (i >= 0) return i }
+        return hdr.findIndex(h => frag.test(h))
+      }
+      I.lat = findCol(['Latitude', 'Lat', 'Destination Latitude', 'Delivery Latitude', 'Buyer Latitude'], /lat/)
+      I.lon = findCol(['Longitude', 'Lon', 'Lng', 'Long', 'Destination Longitude', 'Delivery Longitude', 'Buyer Longitude'], /lon|lng/)
+      if (I.lon === I.lat) I.lon = -1
+      const coordCol = I.lat < 0 ? hdr.findIndex(h => /coord|latlon|latlng|geo/.test(h)) : -1
+      // Mesma guia lida sem formatação: as coordenadas vêm como número puro
+      let rawRows: string[][] = []
+      try { rawRows = await readTab(id, cts, true) } catch { rawRows = [] }
       const g = (r: string[], i: number) => (i >= 0 ? (r[i] ?? '').trim() : '')
-      for (const r of rows.slice(ch.idx + 1)) {
+      const coordOf = (k: number, i: number, isLat: boolean): number | null => {
+        const rv = Number(g(rawRows[k] ?? [], i).replace(',', '.'))
+        const lim = isLat ? 90 : 180
+        if (g(rawRows[k] ?? [], i) && Number.isFinite(rv) && rv !== 0 && Math.abs(rv) <= lim) return rv
+        const f = brCoord(g(rows[k], i))
+        return f != null && Math.abs(f) <= lim ? f : null
+      }
+      const pairOf = (k: number): [number | null, number | null] => {
+        if (coordCol < 0) return [I.lat >= 0 ? coordOf(k, I.lat, true) : null, I.lon >= 0 ? coordOf(k, I.lon, false) : null]
+        const m = g(rows[k], coordCol).match(/(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)/)
+        return m ? [Number(m[1].replace(',', '.')), Number(m[2].replace(',', '.'))] : [null, null]
+      }
+      for (let k = ch.idx + 1; k < rows.length; k++) {
+        const r = rows[k]
         const at = g(r, I.at)
         const tn = g(r, I.tn)
         if (!at.startsWith('AT') || !tn) continue
         packages.push({
           at, tn, seq: brNum(g(r, I.seq)), stop: brNum(g(r, I.stop)), zip: g(r, I.zip), cluster: g(r, I.cluster),
           address: g(r, I.addr), city: g(r, I.city), neighborhood: g(r, I.nb), addressType: g(r, I.at2), category: g(r, I.cat),
-          lat: brCoord(g(r, I.lat)), lon: brCoord(g(r, I.lon)), deliveryLabel: g(r, I.label),
+          lat: pairOf(k)[0], lon: pairOf(k)[1], deliveryLabel: g(r, I.label),
           dims: [brNum(g(r, I.l)), brNum(g(r, I.w)), brNum(g(r, I.hh))],
           volumeCm3: brNum(g(r, I.vol)), weightG: brNum(g(r, I.kg)), cage: g(r, I.cage), plannedVehicle: g(r, I.veh).toUpperCase(),
           rota: g(r, I.rota), durationSec: brNum(g(r, I.dur)), wave: g(r, I.wave),
@@ -193,7 +220,13 @@ export function saveCtPackages(day: string, shift: Shift, pk: CtPackage[]) {
     const old = Object.keys(localStorage).filter(k => k.startsWith('local:ct:')).sort()
     for (const k of old.slice(0, Math.max(0, old.length - 5))) if (k !== ctKey(day, shift)) localStorage.removeItem(k)
     localStorage.setItem(ctKey(day, shift), JSON.stringify(pk))
-  } catch { /* cheio */ }
+  } catch {
+    // Sem espaço: apaga os CTs dos outros turnos e tenta de novo
+    try {
+      for (const k of Object.keys(localStorage)) if (k.startsWith('local:ct:') && k !== ctKey(day, shift)) localStorage.removeItem(k)
+      localStorage.setItem(ctKey(day, shift), JSON.stringify(pk))
+    } catch { console.warn('[CT] pacotes não couberam no armazenamento local', pk.length) }
+  }
 }
 export function getCtPackages(day: string, shift: Shift): CtPackage[] {
   try { return JSON.parse(localStorage.getItem(ctKey(day, shift)) ?? '[]') as CtPackage[] } catch { return [] }

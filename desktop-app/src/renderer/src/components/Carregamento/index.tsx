@@ -645,10 +645,12 @@ function MesasView({ entries, phoneMap, day, onRefresh, urgent }: { entries: Que
   const [sideCollapsed, setSideCollapsed] = useState(() => { try { return localStorage.getItem('ui:mesas-side-collapsed') === '1' } catch { return false } })
   const toggleSide = () => setSideCollapsed(v => { try { localStorage.setItem('ui:mesas-side-collapsed', v ? '0' : '1') } catch { /* */ } return !v })
   const STYLE = {
-    occupied: { label: 'Ocupada', color: '#f87171', bg: 'rgba(239,68,68,.08)' },
+    occupied: { label: 'Ocupada', color: '#60a5fa', bg: 'rgba(96,165,250,.08)' },
     calling: { label: 'Chamando motorista', color: '#fbbf24', bg: 'rgba(245,158,11,.10)' },
     free: { label: 'Livre', color: '#4ade80', bg: 'rgba(74,222,128,.06)' },
+    late: { label: 'Chamado há 2+ min', color: '#f87171', bg: 'rgba(239,68,68,.14)' },
   }
+  const CALL_LIMIT_MIN = 2 // vermelho só quando o motorista chamado não chega à mesa em 2 minutos
   const minsAgo = (ts?: number) => (ts ? Math.max(0, Math.round((nowSec - ts) / 60)) : null)
 
   // Atualiza sozinho a cada minuto enquanto a aba de mesas está aberta
@@ -727,28 +729,31 @@ function MesasView({ entries, phoneMap, day, onRefresh, urgent }: { entries: Que
               style={{ width: 56, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 6, padding: '4px 6px', fontSize: 12, outline: 'none' }} />
           </label>
         </div>
-        <p style={{ margin: '0 0 10px', fontSize: 11, color: '#64748b' }}>Atualiza sozinho a cada minuto. Tempo em vermelho: ocupada há 40+ min, chamando há 10+ min, vazia há 15+ min. "≥" = o app começou a acompanhar a mesa depois que ela já estava assim.</p>
+        <p style={{ margin: '0 0 10px', fontSize: 11, color: '#64748b' }}>Atualiza sozinho a cada minuto. Cores: 🟢 livre · 🟡 chamando · 🔵 ocupada · 🔴 motorista chamado há 2+ min sem chegar. Tempo em laranja: ocupada há 40+ min ou vazia há 15+ min. Borda rosa: rota urgente. "≥" = o app começou a acompanhar a mesa depois que ela já estava assim.</p>
         {noApiData && <p style={{ margin: '0 0 12px', fontSize: 12, color: '#fbbf24' }}>⚠ Esta fila veio de um CSV antigo, que não tem as mesas. Clique em 🔄 Atualizar do SPX.</p>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
           {docks.map(k => {
             const st = state(k)
-            const sty = STYLE[st]
             const d = byDock.get(k)
             const people = st === 'occupied' ? d!.occupied : st === 'calling' ? d!.calling : []
+            const callMin = st === 'calling' ? minsAgo(people[0]?.calledAt) : null
+            const late = callMin != null && callMin >= CALL_LIMIT_MIN
+            const sty = late ? STYLE.late : STYLE[st]
             const hasUrgent = people.some(e => urgent.has(e.atId))
+            const URG = '#e879f9' // urgente: rosa (o vermelho fica só para chamada atrasada)
             return (
-              <div key={k} style={{ background: hasUrgent ? 'rgba(248,113,113,.12)' : sty.bg, border: `${hasUrgent ? 2 : 1}px solid ${hasUrgent ? '#f87171' : `${sty.color}55`}`, borderTop: `3px solid ${hasUrgent ? '#f87171' : sty.color}`, borderRadius: 10, padding: '10px 12px', minHeight: 92, boxShadow: hasUrgent ? '0 0 12px rgba(248,113,113,.35)' : undefined }}>
+              <div key={k} style={{ background: sty.bg, border: `${hasUrgent || late ? 2 : 1}px solid ${late ? sty.color : hasUrgent ? URG : `${sty.color}55`}`, borderTop: `3px solid ${sty.color}`, borderRadius: 10, padding: '10px 12px', minHeight: 92, boxShadow: late ? '0 0 12px rgba(248,113,113,.35)' : hasUrgent ? '0 0 12px rgba(232,121,249,.35)' : undefined }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
                   <span style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>{k}</span>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: sty.color, textTransform: 'uppercase', letterSpacing: '.04em' }}>{st === 'calling' ? '📣 ' : ''}{sty.label}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: sty.color, textTransform: 'uppercase', letterSpacing: '.04em' }}>{late ? '⏰ ' : st === 'calling' ? '📣 ' : ''}{sty.label}</span>
                 </div>
                 {(() => {
                   const dur = durationOf(k, st, people[0]?.calledAt)
                   if (!dur) return null
-                  const limit = st === 'occupied' ? 40 : st === 'calling' ? 10 : 15
+                  const limit = st === 'occupied' ? 40 : st === 'calling' ? CALL_LIMIT_MIN : 15
                   return (
                     <p title={dur.exact ? undefined : 'O app só começou a acompanhar esta mesa agora — o tempo real pode ser maior.'}
-                      style={{ margin: '4px 0 0', fontSize: 20, fontWeight: 800, fontFamily: 'monospace', color: dur.min >= limit ? '#f87171' : sty.color }}>
+                      style={{ margin: '4px 0 0', fontSize: 20, fontWeight: 800, fontFamily: 'monospace', color: st === 'calling' ? sty.color : dur.min >= limit ? '#fb923c' : sty.color }}>
                       {dur.exact ? '' : '≥ '}{fmtDur(dur.min)}
                       <span style={{ fontSize: 10, fontWeight: 600, color: '#8892a4', fontFamily: 'inherit', marginLeft: 6 }}>{st === 'occupied' ? 'ocupada' : st === 'calling' ? 'chamando' : 'vazia'}</span>
                     </p>

@@ -1,3 +1,5 @@
+import { AlertaDisponibilidade, AvailChip, useAvailabilityIssues } from '../AlertaDisponibilidade'
+import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
 import { useEffect, useMemo, useState } from 'react'
 import type { StoredDriver } from '../../lib/localStore'
 import type { DriverResult } from '../../lib/types'
@@ -28,6 +30,7 @@ interface Props {
   selectedShift: Shift
   focusAt?: string
   focusTick?: number
+  workPref?: WorkPreferenceData | null
 }
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
@@ -382,7 +385,7 @@ function RouteDashboard({ rows, onOpenTable }: { rows: Row[]; onOpenTable: (sear
   )
 }
 
-export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedShift, focusAt, focusTick }: Props) {
+export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedShift, focusAt, focusTick, workPref = null }: Props) {
   // Detalhe da rota abre aqui dentro (clicando na linha da tabela) e volta com o botão
   const [openAt, setOpenAt] = useState<string | null>(focusAt ?? null)
   useEffect(() => { if (focusAt) setOpenAt(focusAt) }, [focusAt, focusTick])
@@ -393,6 +396,7 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
   const [view, setView] = useState<'dashboard' | 'tabela'>('tabela')
 
   const routes = useMemo(() => routeStore.get(selectedDay, selectedShift) ?? [], [selectedDay, selectedShift])
+  const availIssues = useAvailabilityIssues(routes, workPref, selectedDay, selectedShift)
 
   const registryMap = useMemo(() => new Map(registry.map(d => [d.id, d])), [registry])
   const dsMap = useMemo(() => new Map(dsDrivers.map(d => [d.driver_id, d])), [dsDrivers])
@@ -478,6 +482,7 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
           </div>
         </div>
       </div>
+      {routes.length > 0 && <AlertaDisponibilidade routes={routes} workPref={workPref} day={selectedDay} shift={selectedShift} issues={availIssues} />}
 
 
       {routes.length === 0 ? (
@@ -564,7 +569,7 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
                   const phone = r.phone?.replace(/\D/g, '') ?? ''
                   return (
                     <tr key={r.id} onClick={() => onOpenRoute(r.atId)} title="Abrir detalhe da rota"
-                      style={{ borderBottom: '1px solid #1e2130', cursor: 'pointer', background: r.status === 'ATRIBUIDA' ? 'rgba(34,197,94,.02)' : r.isInterior ? 'rgba(245,158,11,.02)' : 'transparent' }}>
+                      style={{ borderBottom: '1px solid #1e2130', cursor: 'pointer', boxShadow: availIssues.has(r.atId) ? 'inset 4px 0 0 #dc2626' : undefined, background: availIssues.has(r.atId) ? 'rgba(220,38,38,.12)' : r.status === 'ATRIBUIDA' ? 'rgba(34,197,94,.02)' : r.isInterior ? 'rgba(245,158,11,.02)' : 'transparent' }}>
                       <td style={{ ...TD, fontSize: 14, fontWeight: 800, color: '#e2e8f0' }}>{r.gaiola || '—'}</td>
                       <td style={TD}>
                         <div style={{ fontFamily: 'monospace', fontWeight: 600, color: '#cbd5e1', fontSize: 11 }}>{r.atId}</div>
@@ -592,7 +597,7 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
                       <td style={TD}>
                         {r.assignedDriverName ? (
                           <>
-                            <div style={{ color: '#e2e8f0' }}>{r.assignedDriverName}</div>
+                            <div style={{ color: '#e2e8f0' }}>{r.assignedDriverName}{availIssues.has(r.atId) && <AvailChip issue={availIssues.get(r.atId)!} />}</div>
                             <div style={{ fontSize: 10, color: '#64748b', display: 'flex', gap: 6, alignItems: 'center' }}>
                               <span style={{ fontFamily: 'monospace' }}>{r.assignedDriverId || ''}</span>
                               {dsVal && <span style={{ fontWeight: 700, color: dsColor }}>DS {dsVal}%</span>}

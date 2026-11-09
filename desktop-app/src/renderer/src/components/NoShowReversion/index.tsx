@@ -1,3 +1,4 @@
+import { AlertaDisponibilidade, useAvailabilityIssues } from '../AlertaDisponibilidade'
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import { parseSpxCurl, curlProblem } from '../../lib/spxCurl'
 import { findSwaps, VehicleSwapModal, type SwapPair } from './VehicleSwap'
@@ -1530,6 +1531,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const [queue, setQueue] = useState<QueueDriver[]>(() => noShowQueueStore.get(selectedShift))
   useEffect(() => { setQueue(noShowQueueStore.get(selectedShift)) }, [selectedShift])
 
+  const availIssues = useAvailabilityIssues(routes, workPref, selectedDay, selectedShift)
   const removeFromQueue = useCallback((driverIds: string | string[]) => {
     const ids = Array.isArray(driverIds) ? driverIds : [driverIds]
     noShowQueueStore.remove(selectedShift, ids)
@@ -2334,6 +2336,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
           </div>
         </div>
       </div>
+      <AlertaDisponibilidade routes={routes} workPref={workPref} day={selectedDay} shift={selectedShift} issues={availIssues} />
 
       {/* Stats */}
       <div style={{ display: 'flex', gap: 10, padding: '10px 20px', borderBottom: '1px solid #1e2130', flexShrink: 0, flexWrap: 'wrap' }}>

@@ -1,3 +1,5 @@
+import { AlertaDisponibilidade, AvailChip, availabilityIssue, useAvailabilityIssues } from '../AlertaDisponibilidade'
+import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
 import { useMemo, useState, useEffect, useRef } from 'react'
 import type { Shift } from '../../lib/globalConfig'
 import type { StoredDriver } from '../../lib/localStore'
@@ -12,6 +14,7 @@ interface Props {
   registry: StoredDriver[]
   selectedDay: string
   selectedShift: Shift
+  workPref?: WorkPreferenceData | null
 }
 
 const DEFAULT_WINDOWS: Record<Shift, LoadWindowConfig[]> = {
@@ -42,7 +45,10 @@ interface NotArrived {
   letter: string; arriveByMin: number | null; status: NotArrivedStatus
 }
 
-export default function Carregamento({ registry, selectedDay, selectedShift }: Props) {
+export default function Carregamento({ registry, selectedDay, selectedShift, workPref = null }: Props) {
+  const shiftRoutes = useMemo(() => routeStore.get(selectedDay, selectedShift) ?? [], [selectedDay, selectedShift])
+  const availIssues = useAvailabilityIssues(shiftRoutes, workPref, selectedDay, selectedShift)
+  const availOf = (driverId: string) => availabilityIssue(workPref, driverId, selectedDay, selectedShift)
   const [queue, setQueue] = useState<{ entries: QueueEntry[]; fileName: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
@@ -250,6 +256,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
         {error && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#f87171' }}>⚠ {error}</p>}
         {!hasValidWindows && queue && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fbbf24' }}>⚠ Defina pelo menos uma janela de carregamento (letra + horário) para calcular os prazos.</p>}
       </div>
+      {shiftRoutes.length > 0 && <AlertaDisponibilidade routes={shiftRoutes} workPref={workPref} day={selectedDay} shift={selectedShift} issues={availIssues} />}
 
       {/* Tab bar — só exibe quando há dados */}
       {queue && (
@@ -387,7 +394,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
                   {shownNotArrived.map(n => (
                     <tr key={n.driverId} style={{ borderBottom: '1px solid #1e2130', background: urgent.byAt.has(n.atId) ? 'rgba(248,113,113,.10)' : n.status === 'overdue' ? 'rgba(239,68,68,.05)' : 'transparent', boxShadow: urgent.byAt.has(n.atId) ? 'inset 4px 0 0 #f87171' : undefined }}>
                       <td style={TD}>
-                        <span style={{ fontWeight: 500 }}>{n.name || n.driverId}</span> <UrgentBadge info={urgent.byAt.get(n.atId)} />
+                        <span style={{ fontWeight: 500 }}>{n.name || n.driverId}</span> <UrgentBadge info={urgent.byAt.get(n.atId)} />{(() => { const i = availOf(n.driverId); return i ? <AvailChip issue={i} /> : null })()}
                         <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{n.driverId}</span>
                       </td>
                       <td style={TD}><span style={{ fontWeight: 700 }}>{n.letter || '—'}</span> <span style={{ color: '#64748b', fontSize: 10 }}>{n.gaiola}</span></td>
@@ -419,7 +426,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
               {shownRows.map(({ e, w }) => (
                 <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: urgent.byAt.has(e.atId) && e.situation !== 'done' ? 'rgba(248,113,113,.10)' : w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent', boxShadow: urgent.byAt.has(e.atId) ? 'inset 4px 0 0 #f87171' : undefined }}>
                   <td style={TD}>
-                    <span style={{ fontWeight: 500 }}>{e.driverName}</span> <UrgentBadge info={urgent.byAt.get(e.atId)} />
+                    <span style={{ fontWeight: 500 }}>{e.driverName}</span> <UrgentBadge info={urgent.byAt.get(e.atId)} />{(() => { const i = availOf(e.driverId); return i ? <AvailChip issue={i} /> : null })()}
                     <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.driverId}</span>
                   </td>
                   <td style={TD}>{e.situation ? <SituationChip s={e.situation} dock={e.dock} /> : '—'}</td>

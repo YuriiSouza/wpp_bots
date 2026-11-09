@@ -408,6 +408,7 @@ export default function App() {
         {section === 'perfil' && (
           <VisaoGeral
             registry={localStore.getDrivers()}
+            workPref={workPref}
             dsDrivers={dsState.phase === 'done' ? dsState.result.drivers : []}
             selectedDay={selectedDay}
             selectedShift={selectedShift}
@@ -436,6 +437,7 @@ export default function App() {
         {section === 'carregamento' && (
           <Carregamento
             registry={localStore.getDrivers()}
+            workPref={workPref}
             selectedDay={selectedDay}
             selectedShift={selectedShift}
           />

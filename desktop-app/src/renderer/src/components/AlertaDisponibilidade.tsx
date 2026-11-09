@@ -1,71 +1,72 @@
 import { useMemo, useState } from 'react'
-import type { WorkPreferenceData } from '../lib/workPreferenceParser'
+import type { StoredDriver } from '../lib/localStore'
 import type { LocalRoute } from '../lib/noshowRouteParser'
-import { getGlobalConfig, driverMatchesShift, type Shift } from '../lib/globalConfig'
+import type { Shift } from '../lib/globalConfig'
 
-// Rotas atribuídas a motoristas que NÃO estão com status Disponível no turno, pelo relatório de disponibilidade.
+// Rotas atribuídas a motoristas que NÃO estão ativos no cadastro do SPX:
+// status com algum tipo de Suspended (Suspended, Suspended(KYC), Suspended(FV), Pre-Suspended…) ou Deactivated.
 export interface AvailIssue { label: string; detail: string }
 
-export function availabilityIssue(workPref: WorkPreferenceData | null, driverId: string | null, day: string, shift: Shift): AvailIssue | null {
-  if (!workPref || !driverId) return null
-  const d = workPref.drivers.find(x => x.driverId === driverId)
-  if (!d) return { label: 'Fora do relatório', detail: 'não aparece no relatório de disponibilidade' }
-  if (!workPref.dates.includes(day)) return null // relatório não cobre este dia: não dá para afirmar
-  const s = d.schedule[day]
-  if (!s || s.status === 'no_schedule') return { label: 'Sem disponibilidade', detail: 'não marcou disponibilidade no dia' }
-  if (s.status === 'not_available') return { label: 'Indisponível', detail: 'marcou Not Available no dia' }
-  if (s.status === 'pending') return { label: 'Pendente', detail: 'disponibilidade pendente' }
-  if (!driverMatchesShift(s.slots, shift, getGlobalConfig())) return { label: `Não é do ${shift}`, detail: `disponível só em ${s.slots.join(', ') || '—'}` }
-  return null
+export const isInactiveStatus = (status?: string | null) => /suspend|deactiv/i.test(status ?? '')
+
+export function driverStatusMap(registry: StoredDriver[]) {
+  return new Map(registry.map(d => [d.id, d]))
 }
 
-export function useAvailabilityIssues(routes: LocalRoute[], workPref: WorkPreferenceData | null, day: string, shift: Shift) {
+export function availabilityIssue(byId: Map<string, StoredDriver>, driverId: string | null): AvailIssue | null {
+  if (!driverId) return null
+  const d = byId.get(driverId)
+  if (!d || !isInactiveStatus(d.status)) return null
+  return { label: d.status, detail: `status no cadastro do SPX: ${d.status}` }
+}
+
+export function useAvailabilityIssues(routes: LocalRoute[], registry: StoredDriver[]) {
   return useMemo(() => {
+    const byId = driverStatusMap(registry)
     const m = new Map<string, AvailIssue>() // atId → problema
     for (const r of routes) {
       if (r.status !== 'ATRIBUIDA' || !r.assignedDriverId) continue
-      const i = availabilityIssue(workPref, r.assignedDriverId, day, shift)
+      const i = availabilityIssue(byId, r.assignedDriverId)
       if (i) m.set(r.atId, i)
     }
     return m
-  }, [routes, workPref, day, shift])
+  }, [routes, registry])
 }
 
 export function AvailChip({ issue }: { issue: AvailIssue }) {
   return <span title={issue.detail} style={{ display: 'inline-block', fontSize: 10, fontWeight: 800, color: '#fff', background: '#dc2626', borderRadius: 4, padding: '1px 6px', marginLeft: 6, whiteSpace: 'nowrap' }}>⛔ {issue.label}</span>
 }
 
-export function AlertaDisponibilidade({ routes, workPref, day, shift, issues }: { routes: LocalRoute[]; workPref: WorkPreferenceData | null; day: string; shift: Shift; issues: Map<string, AvailIssue> }) {
+export function AlertaDisponibilidade({ routes, registry, shift, issues }: { routes: LocalRoute[]; registry: StoredDriver[]; shift: Shift; issues: Map<string, AvailIssue> }) {
   const [open, setOpen] = useState(true)
   const [copied, setCopied] = useState('')
-  if (!workPref) return (
+  if (registry.length === 0) return (
     <div style={{ margin: '10px 20px 0', padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(251,191,36,.4)', background: 'rgba(251,191,36,.08)', fontSize: 12, color: '#fbbf24' }}>
-      ⚠ Importe o relatório de disponibilidade em Uploads para conferir se os motoristas das rotas estão disponíveis no turno.
+      ⚠ Importe a lista de motoristas em Uploads para conferir se os motoristas das rotas estão ativos (sem Suspended/Deactivated).
     </div>
   )
-  if (!workPref.dates.includes(day)) return null
   const list = routes.filter(r => issues.has(r.atId))
   if (list.length === 0) return (
     <div style={{ margin: '10px 20px 0', padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(74,222,128,.35)', background: 'rgba(74,222,128,.06)', fontSize: 12, color: '#4ade80' }}>
-      ✓ Todos os motoristas com rota no {shift} estão com status Disponível no turno.
+      ✓ Nenhum motorista com rota no {shift} está Suspended ou Deactivated no cadastro.
     </div>
   )
   const copy = async (k: string, text: string) => { await navigator.clipboard.writeText(text); setCopied(k); setTimeout(() => setCopied(''), 1500) }
   return (
     <div style={{ margin: '10px 20px 0', borderRadius: 10, border: '2px solid #dc2626', background: 'rgba(220,38,38,.12)', boxShadow: '0 0 14px rgba(220,38,38,.3)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 14, fontWeight: 800, color: '#fca5a5', flex: 1 }}>⛔ {list.length} rota{list.length > 1 ? 's' : ''} com motorista que NÃO está disponível no {shift}</span>
+        <span style={{ fontSize: 14, fontWeight: 800, color: '#fca5a5', flex: 1 }}>⛔ {list.length} rota{list.length > 1 ? 's' : ''} com motorista Suspended/Deactivated no {shift}</span>
         <button onClick={() => void copy('at', list.map(r => r.atId).join('\n'))} style={btn}>{copied === 'at' ? '✓ Copiado' : '📋 ATs'}</button>
         <button onClick={() => void copy('all', list.map(r => `${r.atId}\t${r.gaiola ?? ''}\t${r.assignedDriverId}\t${r.assignedDriverName ?? ''}\t${issues.get(r.atId)!.label}`).join('\n'))} style={btn}>{copied === 'all' ? '✓ Copiado' : '📋 Lista'}</button>
         <button onClick={() => setOpen(v => !v)} style={btn}>{open ? '▲ Esconder' : '▼ Ver'}</button>
       </div>
       {open && (
         <div style={{ padding: '0 14px 10px', display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 220, overflow: 'auto' }}>
-          {list.map(r => { const i = issues.get(r.atId)!; return (
+          {list.map(r => (
             <div key={r.atId} style={{ fontSize: 12, color: '#fecaca' }}>
-              <b>{r.gaiola ?? '—'}</b> · {r.atId} · {r.assignedDriverName ?? r.assignedDriverId} ({r.assignedDriverId}) — <b>{i.label}</b>: {i.detail}
+              <b>{r.gaiola ?? '—'}</b> · {r.atId} · {r.assignedDriverName ?? r.assignedDriverId} ({r.assignedDriverId}) — <b>{issues.get(r.atId)!.label}</b>
             </div>
-          ) })}
+          ))}
         </div>
       )}
     </div>

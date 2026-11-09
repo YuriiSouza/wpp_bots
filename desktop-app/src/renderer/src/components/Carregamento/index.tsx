@@ -1,5 +1,4 @@
-import { AlertaDisponibilidade, AvailChip, availabilityIssue, useAvailabilityIssues } from '../AlertaDisponibilidade'
-import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
+import { AlertaDisponibilidade, AvailChip, availabilityIssue, driverStatusMap, useAvailabilityIssues } from '../AlertaDisponibilidade'
 import { useMemo, useState, useEffect, useRef } from 'react'
 import type { Shift } from '../../lib/globalConfig'
 import type { StoredDriver } from '../../lib/localStore'
@@ -14,7 +13,6 @@ interface Props {
   registry: StoredDriver[]
   selectedDay: string
   selectedShift: Shift
-  workPref?: WorkPreferenceData | null
 }
 
 const DEFAULT_WINDOWS: Record<Shift, LoadWindowConfig[]> = {
@@ -45,10 +43,11 @@ interface NotArrived {
   letter: string; arriveByMin: number | null; status: NotArrivedStatus
 }
 
-export default function Carregamento({ registry, selectedDay, selectedShift, workPref = null }: Props) {
+export default function Carregamento({ registry, selectedDay, selectedShift }: Props) {
   const shiftRoutes = useMemo(() => routeStore.get(selectedDay, selectedShift) ?? [], [selectedDay, selectedShift])
-  const availIssues = useAvailabilityIssues(shiftRoutes, workPref, selectedDay, selectedShift)
-  const availOf = (driverId: string) => availabilityIssue(workPref, driverId, selectedDay, selectedShift)
+  const availIssues = useAvailabilityIssues(shiftRoutes, registry)
+  const regById = useMemo(() => driverStatusMap(registry), [registry])
+  const availOf = (driverId: string) => availabilityIssue(regById, driverId)
   const [queue, setQueue] = useState<{ entries: QueueEntry[]; fileName: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
@@ -256,7 +255,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift, wor
         {error && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#f87171' }}>⚠ {error}</p>}
         {!hasValidWindows && queue && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fbbf24' }}>⚠ Defina pelo menos uma janela de carregamento (letra + horário) para calcular os prazos.</p>}
       </div>
-      {shiftRoutes.length > 0 && <AlertaDisponibilidade routes={shiftRoutes} workPref={workPref} day={selectedDay} shift={selectedShift} issues={availIssues} />}
+      {shiftRoutes.length > 0 && <AlertaDisponibilidade routes={shiftRoutes} registry={registry} shift={selectedShift} issues={availIssues} />}
 
       {/* Tab bar — só exibe quando há dados */}
       {queue && (

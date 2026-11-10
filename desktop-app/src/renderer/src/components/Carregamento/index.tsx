@@ -1,9 +1,11 @@
+import { AlertaDisponibilidade, AvailChip, availabilityIssue, driverStatusMap, useAvailabilityIssues } from '../AlertaDisponibilidade'
 import { useMemo, useState, useEffect, useRef } from 'react'
 import type { Shift } from '../../lib/globalConfig'
 import type { StoredDriver } from '../../lib/localStore'
 import { routeStore } from '../../lib/routeStore'
 import { queueStore } from '../../lib/queueStore'
 import CarregamentoDashboard from './Dashboard'
+import { useUrgentes, UrgentBadge, type UrgentInfo } from './Urgentes'
 import { fetchSpxQueue, dockKey, SITUATION_LABEL, type QueueSituation } from '../../lib/spxQueueFetcher'
 import { computeLoadWindowMulti, windowForLetterMulti, extractLetter, minToHHMM, type QueueEntry, type LoadWindowConfig } from '../../lib/queueListParser'
 
@@ -42,6 +44,10 @@ interface NotArrived {
 }
 
 export default function Carregamento({ registry, selectedDay, selectedShift }: Props) {
+  const shiftRoutes = useMemo(() => routeStore.get(selectedDay, selectedShift) ?? [], [selectedDay, selectedShift])
+  const availIssues = useAvailabilityIssues(shiftRoutes, registry)
+  const regById = useMemo(() => driverStatusMap(registry), [registry])
+  const availOf = (driverId: string) => availabilityIssue(regById, driverId)
   const [queue, setQueue] = useState<{ entries: QueueEntry[]; fileName: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
@@ -155,6 +161,8 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
     return list.sort((a, b) => rank(a.status) - rank(b.status) || (a.arriveByMin ?? 0) - (b.arriveByMin ?? 0))
   }, [expected, arrivedIds, arrivedAts, windows, nowMin])
 
+  const urgent = useUrgentes(selectedDay, selectedShift)
+
   const onTime = rows.filter(r => r.w.status === 'on-time')
   const outOfWindow = rows.filter(r => r.w.status === 'out-of-window')
   const unknownArrived = rows.filter(r => r.w.status === 'unknown')
@@ -247,6 +255,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
         {error && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#f87171' }}>⚠ {error}</p>}
         {!hasValidWindows && queue && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#fbbf24' }}>⚠ Defina pelo menos uma janela de carregamento (letra + horário) para calcular os prazos.</p>}
       </div>
+      {shiftRoutes.length > 0 && <AlertaDisponibilidade routes={shiftRoutes} registry={registry} shift={selectedShift} issues={availIssues} />}
 
       {/* Tab bar — só exibe quando há dados */}
       {queue && (
@@ -264,7 +273,7 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
           <p style={{ margin: 0, maxWidth: 420 }}>{loading ? 'Buscando a fila no SPX…' : <>Clique em <b>🔄 Atualizar do SPX</b> para buscar a fila deste turno e ver</>} quem chegou no prazo, quem chegou fora da janela, quem está aguardando e quem está atrasado.</p>
         </div>
       ) : activeView === 'mesas' ? (
-        <MesasView entries={queue.entries} phoneMap={phoneMap} day={selectedDay} onRefresh={refreshFromSpx} />
+        <MesasView entries={queue.entries} phoneMap={phoneMap} day={selectedDay} onRefresh={refreshFromSpx} urgent={urgent.byAt} />
       ) : activeView === 'dashboard' ? (
         <CarregamentoDashboard rows={rows} notArrived={notArrived} nowMin={nowMin} phoneMap={phoneMap} />
       ) : (
@@ -382,9 +391,9 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
                 </thead>
                 <tbody>
                   {shownNotArrived.map(n => (
-                    <tr key={n.driverId} style={{ borderBottom: '1px solid #1e2130', background: n.status === 'overdue' ? 'rgba(239,68,68,.05)' : 'transparent' }}>
+                    <tr key={n.driverId} style={{ borderBottom: '1px solid #1e2130', background: urgent.byAt.has(n.atId) ? 'rgba(248,113,113,.10)' : n.status === 'overdue' ? 'rgba(239,68,68,.05)' : 'transparent', boxShadow: urgent.byAt.has(n.atId) ? 'inset 4px 0 0 #f87171' : undefined }}>
                       <td style={TD}>
-                        <span style={{ fontWeight: 500 }}>{n.name || n.driverId}</span>
+                        <span style={{ fontWeight: 500 }}>{n.name || n.driverId}</span> <UrgentBadge info={urgent.byAt.get(n.atId)} />{(() => { const i = availOf(n.driverId); return i ? <AvailChip issue={i} /> : null })()}
                         <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{n.driverId}</span>
                       </td>
                       <td style={TD}><span style={{ fontWeight: 700 }}>{n.letter || '—'}</span> <span style={{ color: '#64748b', fontSize: 10 }}>{n.gaiola}</span></td>
@@ -414,9 +423,9 @@ export default function Carregamento({ registry, selectedDay, selectedShift }: P
             </thead>
             <tbody>
               {shownRows.map(({ e, w }) => (
-                <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent' }}>
+                <tr key={e.driverId + e.atId} style={{ borderBottom: '1px solid #1e2130', background: urgent.byAt.has(e.atId) && e.situation !== 'done' ? 'rgba(248,113,113,.10)' : w.status === 'out-of-window' ? 'rgba(251,146,60,.05)' : 'transparent', boxShadow: urgent.byAt.has(e.atId) ? 'inset 4px 0 0 #f87171' : undefined }}>
                   <td style={TD}>
-                    <span style={{ fontWeight: 500 }}>{e.driverName}</span>
+                    <span style={{ fontWeight: 500 }}>{e.driverName}</span> <UrgentBadge info={urgent.byAt.get(e.atId)} />{(() => { const i = availOf(e.driverId); return i ? <AvailChip issue={i} /> : null })()}
                     <span style={{ display: 'block', fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.driverId}</span>
                   </td>
                   <td style={TD}>{e.situation ? <SituationChip s={e.situation} dock={e.dock} /> : '—'}</td>
@@ -600,7 +609,7 @@ function SituationChip({ s, dock }: { s: QueueSituation; dock?: string }) {
 // ─── Mesas: ocupada / chamando motorista / livre ─────────────────────────────
 const DOCK_COUNT_KEY = 'spx:dock-count'
 
-function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[]; phoneMap: Map<string, string>; day: string; onRefresh: () => Promise<void> }) {
+function MesasView({ entries, phoneMap, day, onRefresh, urgent }: { entries: QueueEntry[]; phoneMap: Map<string, string>; day: string; onRefresh: () => Promise<void>; urgent: Map<string, UrgentInfo> }) {
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   useEffect(() => { const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000); return () => clearInterval(t) }, [])
 
@@ -642,10 +651,12 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
   const [sideCollapsed, setSideCollapsed] = useState(() => { try { return localStorage.getItem('ui:mesas-side-collapsed') === '1' } catch { return false } })
   const toggleSide = () => setSideCollapsed(v => { try { localStorage.setItem('ui:mesas-side-collapsed', v ? '0' : '1') } catch { /* */ } return !v })
   const STYLE = {
-    occupied: { label: 'Ocupada', color: '#f87171', bg: 'rgba(239,68,68,.08)' },
+    occupied: { label: 'Ocupada', color: '#60a5fa', bg: 'rgba(96,165,250,.08)' },
     calling: { label: 'Chamando motorista', color: '#fbbf24', bg: 'rgba(245,158,11,.10)' },
     free: { label: 'Livre', color: '#4ade80', bg: 'rgba(74,222,128,.06)' },
+    late: { label: 'Chamado há 2+ min', color: '#f87171', bg: 'rgba(239,68,68,.14)' },
   }
+  const CALL_LIMIT_MIN = 2 // vermelho só quando o motorista chamado não chega à mesa em 2 minutos
   const minsAgo = (ts?: number) => (ts ? Math.max(0, Math.round((nowSec - ts) / 60)) : null)
 
   // Atualiza sozinho a cada minuto enquanto a aba de mesas está aberta
@@ -724,27 +735,31 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
               style={{ width: 56, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 6, padding: '4px 6px', fontSize: 12, outline: 'none' }} />
           </label>
         </div>
-        <p style={{ margin: '0 0 10px', fontSize: 11, color: '#64748b' }}>Atualiza sozinho a cada minuto. Tempo em vermelho: ocupada há 40+ min, chamando há 10+ min, vazia há 15+ min. "≥" = o app começou a acompanhar a mesa depois que ela já estava assim.</p>
+        <p style={{ margin: '0 0 10px', fontSize: 11, color: '#64748b' }}>Atualiza sozinho a cada minuto. Cores: 🟢 livre · 🟡 chamando · 🔵 ocupada · 🔴 motorista chamado há 2+ min sem chegar. Tempo em laranja: ocupada há 40+ min ou vazia há 15+ min. Borda rosa: rota urgente. "≥" = o app começou a acompanhar a mesa depois que ela já estava assim.</p>
         {noApiData && <p style={{ margin: '0 0 12px', fontSize: 12, color: '#fbbf24' }}>⚠ Esta fila veio de um CSV antigo, que não tem as mesas. Clique em 🔄 Atualizar do SPX.</p>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
           {docks.map(k => {
             const st = state(k)
-            const sty = STYLE[st]
             const d = byDock.get(k)
             const people = st === 'occupied' ? d!.occupied : st === 'calling' ? d!.calling : []
+            const callMin = st === 'calling' ? minsAgo(people[0]?.calledAt) : null
+            const late = callMin != null && callMin >= CALL_LIMIT_MIN
+            const sty = late ? STYLE.late : STYLE[st]
+            const hasUrgent = people.some(e => urgent.has(e.atId))
+            const URG = '#e879f9' // urgente: rosa (o vermelho fica só para chamada atrasada)
             return (
-              <div key={k} style={{ background: sty.bg, border: `1px solid ${sty.color}55`, borderTop: `3px solid ${sty.color}`, borderRadius: 10, padding: '10px 12px', minHeight: 92 }}>
+              <div key={k} style={{ background: sty.bg, border: `${hasUrgent || late ? 2 : 1}px solid ${late ? sty.color : hasUrgent ? URG : `${sty.color}55`}`, borderTop: `3px solid ${sty.color}`, borderRadius: 10, padding: '10px 12px', minHeight: 92, boxShadow: late ? '0 0 12px rgba(248,113,113,.35)' : hasUrgent ? '0 0 12px rgba(232,121,249,.35)' : undefined }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
                   <span style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>{k}</span>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: sty.color, textTransform: 'uppercase', letterSpacing: '.04em' }}>{st === 'calling' ? '📣 ' : ''}{sty.label}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: sty.color, textTransform: 'uppercase', letterSpacing: '.04em' }}>{late ? '⏰ ' : st === 'calling' ? '📣 ' : ''}{sty.label}</span>
                 </div>
                 {(() => {
                   const dur = durationOf(k, st, people[0]?.calledAt)
                   if (!dur) return null
-                  const limit = st === 'occupied' ? 40 : st === 'calling' ? 10 : 15
+                  const limit = st === 'occupied' ? 40 : st === 'calling' ? CALL_LIMIT_MIN : 15
                   return (
                     <p title={dur.exact ? undefined : 'O app só começou a acompanhar esta mesa agora — o tempo real pode ser maior.'}
-                      style={{ margin: '4px 0 0', fontSize: 20, fontWeight: 800, fontFamily: 'monospace', color: dur.min >= limit ? '#f87171' : sty.color }}>
+                      style={{ margin: '4px 0 0', fontSize: 20, fontWeight: 800, fontFamily: 'monospace', color: st === 'calling' ? sty.color : dur.min >= limit ? '#fb923c' : sty.color }}>
                       {dur.exact ? '' : '≥ '}{fmtDur(dur.min)}
                       <span style={{ fontSize: 10, fontWeight: 600, color: '#8892a4', fontFamily: 'inherit', marginLeft: 6 }}>{st === 'occupied' ? 'ocupada' : st === 'calling' ? 'chamando' : 'vazia'}</span>
                     </p>
@@ -756,6 +771,7 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
                   return (
                     <div key={e.driverId + e.atId} style={{ marginTop: 8 }}>
                       <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.driverName}>{e.driverName}</p>
+                      {urgent.has(e.atId) && <div style={{ marginTop: 2 }}><UrgentBadge info={urgent.get(e.atId)} /></div>}
                       <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8892a4', fontFamily: 'monospace' }}>
                         {e.cage || '—'} · {e.orderQty ?? '—'} pct · {e.plate || ''}
                       </p>
@@ -789,11 +805,11 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
         {nextInLine.length === 0 ? <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Ninguém aguardando mesa.</p> : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 520, overflow: 'auto' }}>
             {nextInLine.map((e, i) => (
-              <div key={e.driverId + e.atId} style={{ display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid #1e2130', paddingBottom: 5 }}>
+              <div key={e.driverId + e.atId} style={{ display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid #1e2130', paddingBottom: 5, background: urgent.has(e.atId) ? 'rgba(248,113,113,.10)' : undefined, boxShadow: urgent.has(e.atId) ? 'inset 3px 0 0 #f87171' : undefined }}>
                 <span style={{ width: 20, fontSize: 11, color: '#64748b', textAlign: 'right' }}>{i + 1}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ margin: 0, fontSize: 12, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.driverName}</p>
-                  <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.cage || '—'} · {e.cluster}</p>
+                  <p style={{ margin: 0, fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>{e.cage || '—'} · {e.cluster} {urgent.has(e.atId) && <UrgentBadge info={urgent.get(e.atId)} />}</p>
                 </div>
                 <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: e.overWaitLimit || (e.waitingMin ?? 0) >= 60 ? '#f87171' : (e.waitingMin ?? 0) >= 30 ? '#fbbf24' : '#4ade80' }}>{e.waitingMin ?? '—'}min</span>
               </div>
@@ -811,3 +827,4 @@ function MesasView({ entries, phoneMap, day, onRefresh }: { entries: QueueEntry[
     </div>
   )
 }
+

@@ -1,3 +1,4 @@
+import { AlertaDisponibilidade, useAvailabilityIssues } from '../AlertaDisponibilidade'
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import { parseSpxCurl, curlProblem } from '../../lib/spxCurl'
 import { findSwaps, VehicleSwapModal, type SwapPair } from './VehicleSwap'
@@ -8,6 +9,7 @@ import type { ForwardOrderAnalysis } from '../../lib/forwardOrderParser'
 import type { CallUpAnalysis } from '../../lib/callUpParser'
 import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
 import { parseRoutesTsv, type LocalRoute } from '../../lib/noshowRouteParser'
+import { fetchRoutingSheet, getRoutingLink, getLastRoutingLink, saveRoutingLink, saveCtPackages } from '../../lib/planilhas'
 import { firstCallDay, isAcceptedInCallUp } from '../../lib/callUpParser'
 import { parseThreePlMessage, normRegion, type ThreePlParseResult } from '../../lib/threePlParser'
 import type { Shift } from '../../lib/globalConfig'
@@ -262,6 +264,29 @@ function RoutePasteScreen({ onLoad, defaultDate, defaultShift }: { onLoad: (rout
   const [text, setText] = useState('')
   const [pasteDate, setPasteDate] = useState(defaultDate)
   const [pasteShift, setPasteShift] = useState<Shift>(defaultShift)
+  const [link, setLink] = useState(() => getRoutingLink(defaultDate, defaultShift) || getLastRoutingLink())
+  const [sheetState, setSheetState] = useState<{ loading: boolean; msg: string; ok?: boolean }>({ loading: false, msg: '' })
+
+  const loadFromSheet = async () => {
+    if (!link.trim()) return
+    setSheetState({ loading: true, msg: 'Lendo a planilha…' })
+    try {
+      const d = await fetchRoutingSheet(link.trim())
+      if (!d.routes.length) throw new Error('Nenhuma rota encontrada na guia Plano de expedição')
+      saveRoutingLink(pasteDate, pasteShift, link.trim())
+      saveCtPackages(pasteDate, pasteShift, d.packages)
+      // Mantém o que já foi atribuído no app para as ATs que já estavam salvas
+      const prev = new Map((routeStore.get(pasteDate, pasteShift) ?? []).map(r => [r.atId, r]))
+      const merged = d.routes.map(r => {
+        const p = prev.get(r.atId)
+        return p && p.status === 'ATRIBUIDA' && p.assignedDriverId ? { ...r, status: p.status, assignedDriverId: p.assignedDriverId, assignedDriverName: p.assignedDriverName } : r
+      })
+      setSheetState({ loading: false, ok: true, msg: `✓ ${d.routes.length} rotas e ${d.packages.length} pacotes${d.tabs.cts ? '' : ' (guia de CTs não encontrada)'}` })
+      onLoad(merged, pasteDate, pasteShift)
+    } catch (e) {
+      setSheetState({ loading: false, ok: false, msg: e instanceof Error ? e.message : String(e) })
+    }
+  }
 
   const preview = useMemo(() => {
     if (!text.trim()) return []
@@ -271,9 +296,9 @@ function RoutePasteScreen({ onLoad, defaultDate, defaultShift }: { onLoad: (rout
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', gap: 16 }}>
       <div style={{ width: '100%', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>Colar rotas do SPX</h3>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>Carregar roteirização</h3>
         <p style={{ margin: 0, fontSize: 12, color: '#8892a4' }}>
-          Abra o planejamento de rotas no SPX, selecione toda a tabela e cole aqui (Ctrl+A → Ctrl+C na tabela).
+          Cole o link da planilha de roteirização (o app lê as guias direto) ou, se preferir, cole o conteúdo da guia Plano de expedição.
         </p>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -291,13 +316,22 @@ function RoutePasteScreen({ onLoad, defaultDate, defaultShift }: { onLoad: (rout
             </div>
           </div>
         </div>
+        <div style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ fontSize: 10, color: '#8892a4', fontWeight: 600 }}>🔗 LINK DA PLANILHA DE ROTEIRIZAÇÃO (guias Plano de expedição + Calculation Tasks)</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={link} onChange={e => setLink(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." style={{ flex: 1, fontFamily: 'monospace', fontSize: 12 }} />
+            <Btn disabled={!link.trim() || sheetState.loading} onClick={() => void loadFromSheet()}>{sheetState.loading ? '⏳ Lendo…' : `Buscar — ${pasteShift} · ${pasteDate}`}</Btn>
+          </div>
+          {sheetState.msg && <p style={{ margin: 0, fontSize: 12, color: sheetState.ok === false ? '#f87171' : sheetState.ok ? '#4ade80' : '#fbbf24' }}>{sheetState.msg}</p>}
+          <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>Só o link fica salvo (por dia e turno). Rotas já atribuídas no app são mantidas ao buscar de novo.</p>
+        </div>
+        <p style={{ margin: 0, fontSize: 11, color: '#64748b', textAlign: 'center' }}>— ou cole o conteúdo da guia —</p>
         <textarea
           value={text}
           onChange={e => setText(e.target.value)}
           placeholder={'Rota\tAT / TO\tGaiola\t...\n001\tAT2026...\tA-1\t...'}
           rows={10}
           style={{ background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace', padding: '12px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }}
-          autoFocus
         />
         {preview.length > 0 && (
           <p style={{ margin: 0, fontSize: 12, color: '#4ade80' }}>
@@ -374,7 +408,7 @@ function HeaderMenu({ spxConfigured, onSpx, onPaste, onAddRoute, onBatch, onCopy
       >⋯</button>
       {open && (
         <div style={{ position: 'absolute', right: 0, top: '110%', background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: '4px', zIndex: 100, minWidth: 210, boxShadow: '0 8px 24px rgba(0,0,0,.5)' }}>
-          {item('📋', 'Nova colagem', onPaste)}
+          {item('📋', 'Buscar / colar roteirização', onPaste)}
           {item('＋', 'Reatribuir rota (AT)', onAddRoute, '#4ade80')}
           {item('📥', 'Atribuir lote', onBatch, '#60a5fa')}
           <div style={{ height: 1, background: '#2d3048', margin: '4px 8px' }} />
@@ -893,6 +927,201 @@ function NovatosPanel({ workPref, routes, availableDrivers, onAssign }: {
 }
 
 // ─── 3PL Panel (transportadoras) ───────────────────────────────────────────────
+// ─── Rotas sem motorista: atribuição manual, rota a rota ─────────────────────
+type ManualPick = { driverId: string; name: string; vehicleType: string | null; clusters: string[]; isBlocked: boolean; blockReason: string | null; inQueue: boolean; score: number | null }
+type ManualLog = { atId: string; cluster: string; driverId: string; name: string; ok: boolean; msg: string }
+
+function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, dobraIds, spxConfigured, onAssign }: {
+  routes: LocalRoute[]
+  queueDrivers: LocalDriver[]
+  registry: StoredDriver[]
+  alreadyRoutedIds: Set<string>
+  dobraIds: Set<string>
+  spxConfigured: boolean
+  onAssign: (route: LocalRoute, d: { driverId: string; name: string }) => Promise<{ ok: boolean; msg: string }>
+}) {
+  const [routeQ, setRouteQ] = useState('')
+  const [driverQ, setDriverQ] = useState('')
+  const [selId, setSelId] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [log, setLog] = useState<ManualLog[]>([])
+  const [copied, setCopied] = useState(false)
+  const [picks, setPicks] = useState<Map<string, ManualPick>>(new Map())   // escolhas à mão (substituem a sugestão)
+  const [skipped, setSkipped] = useState<Set<string>>(new Set())          // rotas que não devem ser atribuídas agora
+  const [stopMsg, setStopMsg] = useState<string | null>(null)
+
+  const allSem = useMemo(() => routes.filter(r => r.status !== 'ATRIBUIDA'), [routes])
+  // Sugestão automática: mesma regra das rotas recusadas (região de disponibilidade + veículo + score),
+  // rotas com menos candidatos primeiro. Escolhas manuais entram como fixas.
+  const plan = useMemo(() => {
+    const eligible = queueDrivers.filter(d => !d.isBlocked && !alreadyRoutedIds.has(d.driverId))
+    const fixed = new Map<string, LocalDriver>()
+    for (const [rid, p] of picks) fixed.set(rid, { driverId: p.driverId, name: p.name, vehicleType: p.vehicleType, clusters: p.clusters, isNewDriver: false, isBlocked: p.isBlocked, blockReason: p.blockReason, blockType: null, pendingPackages: 0, dsReal: null, dsStatus: null, priorityScore: p.score ?? 0, daysSinceRoute: 0 })
+    const m = computeEffective(allSem.filter(r => !skipped.has(r.id)).map(r => ({ ...r, status: 'DISPONIVEL' as const })), eligible, new Map([...fixed].filter(([rid]) => !skipped.has(rid))))
+    return m
+  }, [allSem, queueDrivers, alreadyRoutedIds, picks, skipped])
+
+  const semMotorista = useMemo(() => {
+    const q = routeQ.trim().toLowerCase()
+    return allSem
+      .filter(r => !q || r.atId.toLowerCase().includes(q) || r.cluster.toLowerCase().includes(q) || (r.gaiola ?? '').toLowerCase().includes(q))
+      .sort((a, b) => (a.gaiola ?? '').localeCompare(b.gaiola ?? '', 'pt', { numeric: true }))
+  }, [allSem, routeQ])
+  const sel = semMotorista.find(r => r.id === selId) ?? semMotorista[0] ?? null
+  const routeVehicle = sel ? (sel.scheduledVehicle ?? sel.requiredVehicleType) : null
+
+  const pool = useMemo((): ManualPick[] => {
+    const m = new Map<string, ManualPick>()
+    for (const d of queueDrivers) m.set(d.driverId, { driverId: d.driverId, name: d.name, vehicleType: d.vehicleType, clusters: d.clusters, isBlocked: d.isBlocked, blockReason: d.blockReason, inQueue: true, score: d.priorityScore })
+    for (const d of registry) if (!m.has(d.id)) m.set(d.id, { driverId: d.id, name: d.name, vehicleType: d.vehicleType || null, clusters: [], isBlocked: false, blockReason: null, inQueue: false, score: null })
+    return [...m.values()].filter(d => !alreadyRoutedIds.has(d.driverId))
+  }, [queueDrivers, registry, alreadyRoutedIds])
+
+  const candidates = useMemo(() => {
+    if (!sel) return []
+    const q = driverQ.trim().toLowerCase()
+    const list = q
+      ? pool.filter(d => d.name.toLowerCase().includes(q) || d.driverId.includes(q))   // busca: qualquer motorista do cadastro
+      : pool.filter(d => d.inQueue && !d.isBlocked && vehicleAllowed(d.vehicleType, routeVehicle)) // sugestão: fila do turno
+    const rank = (d: ManualPick) => (d.isBlocked ? 4 : 0) + (vehicleAllowed(d.vehicleType, routeVehicle) ? 0 : 2) + (inDriverRegion(d.clusters, sel.cluster) ? 0 : 1)
+    return [...list].sort((a, b) => rank(a) - rank(b) || (b.score ?? -1) - (a.score ?? -1)).slice(0, 40)
+  }, [pool, sel, driverQ, routeVehicle])
+
+  const choose = (d: ManualPick) => {
+    if (!sel) return
+    if (d.isBlocked && !confirm(`${d.name} está bloqueado (${d.blockReason ?? 'sem motivo'}). Escolher mesmo assim?`)) return
+    setPicks(prev => { const n = new Map(prev); for (const [k, v] of n) if (v.driverId === d.driverId) n.delete(k); n.set(sel.id, d); return n })
+    setSkipped(prev => { const n = new Set(prev); n.delete(sel.id); return n })
+    setDriverQ('')
+  }
+
+  const assignAll = async () => {
+    if (busy) return
+    const todo = allSem.filter(r => plan.has(r.id))
+    if (!todo.length) return
+    setBusy(true); setStopMsg(null)
+    let fails = 0
+    for (const r of todo) {
+      const d = plan.get(r.id)!
+      const res = await onAssign(r, d)
+      setLog(prev => [{ atId: r.atId, cluster: r.cluster, driverId: d.driverId, name: d.name, ok: res.ok, msg: res.msg }, ...prev])
+      if (res.ok) { fails = 0; setPicks(prev => { const n = new Map(prev); n.delete(r.id); return n }); continue }
+      fails++
+      if (/login|sess|expir|token|csrf|401|403|cookie|credencia|curl/i.test(res.msg) || fails >= 2) {
+        setStopMsg(`Parei para não perder o resto: ${res.msg}. Atualize o cURL do SPX e clique de novo — só o que faltou será enviado.`)
+        break
+      }
+    }
+    setBusy(false)
+  }
+
+  const copyLog = async () => {
+    const ok = log.filter(l => l.ok)
+    await navigator.clipboard.writeText(ok.map(l => `${l.atId}\t${l.cluster}\t${l.driverId}\t${l.name}`).join('\n'))
+    setCopied(true); setTimeout(() => setCopied(false), 1500)
+  }
+
+  const box: React.CSSProperties = { background: '#13151f', border: '1px solid #2d3048', borderRadius: 10, padding: 12 }
+  return (
+    <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <p style={{ margin: 0, fontSize: 12, color: '#8892a4' }}>
+        Rotas do turno que estão sem motorista. O app já sugere um motorista para cada uma, com a mesma regra das rotas recusadas: fila do turno, região de disponibilidade e veículo compatível. Para trocar, selecione a rota e escolha outro (ou busque no cadastro). Depois, Atribuir todas grava no SPX.
+        {!spxConfigured && <span style={{ color: '#fbbf24' }}> · SPX não configurado: a atribuição fica só no app.</span>}
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.3fr)', gap: 12, alignItems: 'start' }}>
+        <div style={box}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Rotas sem motorista ({allSem.length}) · {plan.size} com sugestão</span>
+            <Btn onClick={() => void assignAll()} disabled={busy || plan.size === 0}>{busy ? '⏳ Atribuindo...' : `✦ Atribuir todas (${plan.size})`}</Btn>
+          </div>
+          {stopMsg && <p style={{ margin: '0 0 8px', fontSize: 12, color: '#f87171' }}>{stopMsg}</p>}
+          <input placeholder="Buscar AT, cluster ou gaiola..." value={routeQ} onChange={e => setRouteQ(e.target.value)}
+            style={{ width: '100%', boxSizing: 'border-box', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 6, padding: '6px 10px', color: '#e2e8f0', fontSize: 12, marginBottom: 8 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 520, overflow: 'auto' }}>
+            {semMotorista.length === 0 && <p style={{ fontSize: 12, color: '#4ade80', margin: 8 }}>✓ Todas as rotas do turno têm motorista.</p>}
+            {semMotorista.map(r => {
+              const on = sel?.id === r.id
+              return (
+                <button key={r.id} onClick={() => { setSelId(r.id); setDriverQ('') }}
+                  style={{ textAlign: 'left', background: on ? 'rgba(124,58,237,.18)' : 'transparent', border: `1px solid ${on ? '#7c3aed' : '#23263a'}`, borderRadius: 7, padding: '7px 10px', cursor: 'pointer', color: '#e2e8f0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{r.gaiola ?? '—'} · {r.cluster}</span>
+                    <span style={{ fontSize: 11, color: '#8892a4' }}>{r.scheduledVehicle ?? r.requiredVehicleType ?? '—'}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: '#8892a4', marginTop: 2 }}>
+                    {r.atId}{r.paradas != null ? ` · ${r.paradas} paradas` : ''}{r.km != null ? ` · ${r.km} km` : ''}
+                    {r.assignedDriverName ? <span style={{ color: '#f87171' }}> · recusada por {r.assignedDriverName}</span> : null}
+                  </div>
+                  <div style={{ fontSize: 11, marginTop: 3 }}>
+                    {skipped.has(r.id) ? <span style={{ color: '#64748b' }}>⏸ não atribuir agora</span>
+                      : plan.get(r.id) ? <span style={{ color: picks.has(r.id) ? '#a78bfa' : '#4ade80' }}>→ {plan.get(r.id)!.name}{picks.has(r.id) ? ' (escolhido)' : ''}</span>
+                      : <span style={{ color: '#fbbf24' }}>sem motorista disponível na região</span>}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div style={box}>
+          {!sel ? <p style={{ fontSize: 12, color: '#8892a4', margin: 0 }}>Nenhuma rota selecionada.</p> : (
+            <>
+              <div style={{ marginBottom: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Motorista para {sel.gaiola ?? sel.atId}</span>
+                <span style={{ fontSize: 11, color: '#8892a4' }}> · {sel.cluster} · {routeVehicle ?? 'veículo não informado'}</span>
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: '#cbd5e1' }}>Vai para: <b>{skipped.has(sel.id) ? '—' : plan.get(sel.id)?.name ?? 'ninguém na região'}</b></span>
+                  {picks.has(sel.id) && <Btn variant="ghost" onClick={() => setPicks(prev => { const n = new Map(prev); n.delete(sel.id); return n })} style={{ fontSize: 11 }}>↺ Voltar à sugestão</Btn>}
+                  <Btn variant="ghost" onClick={() => setSkipped(prev => { const n = new Set(prev); if (n.has(sel.id)) n.delete(sel.id); else n.add(sel.id); return n })} style={{ fontSize: 11 }}>{skipped.has(sel.id) ? '▶ Incluir de novo' : '⏸ Não atribuir agora'}</Btn>
+                </div>
+              </div>
+              <input placeholder="Buscar motorista por nome ou ID..." value={driverQ} onChange={e => setDriverQ(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0f1117', border: '1px solid #2d3048', borderRadius: 6, padding: '6px 10px', color: '#e2e8f0', fontSize: 12, marginBottom: 8 }} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 480, overflow: 'auto' }}>
+                {candidates.length === 0 && <p style={{ fontSize: 12, color: '#8892a4', margin: 8 }}>{driverQ ? 'Nenhum motorista encontrado (quem já tem rota no turno não aparece).' : 'Ninguém compatível na fila do turno. Busque pelo nome ou ID.'}</p>}
+                {candidates.map(d => {
+                  const vOk = vehicleAllowed(d.vehicleType, routeVehicle)
+                  const reg = inDriverRegion(d.clusters, sel.cluster)
+                  return (
+                    <div key={d.driverId} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid #23263a', borderRadius: 7, padding: '6px 10px' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}>
+                          <Chip small label={d.driverId} />
+                          <Chip small label={d.vehicleType ?? 'veículo ?'} color={vOk ? '#94a3b8' : '#f87171'} bg={vOk ? undefined : 'rgba(248,113,113,.12)'} />
+                          {d.inQueue ? <Chip small label="na fila" color="#4ade80" bg="rgba(74,222,128,.1)" /> : <Chip small label="fora da fila" color="#fbbf24" bg="rgba(251,191,36,.1)" />}
+                          {d.inQueue && !reg && <Chip small label="fora da região" color="#fbbf24" bg="rgba(251,191,36,.1)" />}
+                          {dobraIds.has(d.driverId) && <Chip small label="dobra" color="#60a5fa" bg="rgba(96,165,250,.1)" />}
+                          {d.isBlocked && <Chip small label={`bloqueado${d.blockReason ? ': ' + d.blockReason : ''}`} color="#f87171" bg="rgba(248,113,113,.12)" />}
+                        </div>
+                      </div>
+                      <Btn variant={plan.get(sel.id)?.driverId === d.driverId ? 'default' : 'outline'} onClick={() => choose(d)} disabled={busy}>{plan.get(sel.id)?.driverId === d.driverId ? '✓ Escolhido' : 'Escolher'}</Btn>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {log.length > 0 && (
+        <div style={box}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Atribuições feitas aqui ({log.filter(l => l.ok).length})</span>
+            <Btn variant="outline" onClick={() => void copyLog()} style={{ fontSize: 11 }}>{copied ? '✓ Copiado' : '📋 Copiar lista'}</Btn>
+          </div>
+          {log.map((l, k) => (
+            <div key={k} style={{ fontSize: 12, color: l.ok ? '#cbd5e1' : '#f87171', padding: '3px 0' }}>
+              {l.ok ? '✓' : '✕'} {l.atId} · {l.cluster} → {l.name} ({l.driverId}){l.msg ? ` · ${l.msg}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ThreePlPanel({ routes, selectedShift, agencies, excludedRouteIds, assignments, setAssignments }: {
   routes: LocalRoute[]
   selectedShift: Shift
@@ -1220,7 +1449,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     routeStore.saveOverrides(selectedDay, selectedShift, [...m.entries()])
   }
 
-  const [activeTab, setActiveTab] = useState<'routes' | 'drivers' | 'fiorino'>('routes')
+  const [activeTab, setActiveTab] = useState<'routes' | 'drivers' | 'fiorino' | 'semmoto'>('routes')
   const [routeSearch, setRouteSearch] = useState('')
   const [driverSearch, setDriverSearch] = useState('')
   const ignoredKey = `spx:noshow-ignored:${selectedDay}:${selectedShift}`
@@ -1302,6 +1531,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const [queue, setQueue] = useState<QueueDriver[]>(() => noShowQueueStore.get(selectedShift))
   useEffect(() => { setQueue(noShowQueueStore.get(selectedShift)) }, [selectedShift])
 
+  const availIssues = useAvailabilityIssues(routes, registry)
   const removeFromQueue = useCallback((driverIds: string | string[]) => {
     const ids = Array.isArray(driverIds) ? driverIds : [driverIds]
     noShowQueueStore.remove(selectedShift, ids)
@@ -1510,23 +1740,46 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const alreadyRoutedDrivers = orderedDrivers.filter(d => alreadyRoutedIds.has(d.driverId))
 
   // ── Fiorino tab ───────────────────────────────────────────────────────────
-  const [fioMode, setFioMode] = useState<'strict' | 'maximize'>('strict')
+  // AM: obrigatórias / maximizar / só AM. PM1 e PM2: só disponíveis (sem dobra) ou possibilitar dobras.
+  const [fioMode, setFioMode] = useState<'strict' | 'maximize' | 'amOnly' | 'pmAvail' | 'pmDobra'>(selectedShift === 'AM' ? 'strict' : 'pmAvail')
+  useEffect(() => {
+    const isAm = selectedShift === 'AM'
+    setFioMode(m => isAm ? (m === 'pmAvail' || m === 'pmDobra' ? 'strict' : m) : (m === 'pmAvail' || m === 'pmDobra' ? m : 'pmAvail'))
+  }, [selectedShift])
+  // Ajustes manuais: Fiorinos tiradas do plano e motorista escolhido à mão por rota ('' = deixar sem Fiorino)
+  const [fioExcluded, setFioExcluded] = useState<Set<string>>(new Set())
+  const [fioManual, setFioManual] = useState<Map<string, string>>(new Map())
+  useEffect(() => { setFioExcluded(new Set()); setFioManual(new Map()) }, [selectedDay, selectedShift])
+
+  // Fiorinos disponíveis no dia SÓ para o AM (sem disponibilidade em PM1/PM2)
+  const amOnlyIds = useMemo(() => {
+    const cfg = getGlobalConfig()
+    const ids = new Set<string>()
+    for (const d of workPref?.drivers ?? []) {
+      const s = d.schedule[selectedDay]
+      if (!s || s.status !== 'available') continue
+      if (driverMatchesShift(s.slots, 'AM', cfg) && !driverMatchesShift(s.slots, 'PM1', cfg) && !driverMatchesShift(s.slots, 'PM2', cfg)) ids.add(d.driverId)
+    }
+    return ids
+  }, [workPref, selectedDay])
 
   const fiorino = useMemo(() => {
     // Motoristas Fiorino disponíveis: ordenados por score desc, tiebreaker dias sem rota desc
-    const fioDrivers = orderedDrivers.filter(d =>
+    const allFio = orderedDrivers.filter(d =>
       normalizeVehicle(d.vehicleType) === 'FIORINO' &&
       !d.isBlocked &&
-      !alreadyRoutedIds.has(d.driverId)
+      !alreadyRoutedIds.has(d.driverId) &&
+      (fioMode !== 'amOnly' || amOnlyIds.has(d.driverId)) &&
+      (fioMode !== 'pmAvail' || !dobraIds.has(d.driverId))
     ).sort((a, b) =>
       b.priorityScore !== a.priorityScore ? b.priorityScore - a.priorityScore : b.daysSinceRoute - a.daysSinceRoute
     )
+    const fioDrivers = allFio.filter(d => !fioExcluded.has(d.driverId))
 
-    // Rotas que exigem Fiorino (GG ≥ 2 E volume ≥ 800)
+    // Rotas que exigem Fiorino: "Tipo de veículo" da rota na guia Plano de expedição = Fiorino (ou Van)
     const strictRoutes = routes.filter(r =>
       r.status === 'DISPONIVEL' && !ignoredAtIds.has(r.atId) &&
-      (r.gg ?? 0) >= 2 && (r.volume ?? 0) >= 800 &&
-      normalizeVehicle(r.requiredVehicleType) !== 'MOTO'
+      ['FIORINO', 'VAN'].includes(normalizeVehicle(r.scheduledVehicle ?? r.requiredVehicleType) ?? '')
     )
 
     // Todas as rotas disponíveis (para modo maximize)
@@ -1553,28 +1806,36 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
       return result
     }
 
-    // Modo strict: apenas rotas com GG≥2 e volume≥800
-    const strictAssignments = buildAssignments(strictRoutes, fioDrivers)
+    // Escolhas manuais valem primeiro; o automático completa com quem sobrou
+    const byId = new Map(fioDrivers.map(d => [d.driverId, d]))
+    const manualFixed = new Map<string, LocalDriver>()
+    for (const [atId, id] of fioManual) { const d = byId.get(id); if (id && d) manualFixed.set(atId, d) }
+    const manualUsed = new Set([...manualFixed.values()].map(d => d.driverId))
+    const autoPool = fioDrivers.filter(d => !manualUsed.has(d.driverId))
+    const autoRoutes = (list: LocalRoute[]) => list.filter(r => !fioManual.has(r.atId))
 
-    // Modo maximize: primeiro atribui rotas obrigatórias, depois usa Fiorinos restantes em qualquer rota
+    const strictAssignments = new Map<string, LocalDriver>(manualFixed)
+    for (const [k, v] of buildAssignments(autoRoutes(strictRoutes), autoPool)) strictAssignments.set(k, v)
+
+    // Maximize (e Só AM): primeiro as obrigatórias, depois as Fiorinos restantes em qualquer rota
     const maximizeAssignments = (() => {
       const result = new Map<string, LocalDriver>(strictAssignments)
       const usedIds = new Set([...result.values()].map(d => d.driverId))
       const remainingDrivers = fioDrivers.filter(d => !usedIds.has(d.driverId))
-      const remainingRoutes = allAvailableRoutes.filter(r => !result.has(r.atId))
-      const extra = buildAssignments(remainingRoutes, remainingDrivers)
-      for (const [atId, driver] of extra) result.set(atId, driver)
+      const remainingRoutes = autoRoutes(allAvailableRoutes).filter(r => !result.has(r.atId))
+      for (const [atId, driver] of buildAssignments(remainingRoutes, remainingDrivers)) result.set(atId, driver)
       return result
     })()
 
     const assignments = fioMode === 'strict' ? strictAssignments : maximizeAssignments
-    const eligibleRoutes = fioMode === 'strict' ? strictRoutes : allAvailableRoutes.filter(r => assignments.has(r.atId) || strictRoutes.some(s => s.atId === r.atId))
-
-    return { eligibleRoutes: fioMode === 'strict' ? strictRoutes : allAvailableRoutes, strictRoutes, fioDrivers, assignments, strictAssignments, maximizeAssignments }
-  }, [routes, orderedDrivers, alreadyRoutedIds, ignoredAtIds, fioMode])
+    return { eligibleRoutes: fioMode === 'strict' ? strictRoutes : allAvailableRoutes, strictRoutes, fioDrivers, allFio, assignments, strictAssignments, maximizeAssignments }
+  }, [routes, orderedDrivers, alreadyRoutedIds, dobraIds, ignoredAtIds, fioMode, amOnlyIds, fioExcluded, fioManual])
 
   const [fioAssigning, setFioAssigning] = useState(false)
-  const [fioResults, setFioResults] = useState<{ atId: string; driverId: string; spxOk?: boolean; spxMsg?: string }[] | null>(null)
+  const [fioResults, setFioResults] = useState<{ atId: string; driverId: string; name: string; spxOk?: boolean; spxMsg?: string }[] | null>(null)
+  const [fioStopped, setFioStopped] = useState('')
+  // Última leva aplicada no app, para poder desfazer
+  const [fioLastBatch, setFioLastBatch] = useState<{ atIds: string[]; queue: QueueDriver[] } | null>(null)
   const [fioSearch, setFioSearch] = useState('')
 
   const filteredFioRoutes = (fioMode === 'strict' ? fiorino.strictRoutes : fiorino.eligibleRoutes).filter(r => {
@@ -1582,12 +1843,26 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     return !q || r.atId.toLowerCase().includes(q) || r.cluster.toLowerCase().includes(q)
   })
 
+  const setManual = (atId: string, driverId: string | null) => setFioManual(prev => {
+    const next = new Map(prev)
+    if (driverId === null) next.delete(atId)
+    else {
+      // o mesmo motorista não pode ficar em duas rotas
+      if (driverId) for (const [k, v] of next) if (v === driverId) next.delete(k)
+      next.set(atId, driverId)
+    }
+    return next
+  })
+  const toggleExcluded = (id: string) => setFioExcluded(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+
   const handleFioAssign = async () => {
     if (fioAssigning || fiorino.assignments.size === 0) return
     setFioAssigning(true)
     setFioResults(null)
-    const results: { atId: string; driverId: string; spxOk?: boolean; spxMsg?: string }[] = []
-    const assignedIds: string[] = []
+    setFioStopped('')
+    const results: { atId: string; driverId: string; name: string; spxOk?: boolean; spxMsg?: string }[] = []
+    const applied = new Map<string, LocalDriver>()
+    let failStreak = 0
     for (const [atId, driver] of fiorino.assignments) {
       let spxOk: boolean | undefined
       let spxMsg: string | undefined
@@ -1596,22 +1871,52 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         spxOk = res.ok
         spxMsg = res.message
       }
-      results.push({ atId, driverId: driver.driverId, spxOk, spxMsg })
-      assignedIds.push(driver.driverId)
+      results.push({ atId, driverId: driver.driverId, name: driver.name, spxOk, spxMsg })
+      setFioResults([...results])
+      if (spxOk === false) {
+        // Falhou no SPX: a rota continua disponível e o motorista continua na fila para tentar de novo
+        failStreak++
+        const sessionLike = /login|sess|expir|token|csrf|401|403|cookie|credencia|curl/i.test(spxMsg ?? '')
+        if (sessionLike || failStreak >= 2) {
+          setFioStopped(`Parei para não perder o resto: ${spxMsg}. Atualize o cURL do SPX e clique em Atribuir de novo — só o que faltou será enviado.`)
+          break
+        }
+        continue
+      }
+      failStreak = 0
+      applied.set(atId, driver)
       setRoutesState(prev => prev.map(r => r.atId === atId
         ? { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: driver.driverId, assignedDriverName: driver.name }
         : r
       ))
     }
-    // Persist
-    setRoutes(routes.map(r => {
-      const driver = fiorino.assignments.get(r.atId)
-      if (driver) return { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: driver.driverId, assignedDriverName: driver.name }
-      return r
-    }))
-    removeFromQueue(assignedIds)
-    setFioResults(results)
+    if (applied.size) {
+      const current = routeStore.get(selectedDay, selectedShift) ?? routes
+      setRoutes(current.map(r => {
+        const driver = applied.get(r.atId)
+        return driver ? { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: driver.driverId, assignedDriverName: driver.name } : r
+      }))
+      const ids = new Set([...applied.values()].map(d => d.driverId))
+      setFioLastBatch({ atIds: [...applied.keys()], queue: queue.filter(q => ids.has(q.driverId)) })
+      removeFromQueue([...ids])
+      setFioManual(prev => { const n = new Map(prev); for (const k of applied.keys()) n.delete(k); return n })
+    }
     setFioAssigning(false)
+  }
+
+  // Desfaz no app a última leva (rotas voltam a disponível e motoristas voltam à fila). No SPX não desfaz.
+  const handleFioUndo = () => {
+    if (!fioLastBatch) return
+    const set = new Set(fioLastBatch.atIds)
+    const current = routeStore.get(selectedDay, selectedShift) ?? routes
+    setRoutes(current.map(r => set.has(r.atId) ? { ...r, status: 'DISPONIVEL' as const, assignedDriverId: null, assignedDriverName: null } : r))
+    const q = noShowQueueStore.get(selectedShift)
+    const have = new Set(q.map(d => d.driverId))
+    const restored = [...q, ...fioLastBatch.queue.filter(d => !have.has(d.driverId))]
+    noShowQueueStore.set(selectedShift, restored)
+    setQueue(restored)
+    setFioLastBatch(null)
+    setFioResults(null)
   }
 
   // Sub-abas internas do "First Convocation"
@@ -1866,6 +2171,20 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     setIsAssigning(false)
   }
 
+  // Atribuição manual (aba Sem motorista): com SPX configurado, só aplica se o SPX aceitar
+  const handleManualAssign = async (route: LocalRoute, d: { driverId: string; name: string }) => {
+    let msg = ''
+    if (spxConfigured) {
+      const res = await spxReassign(d.driverId, route.atId)
+      if (!res.ok) return { ok: false, msg: res.message }
+      msg = 'SPX ok'
+    } else msg = 'só no app (SPX não configurado)'
+    const current = routeStore.get(selectedDay, selectedShift) ?? routes
+    setRoutes(current.map(r => r.atId === route.atId ? { ...r, status: 'ATRIBUIDA' as const, assignedDriverId: d.driverId, assignedDriverName: d.name } : r))
+    removeFromQueue(d.driverId)
+    return { ok: true, msg }
+  }
+
   // Só as rotas com novato escolhido na sub-aba Novatos
   const novatoAssignments = useMemo(() => new Map([...overrides].filter(([, d]) => d.isNewDriver)), [overrides])
 
@@ -1977,7 +2296,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 disabled={isAssigning || novatoAssignments.size === 0}
                 style={{ background: '#8b5cf6' }}
               >{isAssigning ? '⏳ Atribuindo...' : `🆕 Atribuir novatos (${novatoAssignments.size})`}</Btn>
-            ) : activeTab === 'fiorino' && fcSection === '3pl' ? null : (
+            ) : (activeTab === 'fiorino' && fcSection === '3pl') || activeTab === 'semmoto' ? null : (
               <Btn
                 onClick={() => void handleConfirmAssign()}
                 disabled={isAssigning || effectiveAssignments.size === 0}
@@ -2017,6 +2336,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
           </div>
         </div>
       </div>
+      <AlertaDisponibilidade routes={routes} registry={registry} shift={selectedShift} issues={availIssues} />
 
       {/* Stats */}
       <div style={{ display: 'flex', gap: 10, padding: '10px 20px', borderBottom: '1px solid #1e2130', flexShrink: 0, flexWrap: 'wrap' }}>
@@ -2055,6 +2375,9 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         <button onClick={() => setActiveTab('drivers')} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: activeTab === 'drivers' ? '2px solid #7c3aed' : '2px solid transparent', background: 'transparent', color: activeTab === 'drivers' ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
           Fila de motoristas ({queueDrivers.length}{alreadyRoutedDrivers.length > 0 ? ` · ${alreadyRoutedDrivers.length} já em rota` : ''})
         </button>
+        <button onClick={() => setActiveTab('semmoto')} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: activeTab === 'semmoto' ? '2px solid #7c3aed' : '2px solid transparent', background: 'transparent', color: activeTab === 'semmoto' ? '#e2e8f0' : '#8892a4', cursor: 'pointer' }}>
+          👤 Sem motorista ({routes.filter(r => r.status !== 'ATRIBUIDA').length})
+        </button>
         <button onClick={() => setActiveTab('fiorino')} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', borderBottom: activeTab === 'fiorino' ? '2px solid #f59e0b' : '2px solid transparent', background: 'transparent', color: activeTab === 'fiorino' ? '#fbbf24' : '#8892a4', cursor: 'pointer' }}>
           🚐 First Convocation ({fiorino.strictRoutes.length} obrig. · {fiorino.fioDrivers.length} moto.)
         </button>
@@ -2062,7 +2385,11 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
 
       {/* Content */}
       <div style={{ flex: 1, overflow: 'auto' }}>
-        {activeTab !== 'fiorino' && (
+        {activeTab === 'semmoto' && (
+          <SemMotoristaPanel routes={routes} queueDrivers={availableDrivers} registry={registry} alreadyRoutedIds={alreadyRoutedIds} dobraIds={dobraIds}
+            spxConfigured={spxConfigured} onAssign={handleManualAssign} />
+        )}
+        {activeTab !== 'fiorino' && activeTab !== 'semmoto' && (
         <div style={{ padding: '8px 20px', display: 'flex', gap: 8, alignItems: 'center' }}>
           <input
             placeholder={activeTab === 'routes' ? '🔍  Buscar AT ID ou cluster...' : '🔍  Buscar motorista...'}
@@ -2351,6 +2678,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 {/* Toggle de modo */}
                 <div style={{ display: 'flex', background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, overflow: 'hidden' }}>
+                  {selectedShift === 'AM' ? <>
                   <button
                     onClick={() => setFioMode('strict')}
                     style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'strict' ? '#d97706' : 'transparent', color: fioMode === 'strict' ? '#fff' : '#8892a4', cursor: 'pointer' }}
@@ -2363,11 +2691,37 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                   >
                     🚀 Maximizar convocações
                   </button>
+                  <button
+                    onClick={() => setFioMode('amOnly')}
+                    style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'amOnly' ? '#d97706' : 'transparent', color: fioMode === 'amOnly' ? '#fff' : '#8892a4', cursor: 'pointer' }}
+                  >
+                    🌅 Só Fiorinos exclusivas do AM
+                  </button>
+                  </> : <>
+                  <button
+                    onClick={() => setFioMode('pmAvail')}
+                    style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'pmAvail' ? '#d97706' : 'transparent', color: fioMode === 'pmAvail' ? '#fff' : '#8892a4', cursor: 'pointer' }}
+                  >
+                    ✅ Só disponíveis do {selectedShift}
+                  </button>
+                  <button
+                    onClick={() => setFioMode('pmDobra')}
+                    style={{ padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: fioMode === 'pmDobra' ? '#d97706' : 'transparent', color: fioMode === 'pmDobra' ? '#fff' : '#8892a4', cursor: 'pointer' }}
+                  >
+                    🔁 Possibilitar dobras
+                  </button>
+                  </>}
                 </div>
                 <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
                   {fioMode === 'strict'
-                    ? 'Fiorino apenas em rotas com GG ≥ 2 e volume ≥ 800'
-                    : 'Fiorino em rotas obrigatórias + qualquer rota disponível para aproveitar o restante da fila'}
+                    ? 'Fiorino apenas nas rotas com tipo de veículo Fiorino na roteirização'
+                    : fioMode === 'maximize'
+                      ? 'Fiorino em rotas obrigatórias + qualquer rota disponível para aproveitar o restante da fila'
+                      : fioMode === 'pmAvail'
+                      ? `Só Fiorinos com status Disponível no ${selectedShift} (quem já tem rota em outro turno — dobra — fica de fora): obrigatórias primeiro, depois qualquer rota`
+                      : fioMode === 'pmDobra'
+                      ? `Todas as Fiorinos disponíveis no ${selectedShift}, incluindo as de dobra: obrigatórias primeiro, depois qualquer rota`
+                      : `Só Fiorinos disponíveis no dia apenas para o AM (quem tem PM1/PM2 fica de fora): obrigatórias primeiro, depois qualquer rota${selectedShift !== 'AM' ? ' — atenção: o turno selecionado não é o AM' : ''}`}
                 </p>
               </div>
             </div>
@@ -2375,11 +2729,12 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
             {/* Stats Fiorino */}
             <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
               {[
-                { label: 'Rotas obrigatórias (GG≥2 vol≥800)', value: fiorino.strictRoutes.length, color: '#fbbf24' },
-                ...(fioMode === 'maximize' ? [{ label: 'Rotas extras (qualquer)', value: fiorino.assignments.size - fiorino.strictAssignments.size, color: '#60a5fa' }] : []),
+                { label: 'Rotas de Fiorino (roteirização)', value: fiorino.strictRoutes.length, color: '#fbbf24' },
+                ...(fioMode !== 'strict' ? [{ label: 'Rotas extras (qualquer)', value: fiorino.assignments.size - fiorino.strictAssignments.size, color: '#60a5fa' }] : []),
                 { label: 'Motoristas Fiorino', value: fiorino.fioDrivers.length, color: '#4ade80' },
                 { label: 'Atribuições previstas', value: fiorino.assignments.size, color: '#a78bfa' },
                 { label: 'Fiorinos sem rota', value: fiorino.fioDrivers.length - fiorino.assignments.size, color: '#f87171' },
+                ...(fioExcluded.size ? [{ label: 'Tiradas do plano', value: fioExcluded.size, color: '#94a3b8' }] : []),
               ].map(s => (
                 <div key={s.label} style={{ background: '#13151f', border: '1px solid #2d3048', borderRadius: 8, padding: '6px 12px', minWidth: 80 }}>
                   <p style={{ margin: 0, fontSize: 10, color: '#8892a4' }}>{s.label}</p>
@@ -2388,14 +2743,31 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
               ))}
             </div>
 
+            {(fioManual.size > 0 || fioExcluded.size > 0) && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, fontSize: 11, color: '#fbbf24' }}>
+                ✎ {fioManual.size} ajuste(s) manual(is) · {fioExcluded.size} Fiorina(s) tirada(s) do plano
+                <button onClick={() => { setFioManual(new Map()); setFioExcluded(new Set()) }} style={{ background: 'transparent', border: '1px solid #2d3048', color: '#94a3b8', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer' }}>Limpar ajustes</button>
+              </div>
+            )}
+
             {/* Fiorino Results */}
-            {fioResults && (
-              <div style={{ marginBottom: 12, background: '#0f1117', border: '1px solid #2d3048', borderRadius: 8, padding: 12 }}>
-                <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>Resultado da atribuição Fiorino:</p>
-                {fioResults.map(r => (
+            {(fioResults || fioLastBatch) && (
+              <div style={{ marginBottom: 12, background: '#0f1117', border: `1px solid ${fioStopped ? 'rgba(248,113,113,.5)' : '#2d3048'}`, borderRadius: 8, padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                  <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#e2e8f0' }}>
+                    Resultado da atribuição Fiorino{fioResults ? `: ${fioResults.filter(r => r.spxOk !== false).length} ok · ${fioResults.filter(r => r.spxOk === false).length} falharam` : ''}
+                  </p>
+                  {fioLastBatch && !fioAssigning && (
+                    <button onClick={handleFioUndo} title="Volta as rotas para disponível e os motoristas para a fila (não desfaz no SPX)"
+                      style={{ background: 'transparent', border: '1px solid #2d3048', color: '#cbd5e1', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>↩ Desfazer no app ({fioLastBatch.atIds.length})</button>
+                  )}
+                </div>
+                {fioStopped && <p style={{ margin: '0 0 6px', fontSize: 11, color: '#f87171' }}>⛔ {fioStopped}</p>}
+                {fioResults?.some(r => r.spxOk === false) && !fioStopped && <p style={{ margin: '0 0 6px', fontSize: 11, color: '#fbbf24' }}>As que falharam continuam na lista abaixo — clique em Atribuir de novo para reenviar só elas.</p>}
+                {fioResults?.map(r => (
                   <p key={r.atId} style={{ margin: '2px 0', fontSize: 11 }}>
                     <span style={{ fontFamily: 'monospace', color: '#94a3b8' }}>{r.atId}</span>
-                    {' → '}
+                    {' → '}<span style={{ color: '#cbd5e1' }}>{r.name}</span>{' · '}
                     <span style={{ color: r.spxOk === false ? '#f87171' : '#4ade80' }}>
                       {r.spxOk === undefined ? '✓ Local' : r.spxOk ? `✓ SPX: ${r.spxMsg}` : `✗ SPX: ${r.spxMsg}`}
                     </span>
@@ -2424,7 +2796,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                 {filteredFioRoutes.length === 0 ? (
                   <tr><td colSpan={8} style={{ padding: '3rem', textAlign: 'center', color: '#8892a4' }}>
                     {fiorino.strictRoutes.length === 0
-                      ? 'Nenhuma rota com GG ≥ 2 e volume ≥ 800 disponível.'
+                      ? 'Nenhuma rota com tipo de veículo Fiorino disponível.'
                       : 'Nenhuma rota encontrada na busca.'}
                   </td></tr>
                 ) : filteredFioRoutes.map((route, idx) => {
@@ -2436,12 +2808,23 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                       <td style={{ ...TD, color: '#64748b', fontFamily: 'monospace' }}>{idx + 1}</td>
                       <td style={TD}>
                         <span style={{ fontFamily: 'monospace', fontWeight: 600, color: isObrigatory ? '#fbbf24' : '#60a5fa' }}>{route.atId}</span>
-                        {fioMode === 'maximize' && !isObrigatory && <span style={{ marginLeft: 6, fontSize: 9, background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 3, padding: '1px 5px' }}>extra</span>}
+                        {fioMode !== 'strict' && !isObrigatory && <span style={{ marginLeft: 6, fontSize: 9, background: 'rgba(59,130,246,.15)', color: '#60a5fa', borderRadius: 3, padding: '1px 5px' }}>extra</span>}
                       </td>
                       <td style={TD}><span style={{ color: '#e2e8f0' }}>{route.cluster}</span></td>
                       <td style={{ ...TD, textAlign: 'center' }}><span style={{ fontWeight: 700, color: '#4ade80' }}>{route.gg ?? '—'}</span></td>
                       <td style={{ ...TD, textAlign: 'center' }}><span style={{ fontWeight: 700, color: '#60a5fa' }}>{route.volume?.toLocaleString('pt-BR') ?? '—'}</span></td>
                       <td style={TD}>
+                        <select value={fioManual.has(route.atId) ? (fioManual.get(route.atId) || '__none') : '__auto'}
+                          onChange={e => setManual(route.atId, e.target.value === '__auto' ? null : e.target.value === '__none' ? '' : e.target.value)}
+                          title="Trocar a Fiorino desta rota"
+                          style={{ background: '#0f1117', border: `1px solid ${fioManual.has(route.atId) ? '#fbbf24' : '#2d3048'}`, color: '#cbd5e1', borderRadius: 6, padding: '2px 4px', fontSize: 11, maxWidth: 200, marginBottom: 3 }}>
+                          <option value="__auto">Automático{!fioManual.has(route.atId) && assigned ? ` (${assigned.name})` : ''}</option>
+                          <option value="__none">— Sem Fiorino —</option>
+                          {fiorino.fioDrivers.filter(d => coversCluster(d.clusters, route.cluster)).map(d => <option key={d.driverId} value={d.driverId}>{d.name}</option>)}
+                          {fiorino.fioDrivers.some(d => !coversCluster(d.clusters, route.cluster)) && <optgroup label="Fora do cluster">
+                            {fiorino.fioDrivers.filter(d => !coversCluster(d.clusters, route.cluster)).map(d => <option key={d.driverId} value={d.driverId}>{d.name}</option>)}
+                          </optgroup>}
+                        </select>
                         {assigned ? (
                           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                             <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{assigned.name}</span>
@@ -2463,23 +2846,24 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
             </table>
 
             {/* Fiorino driver pool */}
-            <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Pool de motoristas Fiorino disponíveis ({fiorino.fioDrivers.length})</p>
+            <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>Pool de motoristas Fiorino disponíveis ({fiorino.fioDrivers.length}{fioExcluded.size ? ` + ${fioExcluded.size} tirada(s)` : ''}) <span style={{ fontWeight: 400, color: '#64748b' }}>— use “Tirar” para deixar uma Fiorino fora do plano</span></p>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #2d3048' }}>
-                  {['#', 'Motorista', 'DS', 'Score', 'Dias s/ rota', 'Clusters', 'Atribuição prevista'].map(h => (
+                  {['#', 'Motorista', 'DS', 'Score', 'Dias s/ rota', 'Clusters', 'Atribuição prevista', ''].map(h => (
                     <th key={h} style={TH}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {fiorino.fioDrivers.length === 0 ? (
-                  <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: '#8892a4' }}>Nenhum motorista Fiorino na fila para este turno.</td></tr>
-                ) : fiorino.fioDrivers.map((driver, idx) => {
+                {fiorino.allFio.length === 0 ? (
+                  <tr><td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: '#8892a4' }}>Nenhum motorista Fiorino na fila para este turno.</td></tr>
+                ) : fiorino.allFio.map((driver, idx) => {
                   const dsMeta = getDsMeta(driver.dsReal)
                   const assignedRoute = [...fiorino.assignments.entries()].find(([, d]) => d.driverId === driver.driverId)?.[0]
+                  const excluded = fioExcluded.has(driver.driverId)
                   return (
-                    <tr key={driver.driverId} style={{ borderBottom: '1px solid #1e2130', background: assignedRoute ? 'rgba(245,158,11,.02)' : 'transparent' }}>
+                    <tr key={driver.driverId} style={{ borderBottom: '1px solid #1e2130', background: assignedRoute ? 'rgba(245,158,11,.02)' : 'transparent', opacity: excluded ? 0.45 : 1 }}>
                       <td style={{ ...TD, color: '#64748b', fontFamily: 'monospace' }}>{idx + 1}</td>
                       <td style={TD}>
                         <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{driver.name}</span>
@@ -2497,7 +2881,13 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                       <td style={TD}>
                         {assignedRoute
                           ? <Chip label={assignedRoute} color="#fbbf24" bg="rgba(245,158,11,.1)" small />
-                          : <span style={{ color: '#64748b', fontSize: 11 }}>Sem rota elegível no cluster</span>}
+                          : <span style={{ color: '#64748b', fontSize: 11 }}>{excluded ? 'Fora do plano' : 'Sem rota elegível no cluster'}</span>}
+                      </td>
+                      <td style={TD}>
+                        <button onClick={() => toggleExcluded(driver.driverId)}
+                          style={{ background: 'transparent', border: '1px solid #2d3048', color: excluded ? '#4ade80' : '#f87171', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer' }}>
+                          {excluded ? '↩ Voltar' : '✕ Tirar'}
+                        </button>
                       </td>
                     </tr>
                   )

@@ -21,6 +21,8 @@ export interface GlobalConfig {
   scoreWeights: ScoreWeightsConfig
   hubName: string
   downloadsFolder: string
+  ehaSheetUrl: string   // planilha com a guia "[IR] Base de BRs"
+  ehaStation: string    // station_name usado para filtrar a base (ex.: LM Hub_GO_Anápolis)
 }
 
 export const DEFAULT_CONFIG: GlobalConfig = {
@@ -33,6 +35,8 @@ export const DEFAULT_CONFIG: GlobalConfig = {
   scoreWeights: { dsWeight: 20, declineWeight: 25, noShowWeight: 30 },
   hubName: '',
   downloadsFolder: '',
+  ehaSheetUrl: '',
+  ehaStation: '',
 }
 
 const CONFIG_KEY = 'spx:global-config'
@@ -48,6 +52,8 @@ export function getGlobalConfig(): GlobalConfig {
       scoreWeights: { ...DEFAULT_CONFIG.scoreWeights, ...saved.scoreWeights },
       hubName: saved.hubName ?? DEFAULT_CONFIG.hubName,
       downloadsFolder: saved.downloadsFolder ?? DEFAULT_CONFIG.downloadsFolder,
+      ehaSheetUrl: saved.ehaSheetUrl ?? '',
+      ehaStation: saved.ehaStation ?? '',
     }
   } catch {
     return DEFAULT_CONFIG

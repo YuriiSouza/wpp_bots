@@ -738,15 +738,16 @@ function MapaTab({ data, fullDriverMeta }: { data: ForwardOrderAnalysis; fullDri
   }, [pkgsWithCoords])
 
   const makeIcon = useCallback((color: string, isOffice: boolean) => {
+    // Pontos pequenos: 10px (escritório = quadrado)
     const shape = isOffice
-      ? `<rect x="4" y="4" width="16" height="16" rx="3" fill="${color}"/><text x="12" y="16" text-anchor="middle" fill="white" font-size="10" font-family="sans-serif">🏢</text>`
-      : `<circle cx="12" cy="12" r="8" fill="${color}"/>`
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">${shape}</svg>`
+      ? `<rect x="1" y="1" width="8" height="8" rx="1.5" fill="${color}" stroke="white" stroke-width="1"/>`
+      : `<circle cx="5" cy="5" r="4" fill="${color}" stroke="white" stroke-width="1"/>`
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">${shape}</svg>`
     return L.divIcon({
-      html: `<div style="width:24px;height:24px">${svg}</div>`,
+      html: `<div style="width:10px;height:10px">${svg}</div>`,
       className: '',
-      iconSize: [24, 24],
-      iconAnchor: [12, 12],
+      iconSize: [10, 10],
+      iconAnchor: [5, 5],
     })
   }, [])
 

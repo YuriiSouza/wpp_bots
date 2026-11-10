@@ -1,9 +1,12 @@
-import { useMemo, useState } from 'react'
+import { AlertaDisponibilidade, AvailChip, useAvailabilityIssues } from '../AlertaDisponibilidade'
+import { useEffect, useMemo, useState } from 'react'
 import type { StoredDriver } from '../../lib/localStore'
 import type { DriverResult } from '../../lib/types'
 import type { LocalRoute } from '../../lib/noshowRouteParser'
 import type { Shift } from '../../lib/globalConfig'
 import { routeStore } from '../../lib/routeStore'
+import { getCtPackages, getEhaCache } from '../../lib/planilhas'
+import RotaDetalhe from '../RotaDetalhe'
 
 // "A-34" → { letter: "A", num: 34 }; null/empty → sorts last
 function compareGaiola(a: string | null, b: string | null): number {
@@ -24,6 +27,8 @@ interface Props {
   dsDrivers: DriverResult[]
   selectedDay: string
   selectedShift: Shift
+  focusAt?: string
+  focusTick?: number
 }
 
 const SHIFTS: Shift[] = ['AM', 'PM1', 'PM2']
@@ -378,16 +383,33 @@ function RouteDashboard({ rows, onOpenTable }: { rows: Row[]; onOpenTable: (sear
   )
 }
 
-export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedShift }: Props) {
+export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedShift, focusAt, focusTick }: Props) {
+  // Detalhe da rota abre aqui dentro (clicando na linha da tabela) e volta com o botão
+  const [openAt, setOpenAt] = useState<string | null>(focusAt ?? null)
+  useEffect(() => { if (focusAt) setOpenAt(focusAt) }, [focusAt, focusTick])
+  const onOpenRoute = (at: string) => setOpenAt(at)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'DISPONIVEL' | 'ATRIBUIDA'>('all')
   const [copied, setCopied] = useState(false)
-  const [view, setView] = useState<'dashboard' | 'tabela'>('dashboard')
+  const [view, setView] = useState<'dashboard' | 'tabela'>('tabela')
 
   const routes = useMemo(() => routeStore.get(selectedDay, selectedShift) ?? [], [selectedDay, selectedShift])
+  const availIssues = useAvailabilityIssues(routes, registry)
 
   const registryMap = useMemo(() => new Map(registry.map(d => [d.id, d])), [registry])
   const dsMap = useMemo(() => new Map(dsDrivers.map(d => [d.driver_id, d])), [dsDrivers])
+
+  // Pacotes (CTs) e EHA por AT, quando a roteirização veio pelo link da planilha
+  const pkStats = useMemo(() => {
+    const eha = new Set((getEhaCache()?.rows ?? []).map(r => r.tn))
+    const m = new Map<string, { n: number; eha: number }>()
+    for (const p of getCtPackages(selectedDay, selectedShift)) {
+      const c = m.get(p.at) ?? { n: 0, eha: 0 }
+      c.n++; if (eha.has(p.tn)) c.eha++
+      m.set(p.at, c)
+    }
+    return m
+  }, [selectedDay, selectedShift])
 
   const savedSets = useMemo(() => routeStore.list(), [selectedDay, selectedShift])
 
@@ -431,6 +453,8 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
     totalAcertividade: enriched.filter(r => r.acertividade !== null).length,
   }), [enriched])
 
+  if (openAt) return <RotaDetalhe registry={registry} selectedDay={selectedDay} selectedShift={selectedShift} focusAt={openAt} onBack={() => setOpenAt(null)} />
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Header */}
@@ -456,6 +480,7 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
           </div>
         </div>
       </div>
+      {routes.length > 0 && <AlertaDisponibilidade routes={routes} registry={registry} shift={selectedShift} issues={availIssues} />}
 
 
       {routes.length === 0 ? (
@@ -526,59 +551,65 @@ export default function VisaoGeral({ registry, dsDrivers, selectedDay, selectedS
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: '2px solid #2d3048' }}>
-                  {['AT', 'Gaiola', 'Cluster', 'Cidade', 'Paradas', 'KM', 'SPR', 'Volume', 'GG', 'Veíc. Prog.', 'ID Driver', 'Nome Driver', 'DS', 'Status', 'Veíc. Nec.', 'Veíc. Esc.', 'Acertividade', 'Telefone'].map(h => (
+                  {['Gaiola', 'Rota', 'Carga', 'Veículo', 'Motorista', 'Status', ''].map(h => (
                     <th key={h} style={TH}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={18} style={{ padding: '3rem', textAlign: 'center', color: '#8892a4' }}>Nenhuma rota encontrada.</td></tr>
+                  <tr><td colSpan={7} style={{ padding: '3rem', textAlign: 'center', color: '#8892a4' }}>Nenhuma rota encontrada.</td></tr>
                 ) : filtered.map(r => {
                   const dsVal = r.ds !== null ? (r.ds * 100).toFixed(1) : null
                   const dsColor = r.ds === null ? '#64748b' : r.ds * 100 >= 95 ? '#4ade80' : '#f87171'
-                  const acertColor = r.acertividade === true ? '#4ade80' : r.acertividade === false ? '#f87171' : '#64748b'
-
+                  const pk = pkStats.get(r.atId)
+                  const heavy = (r.volume ?? 0) > 700 || (r.gg ?? 0) > 1
+                  const phone = r.phone?.replace(/\D/g, '') ?? ''
                   return (
-                    <tr key={r.id} style={{ borderBottom: '1px solid #1e2130', background: r.status === 'ATRIBUIDA' ? 'rgba(34,197,94,.02)' : r.isInterior ? 'rgba(245,158,11,.02)' : 'transparent' }}>
-                      <td style={TD}><span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#e2e8f0', fontSize: 11 }}>{r.atId}</span></td>
-                      <td style={{ ...TD, color: '#94a3b8' }}>{r.gaiola || '—'}</td>
+                    <tr key={r.id} onClick={() => onOpenRoute(r.atId)} title="Abrir detalhe da rota"
+                      style={{ borderBottom: '1px solid #1e2130', cursor: 'pointer', boxShadow: availIssues.has(r.atId) ? 'inset 4px 0 0 #dc2626' : undefined, background: availIssues.has(r.atId) ? 'rgba(220,38,38,.12)' : r.status === 'ATRIBUIDA' ? 'rgba(34,197,94,.02)' : r.isInterior ? 'rgba(245,158,11,.02)' : 'transparent' }}>
+                      <td style={{ ...TD, fontSize: 14, fontWeight: 800, color: '#e2e8f0' }}>{r.gaiola || '—'}</td>
                       <td style={TD}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          {r.isInterior && <span style={{ fontSize: 9 }}>📍</span>}
-                          <span style={{ color: '#e2e8f0' }}>{r.cluster || '—'}</span>
+                        <div style={{ fontFamily: 'monospace', fontWeight: 600, color: '#cbd5e1', fontSize: 11 }}>{r.atId}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>{r.isInterior && '📍 '}{r.cluster || '—'}{r.cidade ? ` · ${r.cidade}` : ''}</div>
+                      </td>
+                      <td style={TD}>
+                        <div style={{ color: '#e2e8f0' }}>
+                          {r.paradas ?? '—'} paradas · {pk?.n ?? r.spr ?? '—'} pct{r.km != null ? ` · ${r.km.toFixed(0)} km` : ''}
+                        </div>
+                        <div style={{ fontSize: 11, color: heavy ? '#fbbf24' : '#64748b' }}>
+                          {r.volume ?? '—'} L · GG {r.gg ?? '—'}
+                          {pk && pk.eha > 0 && <span style={{ marginLeft: 6, color: '#f87171', fontWeight: 700 }}>♻ {pk.eha} EHA</span>}
                         </div>
                       </td>
-                      <td style={{ ...TD, color: '#94a3b8' }}>{r.cidade || '—'}</td>
-                      <td style={{ ...TD, textAlign: 'right', color: '#e2e8f0' }}>{r.paradas ?? '—'}</td>
-                      <td style={{ ...TD, textAlign: 'right', color: '#94a3b8' }}>{r.km !== null ? r.km.toFixed(1) : '—'}</td>
-                      <td style={{ ...TD, textAlign: 'right', color: '#94a3b8' }}>{r.spr ?? '—'}</td>
-                      <td style={{ ...TD, textAlign: 'right', color: r.volume !== null && r.volume > 700 ? '#fbbf24' : '#94a3b8' }}>{r.volume ?? '—'}</td>
-                      <td style={{ ...TD, textAlign: 'right', color: r.gg !== null && r.gg > 1 ? '#fbbf24' : '#94a3b8' }}>{r.gg ?? '—'}</td>
-                      <td style={TD}>{r.scheduledVehicle ? <Chip label={r.scheduledVehicle} small /> : <span style={{ color: '#64748b' }}>—</span>}</td>
-                      <td style={{ ...TD, fontFamily: 'monospace', fontSize: 10, color: '#8892a4' }}>{r.assignedDriverId || '—'}</td>
-                      <td style={TD}><span style={{ color: r.assignedDriverName ? '#e2e8f0' : '#64748b' }}>{r.assignedDriverName || '—'}</span></td>
-                      <td style={TD}>{dsVal ? <span style={{ fontWeight: 600, color: dsColor }}>{dsVal}%</span> : <span style={{ color: '#64748b' }}>—</span>}</td>
+                      <td style={TD}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <Chip label={r.vehicleRequired} color={VEHICLE_COLOR[r.vehicleRequired] ?? '#94a3b8'} bg="transparent" small />
+                          {r.chosenVehicle && <>
+                            <span style={{ color: '#64748b' }}>→</span>
+                            <Chip label={r.chosenVehicle} color={VEHICLE_COLOR[r.chosenVehicle] ?? '#94a3b8'} bg="transparent" small />
+                            <span style={{ fontWeight: 800, color: r.acertividade ? '#4ade80' : '#f87171' }}>{r.acertividade ? '✓' : '✗'}</span>
+                          </>}
+                        </div>
+                      </td>
+                      <td style={TD}>
+                        {r.assignedDriverName ? (
+                          <>
+                            <div style={{ color: '#e2e8f0' }}>{r.assignedDriverName}{availIssues.has(r.atId) && <AvailChip issue={availIssues.get(r.atId)!} />}</div>
+                            <div style={{ fontSize: 10, color: '#64748b', display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <span style={{ fontFamily: 'monospace' }}>{r.assignedDriverId || ''}</span>
+                              {dsVal && <span style={{ fontWeight: 700, color: dsColor }}>DS {dsVal}%</span>}
+                              {phone && <a href={`https://wa.me/55${phone}?text=Ol%C3%A1%2C+tudo+bem%3F`} onClick={e => e.stopPropagation()} target="_blank" rel="noreferrer" style={{ color: '#4ade80', textDecoration: 'none' }}>WhatsApp</a>}
+                            </div>
+                          </>
+                        ) : <span style={{ color: '#64748b' }}>—</span>}
+                      </td>
                       <td style={TD}>
                         {r.status === 'ATRIBUIDA'
                           ? <Chip label="Atribuída" color="#4ade80" bg="rgba(34,197,94,.1)" small />
                           : <Chip label="Disponível" color="#60a5fa" bg="rgba(59,130,246,.08)" small />}
                       </td>
-                      <td style={TD}><Chip label={r.vehicleRequired} color={r.vehicleRequired === 'FIORINO' ? '#fbbf24' : r.vehicleRequired === 'MOTO' ? '#f472b6' : '#94a3b8'} bg={r.vehicleRequired === 'FIORINO' ? 'rgba(251,191,36,.1)' : r.vehicleRequired === 'MOTO' ? 'rgba(244,114,182,.1)' : 'rgba(100,116,139,.1)'} small /></td>
-                      <td style={TD}>{r.chosenVehicle ? <Chip label={r.chosenVehicle} small /> : <span style={{ color: '#64748b' }}>—</span>}</td>
-                      <td style={{ ...TD, textAlign: 'center' }}>
-                        {r.acertividade === null
-                          ? <span style={{ color: '#64748b' }}>—</span>
-                          : <span style={{ fontWeight: 700, color: acertColor }}>{r.acertividade ? '✓' : '✗'}</span>}
-                      </td>
-                      <td style={TD}>
-                        {r.phone
-                          ? <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                              <span style={{ fontFamily: 'monospace', fontSize: 10, color: '#8892a4' }}>{r.phone}</span>
-                              <a href={`https://wa.me/55${r.phone.replace(/\D/g, '')}?text=Ol%C3%A1%2C+tudo+bem%3F`} target="_blank" rel="noreferrer" style={{ color: '#4ade80', fontSize: 11, textDecoration: 'none' }}>WhatsApp</a>
-                            </div>
-                          : <span style={{ color: '#64748b' }}>—</span>}
-                      </td>
+                      <td style={{ ...TD, color: '#64748b' }}>›</td>
                     </tr>
                   )
                 })}

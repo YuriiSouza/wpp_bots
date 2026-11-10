@@ -107,7 +107,7 @@ export default function Configuracoes() {
 
   const handleReset = () => {
     // Mantém a pasta de downloads e o hub: "padrões" aqui são as regras de turno, rodízio e score.
-    const next = { ...DEFAULT_CONFIG, downloadsFolder: cfg.downloadsFolder, hubName: cfg.hubName }
+    const next = { ...DEFAULT_CONFIG, downloadsFolder: cfg.downloadsFolder, hubName: cfg.hubName, ehaSheetUrl: cfg.ehaSheetUrl, ehaStation: cfg.ehaStation }
     setCfg(next)
     saveGlobalConfig(next)
     setDirty(false)
@@ -264,6 +264,18 @@ export default function Configuracoes() {
                 <Btn variant="outline" disabled={sheetsOp.loading} onClick={() => void runSheets('pull')}>{sheetsOp.loading ? '…' : '⬇ Buscar do Sheets'}</Btn>
               </div>
               {sheetsOp.msg && <Status ok={sheetsOp.msg.startsWith('✓')}>{sheetsOp.msg}</Status>}
+            </Section>
+
+            <Section title="📦 Base de EHA (pacotes que não couberam)" hint={<>Planilha com a guia <code style={CODE}>[IR] Base de BRs</code>. A base é filtrada pelo <code style={CODE}>station_name</code> abaixo. Usa a mesma conta Google conectada acima (ela precisa ter acesso à planilha).</>}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={LABEL}>Link da planilha</label>
+                <input value={cfg.ehaSheetUrl} onChange={e => update({ ...cfg, ehaSheetUrl: e.target.value.trim() })} placeholder="https://docs.google.com/spreadsheets/d/..." style={{ ...INPUT, fontFamily: 'monospace' }} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={LABEL}>Station name</label>
+                <input value={cfg.ehaStation} onChange={e => update({ ...cfg, ehaStation: e.target.value })} placeholder="LM Hub_GO_Anápolis" style={INPUT} />
+              </div>
+              <p style={{ ...HINT, fontSize: 11 }}>Clique em <strong style={{ color: '#e2e8f0' }}>Salvar regras</strong> no topo para gravar.</p>
             </Section>
 
             <Section title="🗂 Pasta de downloads" hint={<>Onde os relatórios do SPX são baixados. A tela de Uploads busca aqui o arquivo mais recente de cada relatório (ex: <code style={CODE}>QueueList_*.csv</code>).</>}>

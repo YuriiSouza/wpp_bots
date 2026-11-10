@@ -4,7 +4,6 @@ import { firstCallDay } from '../../lib/callUpParser'
 import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
 import type { StoredDriver } from '../../lib/localStore'
 import type { Shift } from '../../lib/globalConfig'
-import { getGlobalConfig, driverMatchesShift } from '../../lib/globalConfig'
 import { routeStore } from '../../lib/routeStore'
 
 // Risco de recusa: para os motoristas disponíveis no turno, a chance de recusarem a 1ª chamada.
@@ -35,7 +34,6 @@ export default function RiscoRecusa({ data, workPref, registry, selectedDay, sel
   const [levelSel, setLevelSel] = useState<'' | 'alta' | 'media' | 'baixa'>('')
   const [vehicleSel, setVehicleSel] = useState('')
   const [search, setSearch] = useState('')
-  const [includeWithRoute, setIncludeWithRoute] = useState(false)
   const [hideContacted, setHideContacted] = useState(false)
   const [copied, setCopied] = useState('')
   const contactedKey = `spx:callup-contatados:${selectedDay}:${selectedShift}`
@@ -59,13 +57,16 @@ export default function RiscoRecusa({ data, workPref, registry, selectedDay, sel
     const p0 = base.w ? base.d / base.w : 0.3
 
     // Quem está disponível no turno escolhido
-    const cfg = getGlobalConfig()
     const regMap = new Map((registry ?? []).map(d => [d.id, d]))
-    const withRoute = new Set<string>(data.acceptedByDateShift[`${selectedDay}|${selectedShift}`] ?? [])
-    for (const r of routeStore.get(selectedDay, selectedShift) ?? []) if (r.status === 'ATRIBUIDA' && r.assignedDriverId) withRoute.add(r.assignedDriverId)
-    const pool = (workPref?.drivers ?? []).filter(d => {
-      const s = d.schedule[selectedDay]
-      return !!s && s.status === 'available' && driverMatchesShift(s.slots, selectedShift, cfg)
+    // Só quem tem rota atribuída no turno (rotas salvas; sem rotas salvas, quem aceitou no Call Up)
+    const assignedRoutes = (routeStore.get(selectedDay, selectedShift) ?? []).filter(r => r.status === 'ATRIBUIDA' && r.assignedDriverId)
+    const withRoute = new Map<string, string>()
+    for (const r of assignedRoutes) withRoute.set(r.assignedDriverId!, r.assignedDriverName ?? '')
+    if (!withRoute.size) for (const id of data.acceptedByDateShift[`${selectedDay}|${selectedShift}`] ?? []) withRoute.set(id, '')
+    const wpMap = new Map((workPref?.drivers ?? []).map(d => [d.driverId, d]))
+    const pool = [...withRoute.entries()].map(([id, name]) => {
+      const w = wpMap.get(id)
+      return { driverId: id, driverName: w?.driverName || name, vehicleType: w?.vehicleType, clusters: w?.clusters ?? [], noShowTime: w?.noShowTime }
     })
 
     const rows: Row[] = pool.map(d => {
@@ -93,19 +94,18 @@ export default function RiscoRecusa({ data, workPref, registry, selectedDay, sel
   const vehicles = [...new Set(result.rows.map(r => r.vehicle))].sort()
   const q = norm(search.trim())
   const shown = result.rows.filter(r =>
-    (includeWithRoute || !r.hasRoute) &&
     r.p * 100 >= minP &&
     (!levelSel || level(r.p) === levelSel) &&
     (!vehicleSel || r.vehicle === vehicleSel) &&
     (!hideContacted || !contacted.has(r.driverId)) &&
     (!q || r.driverId.includes(q) || norm(r.name).includes(q) || r.clusters.some(c => norm(c).includes(q))))
-  const pool = result.rows.filter(r => includeWithRoute || !r.hasRoute)
+  const pool = result.rows
   const counts = { alta: pool.filter(r => level(r.p) === 'alta').length, media: pool.filter(r => level(r.p) === 'media').length, baixa: pool.filter(r => level(r.p) === 'baixa').length }
 
   const copy = async (key: string, text: string) => { if (!text) return; await navigator.clipboard.writeText(text); setCopied(key); setTimeout(() => setCopied(''), 2000) }
   const phones = shown.map(r => r.phone).filter(Boolean)
 
-  if (!workPref) return <p style={{ margin: 0, fontSize: 13, color: C.muted }}>Importe a disponibilidade (Work Preference) para saber quem está disponível no turno.</p>
+  if (!result.rows.length) return <p style={{ margin: 0, fontSize: 13, color: C.muted }}>Nenhum motorista com rota atribuída no {selectedShift} de {selectedDay}. Importe/busque as rotas do turno.</p>
 
   const btn: React.CSSProperties = { background: 'transparent', border: `1px solid ${C.border}`, color: C.sub, borderRadius: 7, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }
   return (
@@ -113,7 +113,7 @@ export default function RiscoRecusa({ data, workPref, registry, selectedDay, sel
       {/* Resumo */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
         {[
-          { label: `Disponíveis ${selectedShift}`, value: pool.length, sub: `${result.totalAvailable - pool.length} já com rota${includeWithRoute ? ' (incluídos)' : ' (fora da lista)'}`, c: C.blue, onClick: () => setLevelSel('') },
+          { label: `Com rota no ${selectedShift}`, value: pool.length, sub: 'motoristas com rota atribuída', c: C.blue, onClick: () => setLevelSel('') },
           { label: 'Risco alto (≥ 60%)', value: counts.alta, sub: 'ligar primeiro', c: C.high, onClick: () => { setLevelSel('alta'); setMinP(0) } },
           { label: 'Risco médio (30–60%)', value: counts.media, sub: 'mandar mensagem', c: C.mid, onClick: () => { setLevelSel('media'); setMinP(0) } },
           { label: 'Risco baixo (< 30%)', value: counts.baixa, sub: 'costumam aceitar', c: C.low, onClick: () => { setLevelSel('baixa'); setMinP(0) } },
@@ -147,9 +147,6 @@ export default function RiscoRecusa({ data, workPref, registry, selectedDay, sel
           <option value="">Todos os veículos</option>
           {vehicles.map(v => <option key={v} value={v}>{v}</option>)}
         </select>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.sub, cursor: 'pointer' }}>
-          <input type="checkbox" checked={includeWithRoute} onChange={e => setIncludeWithRoute(e.target.checked)} /> incluir quem já tem rota
-        </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.sub, cursor: 'pointer' }}>
           <input type="checkbox" checked={hideContacted} onChange={e => setHideContacted(e.target.checked)} /> esconder contatados ({contacted.size})
         </label>

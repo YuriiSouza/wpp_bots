@@ -9,6 +9,9 @@ import Disponibilidade from './components/Disponibilidade'
 import CallUp from './components/CallUp'
 import ForwardOrder from './components/ForwardOrder'
 import VisaoGeral from './components/VisaoGeral'
+import Eha from './components/Eha'
+import Volumosos from './components/Volumosos'
+import { Tour, TourButton } from './components/Tour'
 import NoShowReversion from './components/NoShowReversion'
 import Carregamento from './components/Carregamento'
 import Blocklist from './components/Blocklist'
@@ -23,6 +26,7 @@ import { localStore } from './lib/localStore'
 import { parseDriverCsv } from './lib/driverParser'
 import { reportStore } from './lib/reportStore'
 import { routeStore } from './lib/routeStore'
+import { fetchRoutingSheet, getRoutingLink, getLastRoutingLink, saveRoutingLink, saveCtPackages } from './lib/planilhas'
 import { parseRoutesTsv } from './lib/noshowRouteParser'
 import { fetchAtDetails } from './lib/spxAtDetailFetcher'
 import { parseBrAssignment } from './lib/brAssignmentParser'
@@ -59,23 +63,25 @@ type DSState =
   | { phase: 'done'; result: AnalysisResult; fileName: string }
   | { phase: 'error'; message: string }
 
-type Section = 'uploads' | 'ds' | 'novatos' | 'motoristas' | 'disponibilidade' | 'callup' | 'pacotes' | 'perfil' | 'noshow' | 'carregamento' | 'blocklist' | 'config'
+type Section = 'uploads' | 'ds' | 'novatos' | 'motoristas' | 'disponibilidade' | 'callup' | 'pacotes' | 'perfil' | 'noshow' | 'carregamento' | 'eha' | 'volumosos' | 'blocklist' | 'config'
 
 interface NavItem { id: Section; icon: string; label: string; group?: string }
 
 const NAV: NavItem[] = [
-  { id: 'uploads',       icon: '📤', label: 'Uploads' },
-  { id: 'ds',            icon: '📊', label: 'Análise DS',     group: 'Análise' },
-  { id: 'novatos',       icon: '🆕', label: 'Novatos',        group: 'Análise' },
-  { id: 'motoristas',    icon: '👥', label: 'Motoristas',     group: 'Análise' },
-  { id: 'disponibilidade', icon: '📅', label: 'Disponibilidade', group: 'Operação' },
-  { id: 'callup',        icon: '📞', label: 'Call Up',        group: 'Operação' },
-  { id: 'pacotes',       icon: '📦', label: 'Pacotes',        group: 'Operação' },
-  { id: 'perfil',        icon: '🔍', label: 'Visão Geral',    group: 'Operação' },
-  { id: 'noshow',        icon: '🔄', label: 'Atribuição', group: 'Operação' },
-  { id: 'carregamento',  icon: '⏱', label: 'Carregamento',   group: 'Operação' },
-  { id: 'blocklist',    icon: '⊘',  label: 'Bloqueados',      group: 'Operação' },
-  { id: 'config',      icon: '⚙',  label: 'Configurações' },
+  { id: 'uploads',         icon: '📤', label: 'Uploads' },
+  { id: 'ds',              icon: '📊', label: 'Análise DS',      group: 'Análise' },
+  { id: 'novatos',         icon: '🆕', label: 'Novatos',         group: 'Análise' },
+  { id: 'motoristas',      icon: '👥', label: 'Motoristas',      group: 'Análise' },
+  { id: 'perfil',          icon: '🔍', label: 'Visão Geral',     group: 'Convocação' },
+  { id: 'disponibilidade', icon: '📅', label: 'Disponibilidade', group: 'Convocação' },
+  { id: 'callup',          icon: '📞', label: 'Call Up',         group: 'Convocação' },
+  { id: 'noshow',          icon: '🔄', label: 'Atribuição',      group: 'Convocação' },
+  { id: 'carregamento',    icon: '⏱', label: 'Carregamento',    group: 'Expedição' },
+  { id: 'pacotes',         icon: '📦', label: 'Pacotes',         group: 'Expedição' },
+  { id: 'volumosos',       icon: '🧱', label: 'Volumosos',       group: 'Expedição' },
+  { id: 'eha',             icon: '♻',  label: 'EHA (não coube)', group: 'Expedição' },
+  { id: 'blocklist',       icon: '⊘',  label: 'Bloqueados',      group: 'Gestão' },
+  { id: 'config',          icon: '⚙',  label: 'Configurações',   group: 'Gestão' },
 ]
 
 function localDateStr(d = new Date()) {
@@ -95,6 +101,9 @@ function loadHeader(): { day: string; shift: Shift } {
 
 export default function App() {
   const [section, setSection] = useState<Section>('uploads')
+  const [focusAt, setFocusAt] = useState<string | undefined>()
+  const [focusTick, setFocusTick] = useState(0)
+  const [tourOpen, setTourOpen] = useState(false)
   const [dsState, setDsState] = useState<DSState>(() => {
     const saved = loadDsResult()
     return saved ? { phase: 'done', ...saved } : { phase: 'idle' }
@@ -289,7 +298,7 @@ export default function App() {
               }
               const dot = navDots[item.id]
               items.push(
-                <button key={item.id} onClick={() => setSection(item.id)} title={navCollapsed ? item.label : undefined}
+                <button key={item.id} onClick={() => { setFocusAt(undefined); setSection(item.id) }} title={navCollapsed ? item.label : undefined}
                   style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: navCollapsed ? 'center' : 'flex-start', gap: 10, padding: navCollapsed ? '9px 0' : '8px 16px', background: section === item.id ? 'rgba(59,130,246,.12)' : 'transparent', border: 'none', borderLeft: `3px solid ${section === item.id ? '#3b82f6' : 'transparent'}`, color: section === item.id ? '#e2e8f0' : '#8892a4', fontSize: 13, fontWeight: section === item.id ? 600 : 400, cursor: 'pointer', width: '100%', textAlign: 'left', transition: 'all .1s' }}>
                   <span style={{ fontSize: 15 }}>{item.icon}</span>
                   {!navCollapsed && <span style={{ flex: 1, whiteSpace: 'nowrap' }}>{item.label}</span>}
@@ -402,8 +411,15 @@ export default function App() {
             dsDrivers={dsState.phase === 'done' ? dsState.result.drivers : []}
             selectedDay={selectedDay}
             selectedShift={selectedShift}
+            focusAt={focusAt}
+            focusTick={focusTick}
           />
         )}
+
+
+        {section === 'volumosos' && <Volumosos key={`${selectedDay}|${selectedShift}`} registry={localStore.getDrivers()} selectedDay={selectedDay} selectedShift={selectedShift} />}
+
+        {section === 'eha' && <Eha selectedDay={selectedDay} selectedShift={selectedShift} onOpenRoute={(at: string) => { setFocusAt(at); setFocusTick(t => t + 1); setSection('perfil') }} />}
 
         {section === 'noshow' && (
           <NoShowReversion
@@ -435,6 +451,8 @@ export default function App() {
 
         {section === 'config' && <Configuracoes />}
       </main>
+      {!tourOpen && <TourButton section={section} onStart={() => setTourOpen(true)} />}
+      {tourOpen && <Tour key={section} section={section} onClose={() => setTourOpen(false)} />}
     </div>
   )
 }
@@ -537,6 +555,30 @@ function RoutePasteCard({ defaultDate, defaultShift }: { defaultDate: string; de
   const [routesSaved, setRoutesSaved] = useState<{ date: string; shift: Shift; count: number }[]>(() => routeStore.list())
 
   const preview = useMemo(() => text.trim() ? parseRoutesTsv(text) : [], [text])
+  const [link, setLink] = useState(() => getRoutingLink(defaultDate, defaultShift) || getLastRoutingLink())
+  const [sheet, setSheet] = useState<{ loading: boolean; msg: string; ok?: boolean }>({ loading: false, msg: '' })
+
+  const loadFromSheet = async () => {
+    if (!link.trim()) return
+    setSheet({ loading: true, msg: 'Lendo a planilha…' })
+    try {
+      const d = await fetchRoutingSheet(link.trim())
+      if (!d.routes.length) throw new Error('Nenhuma rota encontrada na guia Plano de expedição')
+      saveRoutingLink(pasteDate, pasteShift, link.trim())
+      saveCtPackages(pasteDate, pasteShift, d.packages)
+      // Mantém o que já foi atribuído no app para as ATs que já estavam salvas
+      const prev = new Map((routeStore.get(pasteDate, pasteShift) ?? []).map(r => [r.atId, r]))
+      const merged = d.routes.map(r => {
+        const p = prev.get(r.atId)
+        return p && p.status === 'ATRIBUIDA' && p.assignedDriverId ? { ...r, status: p.status, assignedDriverId: p.assignedDriverId, assignedDriverName: p.assignedDriverName } : r
+      })
+      routeStore.save(pasteDate, pasteShift, merged)
+      setRoutesSaved(routeStore.list())
+      setSheet({ loading: false, ok: true, msg: `✓ ${d.routes.length} rotas e ${d.packages.length} pacotes salvos em ${pasteShift} · ${pasteDate}${d.tabs.cts ? '' : ' (guia de CTs não encontrada)'}` })
+    } catch (e) {
+      setSheet({ loading: false, ok: false, msg: e instanceof Error ? e.message : String(e) })
+    }
+  }
 
   const handleLoad = () => {
     if (preview.length === 0) return
@@ -573,6 +615,14 @@ function RoutePasteCard({ defaultDate, defaultShift }: { defaultDate: string; de
           ))}
         </div>
       </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input value={link} onChange={e => setLink(e.target.value)} placeholder="🔗 Link da planilha de roteirização (https://docs.google.com/spreadsheets/d/...)" style={{ flex: 1, minWidth: 0, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 6, padding: '5px 8px', fontSize: 12, fontFamily: 'monospace' }} />
+        <button disabled={!link.trim() || sheet.loading} onClick={() => void loadFromSheet()} style={{ background: link.trim() ? '#22c55e' : '#2d3048', color: link.trim() ? '#0f1117' : '#64748b', border: 'none', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: link.trim() && !sheet.loading ? 'pointer' : 'default', whiteSpace: 'nowrap' }}>
+          {sheet.loading ? '⏳ Lendo…' : `Buscar ${pasteShift} · ${pasteDate}`}
+        </button>
+      </div>
+      {sheet.msg && <span style={{ fontSize: 11, fontWeight: 600, color: sheet.ok === false ? '#f87171' : sheet.ok ? '#4ade80' : '#fbbf24' }}>{sheet.msg}</span>}
+      <span style={{ fontSize: 10, color: '#64748b' }}>Lê as guias Plano de expedição e Calculation Tasks. Só o link fica salvo. Ou cole o conteúdo da guia abaixo:</span>
       <textarea
         value={text}
         onChange={e => { setText(e.target.value); setSaved(false) }}
@@ -957,14 +1007,14 @@ function UploadsPage(props: UploadsProps) {
         {/* Roteirização por Turno */}
         <UploadCard
           icon="🛣" title="Roteirização por Turno" color="#22c55e"
-          description="Cole a tabela de roteirização do SPX — salva separadamente por data e turno (AM / PM1 / PM2)"
+          description="Cole o link da planilha de roteirização (ou o conteúdo da guia) — salva por data e turno (AM / PM1 / PM2)"
           loaded={routesSaved.length > 0 ? `✓ ${routesSaved.length} turno(s) salvo(s)` : null}
           tutorial={[
             'Acesse a planilha de roteirização enviada diariamente para cada turno no grupo de roteirização do seu HUB.',
-            'Abra a guia Plano de Expedição.',
-            'Selecione toda a tabela (Ctrl+A ou clique e arraste) e copie (Ctrl+C).',
-            'Clique em Importar neste card, selecione o turno e a data corretos.',
-            'Cole o conteúdo no campo de texto e confirme.',
+            'Escolha a data e o turno neste card.',
+            'Copie o link da planilha (barra de endereço) e cole no campo 🔗; clique em Buscar. É preciso estar logado no Google (Configurações).',
+            'O app lê as guias Plano de expedição (rotas) e Calculation Tasks (pacotes) e salva o link para as próximas vezes.',
+            'Alternativa: abra a guia Plano de Expedição, copie toda a tabela e cole no campo de texto.',
           ]}
         >
           <RoutePasteCard defaultDate={selectedDay} defaultShift={selectedShift} />

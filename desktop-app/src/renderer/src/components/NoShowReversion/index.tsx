@@ -1015,6 +1015,24 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
     setBusy(false)
   }
 
+  // Falhas que ainda estão sem motorista (a mais recente de cada rota)
+  const failedNow = (() => {
+    const seen = new Set<string>(); const out: ManualLog[] = []
+    for (const l of log) { if (seen.has(l.atId)) continue; seen.add(l.atId); if (!l.ok && allSem.some(r => r.atId === l.atId)) out.push(l) }
+    return out
+  })()
+  const retryFailed = async () => {
+    if (busy || !failedNow.length) return
+    setBusy(true); setStopMsg(null)
+    for (const l of failedNow) {
+      const r = allSem.find(x => x.atId === l.atId); if (!r) continue
+      const res = await onAssign(r, { driverId: l.driverId, name: l.name })
+      setLog(prev => [{ ...l, ok: res.ok, msg: res.msg }, ...prev])
+      if (!res.ok && /login|sess|expir|token|csrf|401|403|cookie|credencia|curl/i.test(res.msg)) { setStopMsg(`Sessão do SPX: ${res.msg}. Atualize o cURL e repita.`); break }
+    }
+    setBusy(false)
+  }
+
   const copyLog = async () => {
     const ok = log.filter(l => l.ok)
     await navigator.clipboard.writeText(ok.map(l => `${l.atId}\t${l.cluster}\t${l.driverId}\t${l.name}`).join('\n'))
@@ -1109,7 +1127,10 @@ function SemMotoristaPanel({ routes, queueDrivers, registry, alreadyRoutedIds, d
         <div style={box}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>Atribuições feitas aqui ({log.filter(l => l.ok).length})</span>
-            <Btn variant="outline" onClick={() => void copyLog()} style={{ fontSize: 11 }}>{copied ? '✓ Copiado' : '📋 Copiar lista'}</Btn>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {failedNow.length > 0 && <Btn variant="danger" onClick={() => void retryFailed()} disabled={busy} style={{ fontSize: 11 }}>{busy ? '⏳ Repetindo...' : `↻ Repetir as que falharam (${failedNow.length})`}</Btn>}
+              <Btn variant="outline" onClick={() => void copyLog()} style={{ fontSize: 11 }}>{copied ? '✓ Copiado' : '📋 Copiar lista'}</Btn>
+            </div>
           </div>
           {log.map((l, k) => (
             <div key={k} style={{ fontSize: 12, color: l.ok ? '#cbd5e1' : '#f87171', padding: '3px 0' }}>
@@ -1340,6 +1361,18 @@ function BatchAssignModal({ open, onClose, onApply, spxConfigured }: {
     try { setResult(await onApply(input)) }
     finally { setRunning(false) }
   }
+  // Reenvia só as linhas que falharam e substitui o resultado delas
+  const retryFailed = async () => {
+    if (!result) return
+    const failedRows = result.filter(r => r.status === 'fail')
+    if (!failedRows.length) return
+    setRunning(true)
+    try {
+      const again = await onApply(failedRows.map(r => `${r.atId}\t${r.driverId}`).join('\n'))
+      const byAt = new Map(again.map(r => [r.atId, r]))
+      setResult(result.map(r => (r.status === 'fail' && byAt.has(r.atId) ? byAt.get(r.atId)! : r)))
+    } finally { setRunning(false) }
+  }
 
   const ok = result?.filter(r => r.status === 'ok') ?? []
   const fail = result?.filter(r => r.status === 'fail') ?? []
@@ -1403,6 +1436,7 @@ function BatchAssignModal({ open, onClose, onApply, spxConfigured }: {
               </table>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
+              {fail.length > 0 && <Btn variant="danger" onClick={() => void retryFailed()} disabled={running}>{running ? '⏳ Repetindo...' : `↻ Repetir as que falharam (${fail.length})`}</Btn>}
               <Btn onClick={onClose}>Fechar</Btn>
               <Btn variant="ghost" onClick={() => { setResult(null); setInput('') }}>Colar outro lote</Btn>
             </div>
@@ -2038,10 +2072,14 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   const handleSwap = async (p: SwapPair): Promise<{ ok: boolean; msg: string }> => {
     let msg = 'trocado no app'
     if (spxConfigured) {
-      const a = await spxReassign(p.fiorino.id, p.big.atId)
+      // Na repetição, pula a metade que já deu certo
+      const cur = routeStore.get(selectedDay, selectedShift) ?? routes
+      const bigDone = cur.find(r => r.id === p.big.id)?.assignedDriverId === p.fiorino.id
+      const a = bigDone ? { ok: true, message: '' } : await spxReassign(p.fiorino.id, p.big.atId)
+      if (a.ok && !bigDone) setRoutes(cur.map(r => r.id === p.big.id ? { ...r, assignedDriverId: p.fiorino.id, assignedDriverName: p.fiorino.name, status: 'ATRIBUIDA' as const } : r))
       if (!a.ok) return { ok: false, msg: `${p.big.atId}: ${a.message}` }
       const b = await spxReassign(p.passeio.id, p.small.atId)
-      if (!b.ok) return { ok: false, msg: `${p.big.atId} trocada, mas ${p.small.atId} falhou: ${b.message} — atribua manualmente` }
+      if (!b.ok) return { ok: false, msg: `${p.big.atId} trocada, mas ${p.small.atId} falhou: ${b.message} — clique em Repetir` }
       msg = 'trocado no SPX'
     }
     const current = routeStore.get(selectedDay, selectedShift) ?? routes
@@ -2763,7 +2801,12 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
                   )}
                 </div>
                 {fioStopped && <p style={{ margin: '0 0 6px', fontSize: 11, color: '#f87171' }}>⛔ {fioStopped}</p>}
-                {fioResults?.some(r => r.spxOk === false) && !fioStopped && <p style={{ margin: '0 0 6px', fontSize: 11, color: '#fbbf24' }}>As que falharam continuam na lista abaixo — clique em Atribuir de novo para reenviar só elas.</p>}
+                {fioResults?.some(r => r.spxOk === false) && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '0 0 6px' }}>
+                    <Btn variant="danger" onClick={() => void handleFioAssign()} disabled={fioAssigning}>{fioAssigning ? '⏳ Repetindo...' : `↻ Repetir as que falharam (${fioResults.filter(r => r.spxOk === false).length})`}</Btn>
+                    <span style={{ fontSize: 11, color: '#fbbf24' }}>Reenvia só o que faltou; o que já deu certo não é enviado de novo.</span>
+                  </div>
+                )}
                 {fioResults?.map(r => (
                   <p key={r.atId} style={{ margin: '2px 0', fontSize: 11 }}>
                     <span style={{ fontFamily: 'monospace', color: '#94a3b8' }}>{r.atId}</span>

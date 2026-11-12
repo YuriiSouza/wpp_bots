@@ -81,6 +81,8 @@ export function VehicleSwapModal({ pairs, open, onClose, onApply, spxConfigured 
     if (res.ok) setDone(d => d.some(x => key(x) === key(p)) ? d : [...d, p])
   }
   const runAll = async () => { for (const p of pending) await run(p) }
+  const failed = pairs.filter(p => { const st = results[key(p)]; return st && st !== 'running' && !st.ok })
+  const retryFailed = async () => { for (const p of failed) await run(p) }
   const copyText = async (k: string, text: string) => {
     if (!text) return
     await navigator.clipboard.writeText(text)
@@ -119,6 +121,7 @@ export function VehicleSwapModal({ pairs, open, onClose, onApply, spxConfigured 
                 {!st && <button onClick={() => void run(p)} style={{ background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{spxConfigured ? 'Trocar no SPX' : 'Trocar no app'}</button>}
                 {st === 'running' && <span style={{ fontSize: 12, color: '#fbbf24' }}>⏳ trocando…</span>}
                 {st && st !== 'running' && <span style={{ fontSize: 12, fontWeight: 700, color: st.ok ? '#4ade80' : '#f87171' }}>{st.ok ? '✓ ' : '✕ '}{st.msg}</span>}
+                {st && st !== 'running' && !st.ok && <button onClick={() => void run(p)} style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>↻ Repetir</button>}
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
                 {card(p.big, 'Rota volumosa', '#fbbf24')}
@@ -138,6 +141,7 @@ export function VehicleSwapModal({ pairs, open, onClose, onApply, spxConfigured 
               style={{ background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: pending.length ? 'pointer' : 'default', opacity: pending.length ? 1 : .5 }}>
               🔁 Fazer todas as trocas ({pending.length})
             </button>
+            {failed.length > 0 && <button onClick={() => void retryFailed()} style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>↻ Repetir as que falharam ({failed.length})</button>}
             <button onClick={() => void copyText('ats', ats)} disabled={!pending.length} title="ATs das trocas ainda não feitas (uma por linha)" style={{ ...btn, opacity: pending.length ? 1 : .5 }}>{copied === 'ats' ? '✓ Copiado' : `🧾 Copiar ATs (${pending.length * 2})`}</button>
             <button onClick={() => void copyText('lista', listText(pairs))} style={btn}>{copied === 'lista' ? '✓ Copiado' : '📋 Copiar lista'}</button>
             {!spxConfigured && <span style={{ fontSize: 11, color: '#fbbf24' }}>Sem sessão do SPX: a troca fica só no app. Cole o cURL para gravar no SPX.</span>}

@@ -1,3 +1,4 @@
+import { AlertaPacotes, usePendingPackages } from '../AlertaPacotes'
 import { AlertaDisponibilidade, useAvailabilityIssues } from '../AlertaDisponibilidade'
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import { parseSpxCurl, curlProblem } from '../../lib/spxCurl'
@@ -1566,6 +1567,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
   useEffect(() => { setQueue(noShowQueueStore.get(selectedShift)) }, [selectedShift])
 
   const availIssues = useAvailabilityIssues(routes, registry)
+  const pendingPk = usePendingPackages(routes, forwardOrder, registry)
   const removeFromQueue = useCallback((driverIds: string | string[]) => {
     const ids = Array.isArray(driverIds) ? driverIds : [driverIds]
     noShowQueueStore.remove(selectedShift, ids)
@@ -2375,6 +2377,7 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         </div>
       </div>
       <AlertaDisponibilidade routes={routes} registry={registry} shift={selectedShift} issues={availIssues} />
+      <AlertaPacotes list={pendingPk} forwardOrder={forwardOrder} shift={selectedShift} />
 
       {/* Stats */}
       <div style={{ display: 'flex', gap: 10, padding: '10px 20px', borderBottom: '1px solid #1e2130', flexShrink: 0, flexWrap: 'wrap' }}>

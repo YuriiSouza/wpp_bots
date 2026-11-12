@@ -21,6 +21,16 @@ export interface ForwardPackage {
   locationType: 'Home' | 'Office' | string
 }
 
+/** Motorista crítico: mais de 5 pacotes em aberto */
+export const CRITICAL_ABOVE = 5
+
+/** Recalcula os críticos (relatórios salvos antes da mudança usavam 10+) */
+export function withCritical(data: ForwardOrderAnalysis | null): ForwardOrderAnalysis | null {
+  if (!data) return data
+  const allDrivers = data.allDrivers.map(d => ({ ...d, isCritical: d.totalPackages > CRITICAL_ABOVE }))
+  return { ...data, allDrivers, criticalDrivers: allDrivers.filter(d => d.isCritical) }
+}
+
 export interface DriverForwardStats {
   driverId: string
   driverName: string
@@ -208,9 +218,9 @@ export function parseForwardOrderCsv(csvText: string, fileName: string): Forward
     }
   }
 
-  // Mark critical (10+ packages)
+  // Crítico: mais de 5 pacotes
   for (const d of driverMap.values()) {
-    d.isCritical = d.totalPackages >= 10
+    d.isCritical = d.totalPackages > CRITICAL_ABOVE
   }
 
   const allDrivers = [...driverMap.values()].sort((a, b) => b.totalPackages - a.totalPackages)

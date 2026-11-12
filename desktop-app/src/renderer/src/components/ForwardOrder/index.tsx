@@ -97,7 +97,7 @@ export default function ForwardOrder({ data, registry = [], driverMeta }: Props)
           <SumCard label="Total em aberto" value={data.totalPackages} color="#e2e8f0" />
           <SumCard label="Delivering (sem resolução)" value={data.totalDelivering} color="#f59e0b" />
           <SumCard label="On Hold" value={data.totalOnHold} color="#ef4444" />
-          <SumCard label="Motoristas críticos (10+)" value={data.criticalDrivers.length} color="#a78bfa" />
+          <SumCard label="Motoristas críticos (6+)" value={data.criticalDrivers.length} color="#a78bfa" />
         </div>
 
         <div style={{ display: 'flex', gap: 0 }}>

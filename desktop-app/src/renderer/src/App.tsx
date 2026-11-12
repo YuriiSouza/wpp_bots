@@ -32,7 +32,7 @@ import { fetchAtDetails } from './lib/spxAtDetailFetcher'
 import { parseBrAssignment } from './lib/brAssignmentParser'
 import { fetchAllSpxWorkPref, spxDriversToWorkPref } from './lib/spxWorkPrefFetcher'
 import { parseCallUpCsv } from './lib/callUpParser'
-import { parseForwardOrderCsv } from './lib/forwardOrderParser'
+import { parseForwardOrderCsv, withCritical } from './lib/forwardOrderParser'
 import { parseWorkPreferenceXlsx } from './lib/workPreferenceParser'
 import { buildDriverProfiles } from './lib/crossAnalysis'
 
@@ -130,7 +130,7 @@ export default function App() {
   // Report data (live in memory, loaded from localStorage)
   const [driversMeta, setDriversMeta] = useState(() => localStore.getMeta())
   const [callUp, setCallUp] = useState<CallUpAnalysis | null>(() => reportStore.getCallUp())
-  const [forwardOrder, setForwardOrder] = useState<ForwardOrderAnalysis | null>(() => reportStore.getForwardOrder())
+  const [forwardOrder, setForwardOrder] = useState<ForwardOrderAnalysis | null>(() => withCritical(reportStore.getForwardOrder()))
   const [workPref, setWorkPref] = useState<WorkPreferenceData | null>(() => reportStore.getWorkPref())
 
   // ── DS processing ────────────────────────────────────────────────────────────
@@ -408,6 +408,7 @@ export default function App() {
         {section === 'perfil' && (
           <VisaoGeral
             registry={localStore.getDrivers()}
+            forwardOrder={forwardOrder}
             dsDrivers={dsState.phase === 'done' ? dsState.result.drivers : []}
             selectedDay={selectedDay}
             selectedShift={selectedShift}
@@ -436,6 +437,7 @@ export default function App() {
         {section === 'carregamento' && (
           <Carregamento
             registry={localStore.getDrivers()}
+            forwardOrder={forwardOrder}
             selectedDay={selectedDay}
             selectedShift={selectedShift}
           />

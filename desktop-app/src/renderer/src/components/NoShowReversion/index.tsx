@@ -1688,8 +1688,10 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
     for (const r of routeStore.get(selectedDay, selectedShift) ?? []) {
       if (r.assignedDriverId) ids.add(r.assignedDriverId)
     }
+    // Aceite no Call Up neste dia e turno também conta como já em rota
+    for (const id of callUp?.acceptedByDateShift?.[`${selectedDay}|${selectedShift}`] ?? []) ids.add(id)
     return ids
-  }, [selectedDay, selectedShift, routes]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedDay, selectedShift, routes, callUp]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Motoristas dobra: têm rota em OUTRO turno do mesmo dia (elegíveis, mas sinalizados)
   const dobraIds = useMemo(() => {
@@ -1700,8 +1702,14 @@ export default function NoShowReversion({ registry, dsDrivers, forwardOrder, cal
         if (r.assignedDriverId && !alreadyRoutedIds.has(r.assignedDriverId)) ids.add(r.assignedDriverId)
       }
     }
+    // Sem as rotas do outro turno carregadas (ex.: só PM1/PM2 no app), a dobra vem do Call Up:
+    // quem aceitou rota em outro turno do mesmo dia
+    for (const sh of ['AM', 'PM1', 'PM2'] as Shift[]) {
+      if (sh === selectedShift) continue
+      for (const id of callUp?.acceptedByDateShift?.[`${selectedDay}|${sh}`] ?? []) if (!alreadyRoutedIds.has(id)) ids.add(id)
+    }
     return ids
-  }, [selectedDay, selectedShift, alreadyRoutedIds, routes]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedDay, selectedShift, alreadyRoutedIds, routes, callUp]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-devolver rotas ATRIBUIDA que foram recusadas no Call Up
   // Cada recusa devolve a rota uma única vez: depois de reatribuída aqui, ela continua atribuída ao sair e voltar da tela.

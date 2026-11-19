@@ -555,6 +555,7 @@ function RoutePasteCard({ defaultDate, defaultShift }: { defaultDate: string; de
   const [text, setText] = useState('')
   const [saved, setSaved] = useState(false)
   const [routesSaved, setRoutesSaved] = useState<{ date: string; shift: Shift; count: number }[]>(() => routeStore.list())
+  const [showAllSaved, setShowAllSaved] = useState(false)
 
   const preview = useMemo(() => text.trim() ? parseRoutesTsv(text) : [], [text])
   const [link, setLink] = useState(() => getRoutingLink(defaultDate, defaultShift) || getLastRoutingLink())
@@ -593,20 +594,35 @@ function RoutePasteCard({ defaultDate, defaultShift }: { defaultDate: string; de
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {/* Histórico salvo */}
-      {routesSaved.length > 0 && (
-        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-          {routesSaved.map(s => (
-            <div key={`${s.date}:${s.shift}`} style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#0f1117', border: `1px solid ${SHIFT_COLOR_UP[s.shift]}44`, borderRadius: 5, padding: '3px 8px' }}>
-              <span style={{ color: SHIFT_COLOR_UP[s.shift], fontWeight: 700, fontSize: 11 }}>{s.shift}</span>
-              <span style={{ color: '#64748b', fontSize: 11 }}>·</span>
-              <span style={{ color: '#8892a4', fontSize: 11 }}>{s.date}</span>
-              <span style={{ color: '#4ade80', fontWeight: 600, fontSize: 11 }}>{s.count} rotas</span>
-              <button onClick={() => { routeStore.delete(s.date, s.shift); setRoutesSaved(routeStore.list()) }} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12, padding: '0 2px', lineHeight: 1 }}>×</button>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Histórico salvo: um card por dia (turnos dentro), só os dias mais recentes abertos */}
+      {routesSaved.length > 0 && (() => {
+        const byDate = new Map<string, { shift: Shift; count: number }[]>()
+        for (const s of routesSaved) byDate.set(s.date, [...(byDate.get(s.date) ?? []), { shift: s.shift, count: s.count }])
+        const dates = [...byDate.keys()].sort().reverse()
+        const shown = showAllSaved ? dates : dates.slice(0, 3)
+        const fmt = (d: string) => { const [y, m, dd] = d.split('-'); return y && m && dd ? `${dd}/${m}` : d }
+        return (
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center', maxHeight: showAllSaved ? 140 : undefined, overflow: 'auto' }}>
+            {shown.map(d => (
+              <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#0f1117', border: '1px solid #2d3048', borderRadius: 5, padding: '3px 8px' }}>
+                <span style={{ color: '#cbd5e1', fontWeight: 700, fontSize: 11 }}>{fmt(d)}</span>
+                {['AM', 'PM1', 'PM2'].map(sh => { const e = byDate.get(d)!.find(x => x.shift === sh); return e ? (
+                  <span key={sh} title={`${e.count} rotas`} style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 11 }}>
+                    <span style={{ color: SHIFT_COLOR_UP[e.shift], fontWeight: 700 }}>{e.shift}</span>
+                    <span style={{ color: '#4ade80' }}>{e.count}</span>
+                    <button title="Apagar este turno" onClick={() => { routeStore.delete(d, e.shift); setRoutesSaved(routeStore.list()) }} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1 }}>×</button>
+                  </span>
+                ) : null })}
+              </div>
+            ))}
+            {dates.length > 3 && (
+              <button onClick={() => setShowAllSaved(v => !v)} style={{ background: 'none', border: '1px solid #2d3048', color: '#8892a4', borderRadius: 5, padding: '3px 8px', fontSize: 11, cursor: 'pointer' }}>
+                {showAllSaved ? '▲ Mostrar menos' : `+ ${dates.length - 3} dia${dates.length - 3 > 1 ? 's' : ''}`}
+              </button>
+            )}
+          </div>
+        )
+      })()}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="date" value={pasteDate} onChange={e => setPasteDate(e.target.value)} style={{ width: 140, background: '#0f1117', border: '1px solid #2d3048', color: '#e2e8f0', borderRadius: 6, padding: '4px 8px', fontSize: 12 }} />
         <div style={{ display: 'flex', gap: 4 }}>

@@ -1,3 +1,4 @@
+import { mergeStored } from './syncMerge'
 const CONFIG_KEY = 'spx:sheets-config'
 const EXTRA_KEYS = ['spx_ds_result']
 const SPX_PREFIX = 'spx:'
@@ -72,48 +73,61 @@ export function parseRows(rows: string[][]): Map<string, string> {
   return new Map([...parts].map(([k, arr]) => [k, arr.join('')]))
 }
 
-export async function pushToSheets(): Promise<{ written: number }> {
-  const cfg = getSheetsConfig()
-  const entries: [string, string][] = []
+function syncedEntries(): Map<string, string> {
+  const m = new Map<string, string>()
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)!
     if (LOCAL_ONLY.has(key)) continue
-    if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) entries.push([key, localStorage.getItem(key)!])
+    if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) m.set(key, localStorage.getItem(key)!)
   }
-  const rows = buildRows(entries, new Date().toISOString())
-  await sheetsRequest({
-    spreadsheetId: cfg.spreadsheetId,
-    method: 'POST',
-    path: '/values/app-data:clear',
-  })
-  await sheetsRequest({
-    spreadsheetId: cfg.spreadsheetId,
-    method: 'PUT',
-    path: '/values/app-data?valueInputOption=RAW',
-    body: { values: rows },
-  })
-  return { written: entries.length }
+  return m
+}
+const isSynced = (key: string) => !LOCAL_ONLY.has(key) && (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key))
+
+async function readRemote(spreadsheetId: string): Promise<Map<string, string>> {
+  const result = (await sheetsRequest({ spreadsheetId, method: 'GET', path: '/values/app-data' })) as { values?: string[][] }
+  return parseRows(result?.values ?? [])
+}
+
+/** Junta o que está no app com o que está na planilha (nada é apagado) e grava o resultado no app. */
+function mergeIntoLocal(remote: Map<string, string>): Map<string, string> {
+  const local = syncedEntries()
+  const merged = new Map<string, string>()
+  for (const key of new Set([...local.keys(), ...remote.keys()])) {
+    if (!isSynced(key)) continue
+    const v = mergeStored(local.get(key) ?? null, remote.get(key) ?? null)
+    if (v == null) continue
+    merged.set(key, v)
+    if (v !== local.get(key)) { try { localStorage.setItem(key, v) } catch { /* sem espaço: fica só na planilha */ } }
+  }
+  return merged
+}
+
+export interface SyncReport { written: number; added: number; missing: string[] }
+
+/** Envia: lê a planilha, soma com o app e regrava a soma. Depois confere se tudo chegou. */
+export async function pushToSheets(): Promise<SyncReport> {
+  const cfg = getSheetsConfig()
+  const remote = await readRemote(cfg.spreadsheetId)
+  const before = syncedEntries().size
+  const merged = mergeIntoLocal(remote)
+  const rows = buildRows([...merged], new Date().toISOString())
+  await sheetsRequest({ spreadsheetId: cfg.spreadsheetId, method: 'POST', path: '/values/app-data:clear' })
+  await sheetsRequest({ spreadsheetId: cfg.spreadsheetId, method: 'PUT', path: '/values/app-data?valueInputOption=RAW', body: { values: rows } })
+  // Conferência: relê a planilha e compara chave a chave
+  const check = await readRemote(cfg.spreadsheetId)
+  const missing = [...merged].filter(([k, v]) => check.get(k) !== v).map(([k]) => k)
+  return { written: merged.size, added: Math.max(0, merged.size - before), missing }
 }
 
 // ─── Pull from Sheets into localStorage ──────────────────────────────────────
 
+/** Baixa: soma o que está na planilha com o que está no app (o app não perde nada). */
 export async function pullFromSheets(): Promise<{ restored: number }> {
   const cfg = getSheetsConfig()
-  const result = (await sheetsRequest({
-    spreadsheetId: cfg.spreadsheetId,
-    method: 'GET',
-    path: '/values/app-data',
-  })) as { values?: string[][] }
-  const data = parseRows(result?.values ?? [])
-  let count = 0
-  for (const [key, value] of data) {
-    if (LOCAL_ONLY.has(key)) continue
-    if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) {
-      localStorage.setItem(key, value)
-      count++
-    }
-  }
-  return { restored: count }
+  const remote = await readRemote(cfg.spreadsheetId)
+  mergeIntoLocal(remote)
+  return { restored: remote.size }
 }
 
 // ─── Test connection ──────────────────────────────────────────────────────────

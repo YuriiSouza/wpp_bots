@@ -129,11 +129,13 @@ export default function Configuracoes() {
     try {
       saveSheetsConfig(sheets)
       if (op === 'push') {
-        const { written } = await pushToSheets()
-        setSheetsOp({ loading: false, msg: `✓ ${written} itens enviados para a planilha.` })
+        const { written, added, missing } = await pushToSheets()
+        setSheetsOp({ loading: false, msg: missing.length
+          ? `⚠ ${written - missing.length} de ${written} itens conferidos na planilha. Não chegaram: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''} — envie de novo.`
+          : `✓ ${written} itens na planilha, todos conferidos (dados somados com os que já estavam lá${added ? `; ${added} novos vieram da planilha para o app` : ''}).` })
       } else {
         const { restored } = await pullFromSheets()
-        setSheetsOp({ loading: false, msg: `✓ ${restored} itens restaurados. Recarregando…` })
+        setSheetsOp({ loading: false, msg: `✓ ${restored} itens da planilha somados aos do app. Recarregando…` })
         setTimeout(() => window.location.reload(), 1500)
       }
     } catch (err) {

@@ -1,6 +1,7 @@
 import type { CallUpAnalysis } from './callUpParser'
 import type { ForwardOrderAnalysis } from './forwardOrderParser'
 import type { WorkPreferenceData } from './workPreferenceParser'
+import { diskStore } from './diskStore'
 
 const KEYS = {
   callUp: 'spx:callup',
@@ -35,9 +36,10 @@ export const reportStore = {
   clearCallUp: () => localStorage.removeItem(KEYS.callUp),
 
   // Forward Order
-  saveForwardOrder: (d: ForwardOrderAnalysis) => safeSet(KEYS.forwardOrder, d),
-  getForwardOrder: (): ForwardOrderAnalysis | null => safeGet(KEYS.forwardOrder),
-  clearForwardOrder: () => localStorage.removeItem(KEYS.forwardOrder),
+  // Forward Order: arquivo grande → disco (no localStorage estourava o limite e não salvava)
+  saveForwardOrder: (d: ForwardOrderAnalysis) => diskStore.set(KEYS.forwardOrder, d),
+  getForwardOrder: (): ForwardOrderAnalysis | null => diskStore.get(KEYS.forwardOrder),
+  clearForwardOrder: () => diskStore.remove(KEYS.forwardOrder),
 
   // Work Preference
   saveWorkPref: (d: WorkPreferenceData) => safeSet(KEYS.workPref, d),

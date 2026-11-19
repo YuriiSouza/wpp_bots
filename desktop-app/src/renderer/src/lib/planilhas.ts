@@ -1,3 +1,4 @@
+import { diskStore } from './diskStore'
 // Leitura direta de planilhas Google (via login Google do usuário, processo main).
 // - Roteirização: guias "Plano de expedição" (rotas) e "Calculation Tasks (CTs)" (pacotes)
 // - Base de EHA: guia "[IR] Base de BRs"
@@ -212,24 +213,13 @@ export function saveRoutingLink(day: string, shift: Shift, url: string) {
   } catch { /* */ }
 }
 
-// Pacotes (CTs) guardados localmente por dia/turno — volume grande, não vai para o Sheets
+// Pacotes (CTs) guardados em disco por dia/turno — ficam salvos para sempre (não vai para o Sheets)
 const ctKey = (day: string, shift: Shift) => `local:ct:${day}:${shift}`
 export function saveCtPackages(day: string, shift: Shift, pk: CtPackage[]) {
-  try {
-    // remove CTs antigos para não estourar o localStorage (fica com os 6 últimos turnos)
-    const old = Object.keys(localStorage).filter(k => k.startsWith('local:ct:')).sort()
-    for (const k of old.slice(0, Math.max(0, old.length - 5))) if (k !== ctKey(day, shift)) localStorage.removeItem(k)
-    localStorage.setItem(ctKey(day, shift), JSON.stringify(pk))
-  } catch {
-    // Sem espaço: apaga os CTs dos outros turnos e tenta de novo
-    try {
-      for (const k of Object.keys(localStorage)) if (k.startsWith('local:ct:') && k !== ctKey(day, shift)) localStorage.removeItem(k)
-      localStorage.setItem(ctKey(day, shift), JSON.stringify(pk))
-    } catch { console.warn('[CT] pacotes não couberam no armazenamento local', pk.length) }
-  }
+  if (!diskStore.set(ctKey(day, shift), pk)) console.warn('[CT] falha ao salvar pacotes', pk.length)
 }
 export function getCtPackages(day: string, shift: Shift): CtPackage[] {
-  try { return JSON.parse(localStorage.getItem(ctKey(day, shift)) ?? '[]') as CtPackage[] } catch { return [] }
+  return diskStore.get<CtPackage[]>(ctKey(day, shift)) ?? []
 }
 
 // ── Base de EHA ─────────────────────────────────────────────────────────────

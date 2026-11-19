@@ -38,6 +38,12 @@ const updaterAPI = {
   onError: (cb: (e: { message: string }) => void): (() => void) => subscribe('updater:error', cb),
 }
 
+const diskAPI = {
+  get: (key: string): string | null => ipcRenderer.sendSync('disk:get', key),
+  set: (key: string, val: string | null): boolean => ipcRenderer.sendSync('disk:set', key, val),
+  keys: (prefix: string): string[] => ipcRenderer.sendSync('disk:keys', prefix),
+}
+
 const fileAPI = {
   pickFolder: (defaultPath?: string): Promise<string | null> =>
     ipcRenderer.invoke('pick-folder', defaultPath),
@@ -50,6 +56,7 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('spxBridge', spxAPI)
     contextBridge.exposeInMainWorld('fileBridge', fileAPI)
+    contextBridge.exposeInMainWorld('diskBridge', diskAPI)
     contextBridge.exposeInMainWorld('updater', updaterAPI)
     contextBridge.exposeInMainWorld('auth', authAPI)
   } catch (error) {

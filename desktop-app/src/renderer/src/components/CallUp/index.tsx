@@ -3,6 +3,7 @@ import RiscoRecusa from './RiscoRecusa'
 import CallUpDashboard from './Dashboard'
 import { coversCluster } from '../../lib/clusterMatch'
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { CallUpAnalysis, FirstCallAnalysis } from '../../lib/callUpParser'
 import type { Shift } from '../../lib/globalConfig'
 import type { WorkPreferenceData } from '../../lib/workPreferenceParser'
@@ -41,9 +42,24 @@ export function DateRangePicker({ from, to, onChange, availableDates }: {
     return parseInt(ref.slice(5, 7)) - 1
   })
   const ref = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  // posiciona o calendário em coordenadas da tela (fora do layout), sem ficar atrás do menu
+  useEffect(() => {
+    if (!open) return
+    const place = () => {
+      const r = ref.current?.getBoundingClientRect(); if (!r) return
+      const W = 280
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - W - 8))
+      setPos({ top: r.bottom + 6, left })
+    }
+    place()
+    window.addEventListener('resize', place); window.addEventListener('scroll', place, true)
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true) }
+  }, [open])
 
   useEffect(() => {
-    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node) && !popRef.current?.contains(e.target as Node)) setOpen(false) }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
@@ -97,9 +113,9 @@ export function DateRangePicker({ from, to, onChange, availableDates }: {
         )}
       </button>
 
-      {open && (
-        <div style={{
-          position: 'absolute', top: '110%', right: 0, zIndex: 999,
+      {open && pos && createPortal(
+        <div ref={popRef} style={{
+          position: 'fixed', top: pos.top, left: pos.left, zIndex: 3000,
           background: '#13151f', border: '1px solid #2d3048', borderRadius: 10,
           padding: 16, boxShadow: '0 8px 32px rgba(0,0,0,.5)', minWidth: 260
         }}>
@@ -146,7 +162,8 @@ export function DateRangePicker({ from, to, onChange, availableDates }: {
           <p style={{ margin: '10px 0 0', fontSize: 10, color: '#64748b', textAlign: 'center' }}>
             {selecting === 'from' ? 'Clique para selecionar o início' : 'Clique para selecionar o fim'}
           </p>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

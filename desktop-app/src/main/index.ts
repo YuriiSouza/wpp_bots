@@ -239,6 +239,18 @@ ipcMain.handle('auth:sign-out', () => {
   return { signedIn: false }
 })
 
+// ── Armazenamento em disco (dados grandes que não cabem no localStorage) ──
+const dataDir = (): string => { const d = join(app.getPath('userData'), 'data'); fs.mkdirSync(d, { recursive: true }); return d }
+const dataFile = (key: string): string => join(dataDir(), key.replace(/[^a-zA-Z0-9._-]/g, '_') + '.json')
+ipcMain.on('disk:get', (e, key: string) => { try { e.returnValue = fs.readFileSync(dataFile(key), 'utf8') } catch { e.returnValue = null } })
+ipcMain.on('disk:set', (e, key: string, val: string | null) => {
+  try { if (val === null) fs.rmSync(dataFile(key), { force: true }); else fs.writeFileSync(dataFile(key), val, 'utf8'); e.returnValue = true }
+  catch (err) { console.error('[disk]', err); e.returnValue = false }
+})
+ipcMain.on('disk:keys', (e, prefix: string) => {
+  try { const p = prefix.replace(/[^a-zA-Z0-9._-]/g, '_'); e.returnValue = fs.readdirSync(dataDir()).filter(f => f.startsWith(p) && f.endsWith('.json')).map(f => f.slice(0, -5)) } catch { e.returnValue = [] }
+})
+
 ipcMain.handle('app-version', () => app.getVersion())
 
 // ─── Auto-update via GitHub Releases (electron-updater) ───────────────────────

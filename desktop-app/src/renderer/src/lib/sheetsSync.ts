@@ -1,7 +1,10 @@
+import { diskStore } from './diskStore'
 import { mergeStored } from './syncMerge'
 const CONFIG_KEY = 'spx:sheets-config'
 const EXTRA_KEYS = ['spx_ds_result']
 const SPX_PREFIX = 'spx:'
+// Chaves sincronizadas que ficam em disco (não no localStorage)
+const DISK_SYNCED = ['spx:fwdorder']
 const LOCAL_ONLY = new Set([CONFIG_KEY, 'spx:header', 'spx:credentials'])
 
 export interface SheetsConfig {
@@ -80,6 +83,7 @@ function syncedEntries(): Map<string, string> {
     if (LOCAL_ONLY.has(key)) continue
     if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) m.set(key, localStorage.getItem(key)!)
   }
+  for (const key of DISK_SYNCED) { const v = diskStore.getRaw(key); if (v !== null) m.set(key, v) }
   return m
 }
 const isSynced = (key: string) => !LOCAL_ONLY.has(key) && (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key))
@@ -98,6 +102,7 @@ function mergeIntoLocal(remote: Map<string, string>): Map<string, string> {
     const v = mergeStored(local.get(key) ?? null, remote.get(key) ?? null)
     if (v == null) continue
     merged.set(key, v)
+    if (v !== local.get(key) && DISK_SYNCED.includes(key)) { diskStore.set(key, JSON.parse(v)); continue }
     if (v !== local.get(key)) { try { localStorage.setItem(key, v) } catch { /* sem espaço: fica só na planilha */ } }
   }
   return merged

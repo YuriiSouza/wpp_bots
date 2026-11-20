@@ -691,11 +691,14 @@ function SpxAtDriversCard({ selectedDay, selectedShift }: { selectedDay: string;
     setCsvResult(total ? `✓ ${matched} de ${total} rotas vinculadas com motorista` : '⚠ Nenhuma roteirização salva. Importe primeiro.')
   }
 
-  const run = async () => {
+  // ids: só essas ATs (repetir as que falharam); sem ids: todas as rotas do turno
+  const run = async (ids?: string[]) => {
     if (running) return
-    setRunning(true); setError(null); setResult(null); setProgress({ done: 0, total: routes.length })
+    const list = ids ?? routes.map(r => r.atId)
+    const prev = ids ? result : null
+    setRunning(true); setError(null); if (!ids) setResult(null); setProgress({ done: 0, total: list.length })
     try {
-      const { details, failed } = await fetchAtDetails(routes.map(r => r.atId), (done, total) => setProgress({ done, total }))
+      const { details, failed } = await fetchAtDetails(list, (done, total) => setProgress({ done, total }))
       const current = routeStore.get(selectedDay, selectedShift) ?? []
       const assigned = new Set<string>()
       let withDriver = 0, noDriver = 0
@@ -710,7 +713,11 @@ function SpxAtDriversCard({ selectedDay, selectedShift }: { selectedDay: string;
       routeStore.save(selectedDay, selectedShift, updated)
       // Quem já tem rota sai da fila de reatribuição do turno
       noShowQueueStore.remove(selectedShift, [...assigned])
-      setResult({ withDriver, noDriver, failed })
+      if (prev) {
+        // soma com o resultado anterior e mantém só as que continuam falhando
+        const retried = new Set(list)
+        setResult({ withDriver: prev.withDriver + withDriver, noDriver: prev.noDriver + noDriver, failed: [...prev.failed.filter(f => !retried.has(f.atId)), ...failed] })
+      } else setResult({ withDriver, noDriver, failed })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -734,7 +741,21 @@ function SpxAtDriversCard({ selectedDay, selectedShift }: { selectedDay: string;
           {result.noDriver > 0 && <span style={{ color: '#fbbf24' }}>{result.noDriver} AT sem motorista atribuído</span>}
           {result.failed.length > 0 && (
             <>
-              <span style={{ color: '#f87171', fontWeight: 600 }}>⚠ {result.failed.length} AT não consultadas — clique de novo para tentar</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ color: '#f87171', fontWeight: 600 }}>⚠ {result.failed.length} AT não consultadas</span>
+                <button onClick={() => void run(result.failed.map(f => f.atId))} disabled={running}
+                  style={{ background: 'rgba(248,113,113,.15)', border: '1px solid rgba(248,113,113,.4)', color: '#fca5a5', borderRadius: 6, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: running ? 'default' : 'pointer' }}>
+                  ↻ Repetir só as que falharam
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {result.failed.map(f => (
+                  <button key={f.atId} title={`${f.error} — clique para consultar de novo`} onClick={() => void run([f.atId])} disabled={running}
+                    style={{ background: '#1a1d2e', border: '1px solid #3f2a2a', color: '#fca5a5', borderRadius: 5, padding: '2px 7px', fontSize: 10, fontFamily: 'monospace', cursor: running ? 'default' : 'pointer' }}>
+                    ↻ {f.atId}
+                  </button>
+                ))}
+              </div>
               {[...result.failed.reduce((m, f) => m.set(f.error, [...(m.get(f.error) ?? []), f.atId]), new Map<string, string[]>())].map(([err, ats]) => (
                 <span key={err} style={{ color: '#fca5a5', fontSize: 11, fontFamily: 'monospace', wordBreak: 'break-word' }}>{ats.length}× {err} <span style={{ color: '#64748b' }}>(ex.: {ats[0]})</span></span>
               ))}
@@ -1047,7 +1068,7 @@ function UploadsPage(props: UploadsProps) {
             'Importe a roteirização do turno no card acima.',
             'Tenha a sessão do SPX colada em Atribuição › SPX (cURL).',
             'Clique em Buscar motoristas no SPX. Cada AT é consultada uma vez.',
-            'Se a sessão expirar, cole um cURL novo e clique de novo.',
+            'Se alguma AT der erro, use ↻ Repetir só as que falharam (ou clique na AT) — não precisa buscar tudo de novo.',
           ]}
         >
           <SpxAtDriversCard selectedDay={selectedDay} selectedShift={selectedShift} />

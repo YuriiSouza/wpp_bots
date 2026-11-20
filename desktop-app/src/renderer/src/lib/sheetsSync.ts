@@ -6,6 +6,8 @@ const SPX_PREFIX = 'spx:'
 // Chaves sincronizadas que ficam em disco (não no localStorage)
 const DISK_SYNCED = ['spx:fwdorder']
 // Chaves que NÃO somam: vale só o relatório mais recente (Pacotes é um retrato do momento)
+// Pacotes das rotas (Calculation Tasks) por dia/turno — também vão para o Sheets
+const CT_PREFIX = 'local:ct:'
 const REPLACE_KEYS = ['spx:fwdorder']
 function newest(a: string | null, b: string | null): string | null {
   if (a == null) return b
@@ -91,10 +93,11 @@ function syncedEntries(): Map<string, string> {
     if (LOCAL_ONLY.has(key)) continue
     if (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key)) m.set(key, localStorage.getItem(key)!)
   }
-  for (const key of DISK_SYNCED) { const v = diskStore.getRaw(key); if (v !== null) m.set(key, v) }
+  for (const key of [...DISK_SYNCED, ...diskStore.ctKeys()]) { const v = diskStore.getRaw(key); if (v !== null) m.set(key, v) }
   return m
 }
-const isSynced = (key: string) => !LOCAL_ONLY.has(key) && (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key))
+const isDisk = (key: string) => DISK_SYNCED.includes(key) || key.startsWith(CT_PREFIX)
+const isSynced = (key: string) => !LOCAL_ONLY.has(key) && (key.startsWith(SPX_PREFIX) || EXTRA_KEYS.includes(key) || key.startsWith(CT_PREFIX))
 
 async function readRemote(spreadsheetId: string): Promise<Map<string, string>> {
   const result = (await sheetsRequest({ spreadsheetId, method: 'GET', path: '/values/app-data' })) as { values?: string[][] }
@@ -112,7 +115,7 @@ function mergeIntoLocal(remote: Map<string, string>): Map<string, string> {
       : mergeStored(local.get(key) ?? null, remote.get(key) ?? null)
     if (v == null) continue
     merged.set(key, v)
-    if (v !== local.get(key) && DISK_SYNCED.includes(key)) { diskStore.set(key, JSON.parse(v)); continue }
+    if (v !== local.get(key) && isDisk(key)) { diskStore.set(key, JSON.parse(v)); continue }
     if (v !== local.get(key)) { try { localStorage.setItem(key, v) } catch { /* sem espaço: fica só na planilha */ } }
   }
   return merged

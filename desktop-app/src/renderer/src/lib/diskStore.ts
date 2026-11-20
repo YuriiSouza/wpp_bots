@@ -28,6 +28,16 @@ export const diskStore = {
     if (ok) try { localStorage.removeItem(key) } catch { /* */ }
     return ok
   },
+  /** Chaves de CT (local:ct:DIA:TURNO) que existem em disco ou no localStorage. */
+  ctKeys(): string[] {
+    const out = new Set<string>()
+    for (const f of bridge()?.keys('local_ct_') ?? []) {
+      const m = f.match(/^local_ct_(\d{4}-\d{2}-\d{2})_(.+)$/)
+      if (m) out.add(`local:ct:${m[1]}:${m[2]}`)
+    }
+    try { for (const k of Object.keys(localStorage)) if (k.startsWith('local:ct:')) out.add(k) } catch { /* */ }
+    return [...out]
+  },
   remove(key: string) {
     bridge()?.set(key, null)
     try { localStorage.removeItem(key) } catch { /* */ }

@@ -5,6 +5,14 @@ const EXTRA_KEYS = ['spx_ds_result']
 const SPX_PREFIX = 'spx:'
 // Chaves sincronizadas que ficam em disco (não no localStorage)
 const DISK_SYNCED = ['spx:fwdorder']
+// Chaves que NÃO somam: vale só o relatório mais recente (Pacotes é um retrato do momento)
+const REPLACE_KEYS = ['spx:fwdorder']
+function newest(a: string | null, b: string | null): string | null {
+  if (a == null) return b
+  if (b == null) return a
+  const t = (v: string) => { try { return Date.parse((JSON.parse(v) as { importedAt?: string }).importedAt ?? '') || 0 } catch { return 0 } }
+  return t(b) > t(a) ? b : a
+}
 const LOCAL_ONLY = new Set([CONFIG_KEY, 'spx:header', 'spx:credentials'])
 
 export interface SheetsConfig {
@@ -99,7 +107,9 @@ function mergeIntoLocal(remote: Map<string, string>): Map<string, string> {
   const merged = new Map<string, string>()
   for (const key of new Set([...local.keys(), ...remote.keys()])) {
     if (!isSynced(key)) continue
-    const v = mergeStored(local.get(key) ?? null, remote.get(key) ?? null)
+    const v = REPLACE_KEYS.includes(key)
+      ? newest(local.get(key) ?? null, remote.get(key) ?? null)
+      : mergeStored(local.get(key) ?? null, remote.get(key) ?? null)
     if (v == null) continue
     merged.set(key, v)
     if (v !== local.get(key) && DISK_SYNCED.includes(key)) { diskStore.set(key, JSON.parse(v)); continue }
